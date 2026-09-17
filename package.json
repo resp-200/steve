@@ -1,0 +1,36 @@
+{
+	"name": "steve",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "steve — a minimal streaming chat agent + ACP server built on @earendil-works/pi-agent-core and @earendil-works/pi-ai",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"dev": "tsx src/index.ts",
+		"mock": "node scripts/mock-server.mjs",
+		"acp": "node dist/acp/main.js",
+		"acp:dev": "tsx src/acp/main.ts",
+		"acp:client": "node scripts/acp-client.mjs",
+		"acp:probe": "node scripts/acp-http-probe.mjs",
+		"acp:ui-test": "node scripts/acp-ui-test.mjs",
+		"start": "node dist/index.js",
+		"build": "tsc -p tsconfig.json",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"acp:ui-sync": "node scripts/sync-ui-client.mjs"
+	},
+	"dependencies": {
+		"@agentclientprotocol/sdk": "^1.4.0",
+		"@earendil-works/pi-agent-core": "^0.85.1",
+		"@earendil-works/pi-ai": "^0.85.1"
+	},
+	"devDependencies": {
+		"@types/node": "^22.19.0",
+		"tsx": "^4.20.0",
+		"typescript": "^5.9.0"
+	},
+	"optionalDependencies": {
+		"ws": "^8.18.0"
+	}
+}

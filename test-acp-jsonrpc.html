@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACP JSON-RPC 测试工具</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1500px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 26px 30px;
+        }
+        .header h1 { font-size: 26px; margin-bottom: 6px; }
+        .header p { opacity: 0.9; font-size: 13px; }
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+        }
+        .section { background: #f8f9fa; padding: 20px; border-radius: 12px; }
+        .section h3 {
+            margin-bottom: 16px;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 15px;
+        }
+        .badge {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: normal;
+        }
+        .badge.gray { background: #adb5bd; }
+        button {
+            padding: 9px 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        button:disabled { opacity: 0.45; cursor: not-allowed; }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; width: 100%; }
+        .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102,126,234,0.4); }
+        .btn-secondary { background: white; color: #667eea; border: 1px solid #e0e0e0; }
+        .btn-secondary:hover:not(:disabled) { background: #f1f3ff; }
+        .btn-danger { background: #fff0f0; color: #c0392b; border: 1px solid #f5c6cb; }
+        .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+        textarea, input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+        textarea:focus, input:focus { outline: none; border-color: #667eea; }
+        .response-area {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 14px;
+            border-radius: 8px;
+            min-height: 220px;
+            max-height: 520px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.55;
+        }
+        .info-box { background: white; padding: 12px; border-radius: 8px; margin-bottom: 14px; border: 1px solid #e0e0e0; }
+        .info-box p { margin: 4px 0; font-size: 12px; color: #666; }
+        .info-box strong { color: #667eea; }
+        .full-width { grid-column: 1 / -1; }
+        .status-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+        .status-item { padding: 4px 12px; border-radius: 4px; background: #f1f3f5; font-size: 12px; }
+        .status-item.success { background: #d4edda; color: #155724; }
+        .status-item.error { background: #f8d7da; color: #721c24; }
+        .status-item.busy { background: #fff3cd; color: #856404; }
+        .field { margin-bottom: 10px; }
+        .field label { display: block; font-size: 12px; color: #555; margin-bottom: 4px; }
+        .checks { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: #555; margin-bottom: 10px; }
+        .checks label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+        .chat-area {
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 14px;
+            min-height: 260px;
+            max-height: 60vh;
+            overflow-y: auto;
+            font-size: 13px;
+            color: #d4d4d4;
+        }
+        .msg { margin-bottom: 10px; line-height: 1.55; }
+        .msg .who { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.75; margin-bottom: 2px; }
+        .msg.user .body { color: #9ad1ff; }
+        .msg.agent .body { color: #eaeaea; }
+        .msg.thinking .body { color: #8a8a8a; font-style: italic; white-space: pre-wrap; }
+        .msg.system .body { color: #b8a6ff; }
+        .msg.error .body { color: #ff8d8d; }
+        .tool {
+            border-left: 3px solid #f0c36d;
+            background: #262626;
+            padding: 8px 10px;
+            border-radius: 0 6px 6px 0;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        .tool .title { color: #f0c36d; font-weight: 600; }
+        .tool .meta { color: #999; font-size: 11px; margin-top: 2px; }
+        .tool pre { margin-top: 6px; color: #cfcfcf; white-space: pre-wrap; font-size: 11px; max-height: 160px; overflow: auto; }
+        .tool.failed { border-left-color: #ff8d8d; }
+        .tool.failed .title { color: #ff8d8d; }
+        .permission {
+            border: 1px solid #f0c36d;
+            background: #2b2620;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        .permission .prompt { color: #f0c36d; margin-bottom: 8px; }
+        .permission .btn-row button { padding: 6px 10px; font-size: 12px; }
+        .dir-in { color: #7ec699; }
+        .dir-out { color: #82aaff; }
+        .dir-transport { color: #b8a6ff; }
+        .dir-error { color: #ff8d8d; }
+        .log-entry { margin-bottom: 6px; border-bottom: 1px dashed #333; padding-bottom: 6px; }
+        .log-head { font-size: 11px; opacity: 0.85; }
+        .notice { font-size: 12px; color: #888; line-height: 1.5; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        @media (max-width: 1100px) { .content { grid-template-columns: 1fr; } .grid-2 { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔌 ACP JSON-RPC 测试工具</h1>
+            <p>Agent Client Protocol v1 · Streamable HTTP（POST + SSE）· 浏览器内置 ACP client</p>
+        </div>
+
+        <div class="content">
+            <!-- 左列：连接 + 原始 JSON-RPC -->
+            <div class="section">
+                <h3>🔗 连接 <span class="badge">client → agent</span></h3>
+
+                <div class="field">
+                    <label>ACP 端点（Streamable HTTP）</label>
+                    <input type="text" id="endpoint" />
+                </div>
+                <div class="field">
+                    <label>Bearer Token（服务端 --token 时填写）</label>
+                    <input type="password" id="token" placeholder="可留空" />
+                </div>
+                <div class="field">
+                    <label>session/new 的 cwd（必须是绝对路径）</label>
+                    <input type="text" id="cwd" />
+                </div>
+
+                <div class="notice" id="fileHint" hidden style="margin-bottom: 12px; color: #a06a00;">
+                    ⚠️ 当前是 <code>file://</code> 直接打开：浏览器会以 <code>Origin: null</code> 发起跨域请求，
+                    请用 <code>npm run acp -- --port 8890 --cors "*"</code> 启动服务端，再点连接。
+                </div>
+
+                <div class="checks">
+                    <label><input type="checkbox" id="capRead" checked> fs.readTextFile</label>
+                    <label><input type="checkbox" id="capWrite" checked> fs.writeTextFile</label>
+                    <label><input type="checkbox" id="capTerminal" checked> terminal</label>
+                </div>
+
+                <div class="status-bar">
+                    <div class="status-item" id="statusIndicator">未连接</div>
+                    <div class="status-item" id="connectionIndicator">-</div>
+                </div>
+
+                <div class="btn-row" style="margin-bottom: 14px;">
+                    <button class="btn-primary" id="connectBtn" style="width: auto; flex: 1;">initialize + 连接</button>
+                    <button class="btn-secondary" id="newSessionBtn" disabled>session/new</button>
+                    <button class="btn-danger" id="disconnectBtn" disabled>断开</button>
+                </div>
+
+                <div class="info-box">
+                    <p><strong>Agent:</strong> <span id="agentName">-</span></p>
+                    <p><strong>协议版本:</strong> <span id="protocolVersion">-</span></p>
+                    <p><strong>Agent 能力:</strong> <span id="agentCapabilities">-</span></p>
+                    <p><strong>连接的 session:</strong> <span id="sessionCount">0</span></p>
+                    <p><strong>当前 session:</strong> <span id="currentSession">-</span></p>
+                </div>
+
+                <h3 style="margin-top: 18px;">📤 原始 JSON-RPC <span class="badge">发送</span></h3>
+                <div class="btn-row" style="margin-bottom: 10px;">
+                    <button class="btn-secondary" data-template="initialize">initialize</button>
+                    <button class="btn-secondary" data-template="session/new">session/new</button>
+                    <button class="btn-secondary" data-template="session/prompt">session/prompt</button>
+                    <button class="btn-secondary" data-template="session/cancel">session/cancel</button>
+                    <button class="btn-secondary" data-template="session/list">session/list</button>
+                </div>
+                <textarea id="requestInput" rows="9" spellcheck="false"></textarea>
+                <button class="btn-primary" id="sendRequestBtn" style="margin-top: 12px;">发送请求</button>
+                <p class="notice" style="margin-top: 8px;">
+                    params 里带 sessionId 的请求会路由到该 session 的 SSE 流；JSON-RPC 响应始终从 SSE 回来，POST 本身只返回 202。
+                </p>
+            </div>
+
+            <!-- 右列：消息日志 -->
+            <div class="section">
+                <h3>📥 JSON-RPC 消息 <span class="badge">双向</span></h3>
+                <div class="btn-row" style="margin-bottom: 10px;">
+                    <button class="btn-secondary" id="clearLogBtn">清空</button>
+                    <button class="btn-secondary" id="toggleRawBtn">折叠 JSON</button>
+                </div>
+                <div class="response-area" id="responseArea">等待连接...</div>
+            </div>
+
+            <!-- 对话 -->
+            <div class="section full-width">
+                <h3>🤖 对话 <span class="badge">session/prompt + session/update</span></h3>
+                <div class="status-bar">
+                    <div class="status-item" id="turnIndicator">空闲</div>
+                    <div class="status-item" id="usageIndicator">usage -</div>
+                </div>
+                <div class="chat-area" id="chatArea">
+                    <div class="msg system"><div class="body">点击左侧「initialize + 连接」，然后在这里发消息。首次发送会自动 session/new。</div></div>
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 12px;">
+                    <input type="text" id="quickMessage" placeholder="输入消息后回车发送..." />
+                    <button class="btn-primary" id="sendMessageBtn" style="width: auto; padding: 10px 22px;">发送</button>
+                    <button class="btn-danger" id="cancelBtn" style="width: auto;">取消本轮</button>
+                </div>
+            </div>
+
+            <!-- 客户端能力模拟 -->
+            <div class="section full-width">
+                <h3>🧰 浏览器侧的 client 能力 <span class="badge gray">fs/* · terminal/*</span></h3>
+                <p class="notice" style="margin-bottom: 12px;">
+                    浏览器没有真实文件系统和终端，所以这里用内存文件系统 + 模拟终端来实现 ACP 的 <code>fs/read_text_file</code>、<code>fs/write_text_file</code>、<code>terminal/*</code>。
+                    Agent 调用这些方法时会命中下面的内容，写入的内容也会出现在这里。
+                </p>
+                <div class="grid-2">
+                    <div>
+                        <label class="notice">虚拟文件（JSON: 绝对路径 → 内容）</label>
+                        <textarea id="virtualFiles" rows="10" spellcheck="false"></textarea>
+                        <button class="btn-secondary" id="applyFilesBtn" style="margin-top: 8px;">应用改动</button>
+                    </div>
+                    <div>
+                        <label class="notice">模拟终端输出</label>
+                        <div class="response-area" id="terminalArea" style="min-height: 200px;">（暂无命令）</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 内联的 ACP client：由 `npm run acp:ui-sync` 从 web/acp-http-client.js 生成，
+         这样直接双击（file://）打开页面也能用（浏览器不允许 file:// 加载 ES module）。 -->
+    <!-- BEGIN GENERATED from web/acp-http-client.js (npm run acp:ui-sync) -->
+    <script>
+    (() => {
+    // ACP over Streamable HTTP — dependency-free client that runs in a browser and
+    // in Node 22+ (same code path, so the bundled test page and the CLI probe agree).
+    //
+    // Wire protocol implemented here (mirrors @agentclientprotocol/sdk's own
+    // HttpStreamTransport, which is what the server expects):
+    //
+    //   1. POST <url>  {initialize}                    -> 200 JSON + `Acp-Connection-Id` header
+    //   2. GET  <url>  Accept: text/event-stream       -> connection mailbox
+    //        + `Acp-Connection-Id`
+    //   3. POST <url>  {session/new}                   -> 202, response arrives on the connection SSE
+    //   4. GET  <url>  + `Acp-Session-Id`              -> session mailbox
+    //   5. POST <url>  {session/prompt}                -> 202, updates + response arrive on the session SSE
+    //   6. POST <url>  {JSON-RPC response}             -> answers server->client requests
+    //
+    // Every mailbox only accepts one active receiver, so each stream is opened once.
+
+    const HEADER_CONNECTION_ID = "Acp-Connection-Id";
+    const HEADER_SESSION_ID = "Acp-Session-Id";
+    const PROTOCOL_VERSION = 1;
+
+    /** JSON-RPC ids are matched the way the SDK does it (type-tagged). */
+    function messageKey(id) {
+    	if (typeof id === "string") return `string:${id}`;
+    	if (typeof id === "number") return `number:${id}`;
+    	return `other:${JSON.stringify(id)}`;
+    }
+
+    class AcpRequestError extends Error {
+    	constructor(method, error) {
+    		super(`${method} failed: ${error?.message ?? JSON.stringify(error)}`);
+    		this.name = "AcpRequestError";
+    		this.code = error?.code;
+    		this.data = error?.data;
+    	}
+    }
+
+    class AcpHttpClient {
+    	#url;
+    	#fetch;
+    	#headers;
+    	#connectionId = null;
+    	#nextId = 1;
+    	#pending = new Map();
+    	#handlers = new Map();
+    	#listeners = new Set();
+    	#streams = new Map();
+    	#controllers = new Set();
+    	#sessions = new Set();
+    	#closed = false;
+
+    	constructor(url, { token, headers = {}, fetch: fetchImpl } = {}) {
+    		this.#url = url;
+    		// Bind so `fetch` keeps its receiver (browsers throw "Illegal invocation" otherwise).
+    		this.#fetch = fetchImpl ?? globalThis.fetch.bind(globalThis);
+    		this.#headers = { ...headers, ...(token ? { authorization: `Bearer ${token}` } : {}) };
+    	}
+
+    	get connectionId() {
+    		return this.#connectionId;
+    	}
+
+    	get sessions() {
+    		return [...this.#sessions];
+    	}
+
+    	/** Registers a handler for server->client requests (fs/*, terminal/*, permissions…). */
+    	on(method, handler) {
+    		this.#handlers.set(method, handler);
+    		return this;
+    	}
+
+    	/** Observes every inbound/outbound message (used for the raw log). */
+    	onMessage(listener) {
+    		this.#listeners.add(listener);
+    		return this;
+    	}
+
+    	removeMessageListener(listener) {
+    		this.#listeners.delete(listener);
+    		return this;
+    	}
+
+    	/* ------------------------------ ACP surface ----------------------------- */
+
+    	async initialize({ protocolVersion = PROTOCOL_VERSION, clientName, clientVersion, capabilities = {} } = {}) {
+    		if (this.#connectionId) throw new Error("Already initialized");
+
+    		const id = this.#nextId++;
+    		const request = {
+    			jsonrpc: "2.0",
+    			id,
+    			method: "initialize",
+    			params: {
+    				protocolVersion,
+    				clientCapabilities: capabilities,
+    				clientInfo: clientName ? { name: clientName, version: clientVersion ?? "1.0.0" } : undefined,
+    			},
+    		};
+
+    		this.#emit({ direction: "out", message: request, note: "initialize" });
+    		const response = await this.#fetch(this.#url, {
+    			method: "POST",
+    			headers: { "content-type": "application/json", ...this.#headers },
+    			body: JSON.stringify(request),
+    		});
+    		if (!response.ok) throw new Error(`initialize failed: HTTP ${response.status} ${(await response.text()).trim()}`);
+
+    		const connectionId = response.headers.get(HEADER_CONNECTION_ID);
+    		if (!connectionId) {
+    			throw new Error(
+    				`initialize response is missing the ${HEADER_CONNECTION_ID} header ` +
+    					"(cross-origin calls need CORS enabled on the server: start it with --cors)",
+    			);
+    		}
+
+    		const body = await response.json();
+    		this.#emit({ direction: "in", message: body, note: "initialize" });
+    		if (body.error) throw new AcpRequestError("initialize", body.error);
+
+    		this.#connectionId = connectionId;
+    		await this.#openStream("connection");
+    		return { ...body.result, connectionId };
+    	}
+
+    	async newSession({ cwd, additionalDirectories = [], mcpServers = [] } = {}) {
+    		const result = await this.request("session/new", { cwd, additionalDirectories, mcpServers });
+    		const sessionId = result?.sessionId;
+    		if (!sessionId) throw new Error("session/new returned no sessionId");
+    		this.#sessions.add(sessionId);
+    		await this.#openStream(`session:${sessionId}`, sessionId);
+    		return result;
+    	}
+
+    	/** Sends a prompt and resolves with the PromptResponse once the turn ends. */
+    	async prompt(sessionId, prompt, { timeoutMs = 10 * 60_000 } = {}) {
+    		await this.#ensureSessionStream(sessionId);
+    		return this.request("session/prompt", { sessionId, prompt }, { sessionId, timeoutMs });
+    	}
+
+    	async cancel(sessionId) {
+    		return this.notify("session/cancel", { sessionId }, { sessionId });
+    	}
+
+    	/** Raw JSON-RPC request; `params.sessionId` routes it to that session's mailbox. */
+    	async request(method, params, { sessionId, timeoutMs = 120_000 } = {}) {
+    		if (!this.#connectionId) throw new Error("Call initialize() first");
+
+    		const id = this.#nextId++;
+    		const key = messageKey(id);
+    		const routedSession = sessionId ?? params?.sessionId;
+
+    		const pending = new Promise((resolve, reject) => {
+    			const timer = timeoutMs
+    				? setTimeout(() => {
+    						this.#pending.delete(key);
+    						reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+    					}, timeoutMs)
+    				: undefined;
+    			this.#pending.set(key, { resolve, reject, timer, method });
+    		});
+
+    		await this.#post({ jsonrpc: "2.0", id, method, params }, routedSession);
+    		return pending;
+    	}
+
+    	async notify(method, params, { sessionId } = {}) {
+    		if (!this.#connectionId) throw new Error("Call initialize() first");
+    		await this.#post({ jsonrpc: "2.0", method, params }, sessionId ?? params?.sessionId);
+    	}
+
+    	async close() {
+    		if (this.#closed) return;
+    		this.#closed = true;
+
+    		for (const controller of this.#controllers) controller.abort();
+    		this.#controllers.clear();
+    		this.#streams.clear();
+
+    		for (const [, pending] of this.#pending) {
+    			clearTimeout(pending.timer);
+    			pending.reject(new Error("client closed"));
+    		}
+    		this.#pending.clear();
+
+    		const connectionId = this.#connectionId;
+    		this.#connectionId = null;
+    		if (connectionId) {
+    			await this.#fetch(this.#url, {
+    				method: "DELETE",
+    				headers: { ...this.#headers, [HEADER_CONNECTION_ID]: connectionId },
+    			}).catch(() => undefined);
+    		}
+    	}
+
+    	/* ------------------------------- transport ------------------------------ */
+
+    	async #post(message, sessionId) {
+    		const headers = { "content-type": "application/json", ...this.#headers };
+    		if (this.#connectionId) headers[HEADER_CONNECTION_ID] = this.#connectionId;
+    		if (sessionId) headers[HEADER_SESSION_ID] = sessionId;
+
+    		this.#emit({ direction: "out", message });
+    		const response = await this.#fetch(this.#url, { method: "POST", headers, body: JSON.stringify(message) });
+    		if (!response.ok) {
+    			const detail = await response.text().catch(() => "");
+    			throw new Error(`POST ${message.method ?? `response ${message.id}`} failed: HTTP ${response.status} ${detail.trim()}`);
+    		}
+    		const text = await response.text();
+    		if (text.trim()) return JSON.parse(text);
+    		return undefined;
+    	}
+
+    	/** Opens (once) the SSE mailbox that carries a session's updates and responses. */
+    	openSessionStream(sessionId) {
+    		return this.#ensureSessionStream(sessionId);
+    	}
+
+    	#ensureSessionStream(sessionId) {
+    		if (!this.#sessions.has(sessionId)) this.#sessions.add(sessionId);
+    		return this.#openStream(`session:${sessionId}`, sessionId);
+    	}
+    	#openStream(routeKey, sessionId) {
+    		const existing = this.#streams.get(routeKey);
+    		if (existing) return existing;
+
+    		const opening = (async () => {
+    			const controller = new AbortController();
+    			this.#controllers.add(controller);
+
+    			const headers = { accept: "text/event-stream", ...this.#headers };
+    			if (this.#connectionId) headers[HEADER_CONNECTION_ID] = this.#connectionId;
+    			if (sessionId) headers[HEADER_SESSION_ID] = sessionId;
+
+    			const response = await this.#fetch(this.#url, { method: "GET", headers, signal: controller.signal });
+    			if (!response.ok) {
+    				const detail = await response.text().catch(() => "");
+    				throw new Error(`opening ${routeKey} stream failed: HTTP ${response.status} ${detail.trim()}`);
+    			}
+    			if (!response.body) throw new Error(`${routeKey} stream has no body`);
+
+    			this.#emit({ direction: "transport", note: `${routeKey} stream open` });
+    			void this.#readStream(response.body, controller);
+    		})();
+
+    		opening.catch(() => this.#streams.delete(routeKey));
+    		this.#streams.set(routeKey, opening);
+    		return opening;
+    	}
+
+    	async #readStream(body, controller) {
+    		const reader = body.getReader();
+    		const decoder = new TextDecoder();
+    		let buffer = "";
+
+    		try {
+    			for (;;) {
+    				const { done, value } = await reader.read();
+    				if (done) break;
+    				buffer += decoder.decode(value, { stream: true });
+
+    				let boundary;
+    				while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+    					const frame = buffer.slice(0, boundary);
+    					buffer = buffer.slice(boundary + 2);
+    					const data = frame
+    						.split("\n")
+    						.filter((line) => line.startsWith("data:"))
+    						.map((line) => line.slice(5).trim())
+    						.join("\n");
+    					if (!data) continue; // keep-alive frame ("\n" comment)
+    					try {
+    						await this.#dispatch(JSON.parse(data));
+    					} catch (error) {
+    						this.#emit({ direction: "error", note: `bad SSE frame: ${error.message}` });
+    					}
+    				}
+    			}
+    		} catch (error) {
+    			if (!this.#closed) this.#emit({ direction: "error", note: `stream error: ${error.message}` });
+    		} finally {
+    			this.#controllers.delete(controller);
+    		}
+    	}
+
+    	async #dispatch(message) {
+    		this.#emit({ direction: "in", message });
+
+    		if (message && typeof message === "object" && "method" in message) {
+    			if ("id" in message && message.id !== undefined) await this.#answerRequest(message);
+    			return; // notifications are surfaced through onMessage listeners
+    		}
+
+    		const pending = this.#pending.get(messageKey(message?.id));
+    		if (!pending) return;
+    		this.#pending.delete(pending);
+    		clearTimeout(pending.timer);
+    		if (message.error) pending.reject(new AcpRequestError(pending.method ?? "request", message.error));
+    		else pending.resolve(message.result);
+    	}
+
+    	async #answerRequest(request) {
+    		const handler = this.#handlers.get(request.method);
+    		const result = { jsonrpc: "2.0", id: request.id };
+    		try {
+    			if (!handler) throw new Error(`no client handler registered for ${request.method}`);
+    			result.result = (await handler(request.params, request)) ?? {};
+    		} catch (error) {
+    			result.error = { code: -32603, message: error instanceof Error ? error.message : String(error) };
+    		}
+    		await this.#post(result, request.params?.sessionId);
+    	}
+
+    	#emit(event) {
+    		for (const listener of this.#listeners) {
+    			try {
+    				listener(event);
+    			} catch {
+    				/* a broken logger must not break the transport */
+    			}
+    		}
+    	}
+    }
+
+        // Classic-script bridge: the page (and file:// users) read the API from here.
+        window.ACP = { AcpHttpClient, AcpRequestError, PROTOCOL_VERSION, HEADER_CONNECTION_ID, HEADER_SESSION_ID, messageKey };
+    })();
+    </script>
+    <!-- END GENERATED -->
+
+    <script>
+        const { AcpHttpClient, PROTOCOL_VERSION } = window.ACP;
+
+        // 服务端（--ui）会把这里替换成它自己的工作目录；直接打开文件时保持占位符。
+        const SERVER_CWD = "__ACP_DEFAULT_CWD__";
+
+        const $ = (id) => document.getElementById(id);
+        const now = () => new Date().toLocaleTimeString();
+        const shortId = (id) => (typeof id === "string" && id.length > 10 ? `${id.slice(0, 8)}…` : id);
+
+        const state = {
+            client: null,
+            sessionId: null,
+            agentInfo: null,
+            foldJson: false,
+            textNode: null,
+            thinkingNode: null,
+            files: new Map(),
+            terminalLines: [],
+            turns: 0,
+        };
+
+        /* ------------------------------ 初始化 UI ------------------------------ */
+
+        // 支持 ?endpoint=&token=&cwd= 覆盖默认值（file:// 打开时很方便）
+        const query = new URLSearchParams(location.search);
+        const isServed = location.protocol.startsWith("http");
+        $("endpoint").value = query.get("endpoint") ?? (isServed ? `${location.origin}/acp` : "http://127.0.0.1:8890/acp");
+        $("token").value = query.get("token") ?? "";
+        $("fileHint").hidden = isServed;   // file:// 需要服务端开 CORS
+        $("cwd").value = query.get("cwd") ?? (SERVER_CWD.startsWith("__") ? "/tmp" : SERVER_CWD);
+
+        state.files.set(`${$("cwd").value}/README.md`, "# demo project\n\nThis file lives in the browser's virtual file system.\n");
+        state.files.set(`${$("cwd").value}/package.json`, '{\n  "name": "browser-demo",\n  "version": "0.1.0"\n}\n');
+        $("virtualFiles").value = JSON.stringify(Object.fromEntries(state.files), null, 2);
+
+        /* ------------------------------- 渲染工具 ------------------------------ */
+
+        function logLine(direction, label, detail) {
+            const area = $("responseArea");
+            if (area.dataset.placeholder !== "gone") {
+                area.textContent = "";
+                area.dataset.placeholder = "gone";
+            }
+            const entry = document.createElement("div");
+            entry.className = "log-entry";
+            const head = document.createElement("div");
+            head.className = `log-head dir-${direction}`;
+            head.textContent = `[${now()}] ${label}`;
+            entry.appendChild(head);
+            if (detail !== undefined) {
+                const body = document.createElement("div");
+                body.textContent = state.foldJson
+                    ? JSON.stringify(detail)
+                    : JSON.stringify(detail, null, 2);
+                entry.appendChild(body);
+            }
+            area.appendChild(entry);
+            area.scrollTop = area.scrollHeight;
+        }
+
+        function chat(kind, body, { append = false } = {}) {
+            const area = $("chatArea");
+            const existing = area.querySelector(`.msg.${kind}:last-child`);
+            let container = append ? existing : null;
+            if (!container) {
+                container = document.createElement("div");
+                container.className = `msg ${kind}`;
+                const who = document.createElement("div");
+                who.className = "who";
+                who.textContent = { user: "user", agent: "agent", thinking: "thinking", system: "system", error: "error" }[kind] ?? kind;
+                const bodyNode = document.createElement("div");
+                bodyNode.className = "body";
+                container.append(who, bodyNode);
+                area.appendChild(container);
+            }
+            const bodyNode = container.querySelector(".body");
+            if (append) bodyNode.textContent += body;
+            else bodyNode.textContent = body;
+            area.scrollTop = area.scrollHeight;
+            return container;
+        }
+
+        function toolCard(update) {
+            const area = $("chatArea");
+            let card = area.querySelector(`.tool[data-id="${CSS.escape(update.toolCallId)}"]`);
+            if (!card) {
+                card = document.createElement("div");
+                card.className = "tool";
+                card.dataset.id = update.toolCallId;
+                card.innerHTML = '<div class="title"></div><div class="meta"></div><pre hidden></pre>';
+                area.appendChild(card);
+            }
+            const title = card.querySelector(".title");
+            const meta = card.querySelector(".meta");
+            const pre = card.querySelector("pre");
+
+            if (update.title) title.textContent = update.title;
+            if (update.kind || update.status) meta.textContent = `${update.kind ?? card.dataset.kind ?? ""} · ${update.status ?? ""}`;
+            if (update.kind) card.dataset.kind = update.kind;
+            if (update.status === "failed") card.classList.add("failed");
+            if (update.status === "completed") card.classList.remove("failed");
+
+            const text = (update.content ?? [])
+                .map((part) => (part.type === "content" && part.content.type === "text" ? part.content.text : `[${part.type}]`))
+                .join("\n");
+            if (text) {
+                pre.hidden = false;
+                pre.textContent = text;
+            }
+            area.scrollTop = area.scrollHeight;
+        }
+
+        function permissionCard(params) {
+            return new Promise((resolve) => {
+                const area = $("chatArea");
+                const card = document.createElement("div");
+                card.className = "permission";
+                const prompt = document.createElement("div");
+                prompt.className = "prompt";
+                prompt.textContent = `⚠️ 需要授权：${params.toolCall.title} [${params.toolCall.kind ?? "other"}]`;
+                const raw = document.createElement("pre");
+                raw.style.cssText = "color:#bbb;font-size:11px;white-space:pre-wrap;margin-bottom:8px;";
+                raw.textContent = JSON.stringify(params.toolCall.rawInput ?? {}, null, 2);
+                const row = document.createElement("div");
+                row.className = "btn-row";
+
+                const finish = (optionId, cancelled = false) => {
+                    row.remove();
+                    const verdict = document.createElement("div");
+                    verdict.className = "notice";
+                    verdict.textContent = cancelled ? "已取消本轮（cancelled）" : `你的选择：${optionId}`;
+                    card.appendChild(verdict);
+                    resolve(cancelled ? { outcome: { outcome: "cancelled" } } : { outcome: { outcome: "selected", optionId } });
+                };
+
+                const addButton = (option, cancelled = false) => {
+                    const button = document.createElement("button");
+                    button.className = option.kind.startsWith("allow") ? "btn-secondary" : "btn-danger";
+                    button.textContent = option.name;
+                    button.addEventListener("click", () => finish(option.optionId, cancelled));
+                    row.appendChild(button);
+                };
+
+                for (const option of params.options ?? []) addButton(option);
+                const cancel = document.createElement("button");
+                cancel.className = "btn-danger";
+                cancel.textContent = "取消本轮";
+                cancel.addEventListener("click", () => finish(undefined, true));
+                row.appendChild(cancel);
+
+                card.append(prompt, raw, row);
+                area.appendChild(card);
+                area.scrollTop = area.scrollHeight;
+            });
+        }
+
+        function showTerminal(command) {
+            state.terminalLines.push(`$ ${command}`);
+            $("terminalArea").textContent = state.terminalLines.join("\n");
+            $("terminalArea").scrollTop = $("terminalArea").scrollHeight;
+        }
+
+        function setStatus(text, kind = "") {
+            const node = $("statusIndicator");
+            node.textContent = text;
+            node.className = `status-item ${kind}`;
+        }
+
+        function setBusy(busy) {
+            const node = $("turnIndicator");
+            node.textContent = busy ? "生成中…" : "空闲";
+            node.className = `status-item ${busy ? "busy" : "success"}`;
+            $("cancelBtn").disabled = !busy;
+            $("sendMessageBtn").disabled = busy;
+        }
+
+        /* --------------------------- 模拟 client 能力 --------------------------- */
+
+        function parseFiles() {
+            try {
+                const parsed = JSON.parse($("virtualFiles").value);
+                state.files = new Map(Object.entries(parsed));
+                logLine("transport", "虚拟文件已更新", [...state.files.keys()]);
+            } catch (error) {
+                logLine("error", `虚拟文件 JSON 解析失败: ${error.message}`);
+            }
+        }
+
+        function mockTerminal(params) {
+            const command = `${params.command} ${(params.args ?? []).join(" ")}`.trim();
+            showTerminal(command);
+            const [program, ...args] = command.split(/\s+/);
+            const cwd = params.cwd ?? $("cwd").value;
+            let output;
+            switch (program) {
+                case "pwd": output = cwd; break;
+                case "ls": output = [...state.files.keys()].map((path) => path.split("/").pop()).join("  "); break;
+                case "cat": output = state.files.get(args[0]) ?? `cat: ${args[0] ?? ""}: No such file`; break;
+                case "echo": output = args.join(" "); break;
+                case "node": output = args[0] === "--version" ? "v22.19.0 (browser mock)" : "browser mock terminal"; break;
+                default: output = `bash: ${program}: command not found (browser mock terminal)`;
+            }
+            state.terminalLines.push(output, "");
+            $("terminalArea").textContent = state.terminalLines.join("\n");
+            $("terminalArea").scrollTop = $("terminalArea").scrollHeight;
+            return output;
+        }
+
+        function sliceLines(text, line, limit) {
+            if (!line && !limit) return text;
+            const lines = text.split("\n");
+            const start = Math.max(0, (line ?? 1) - 1);
+            return lines.slice(start, limit ? start + limit : undefined).join("\n");
+        }
+        function registerClientCapabilities(client) {
+            client
+                .on("session/request_permission", (params) => permissionCard(params))
+                .on("fs/read_text_file", (params) => {
+                    const raw = state.files.get(params.path);
+                    if (raw === undefined) throw new Error(`ENOENT: ${params.path} (browser virtual file system)`);
+                    // line/limit 由客户端自己实现（ACP 只描述请求，不规定读取方式）
+                    const content = sliceLines(raw, params.line, params.limit);
+                    logLine("transport", `fs/read_text_file → ${params.path}`, { line: params.line ?? 1, limit: params.limit ?? "all", bytes: content.length });
+                    return { content };
+                })
+                .on("fs/write_text_file", (params) => {
+                    state.files.set(params.path, params.content);
+                    $("virtualFiles").value = JSON.stringify(Object.fromEntries(state.files), null, 2);
+                    logLine("transport", `fs/write_text_file → ${params.path}`, { bytes: params.content.length });
+                    return {};
+                })
+                .on("terminal/create", (params) => {
+                    const terminalId = `term-${Math.random().toString(36).slice(2, 8)}`;
+                    state.terminals = state.terminals ?? new Map();
+                    state.terminals.set(terminalId, { params, output: "", done: false });
+                    setTimeout(() => {
+                        const record = state.terminals.get(terminalId);
+                        record.output = mockTerminal(params);
+                        record.done = true;
+                    }, 150);
+                    return { terminalId };
+                })
+                .on("terminal/output", (params) => {
+                    const record = state.terminals?.get(params.terminalId);
+                    return { output: record?.output ?? "", truncated: false };
+                })
+                .on("terminal/wait_for_exit", async (params) => {
+                    const record = state.terminals?.get(params.terminalId);
+                    while (record && !record.done) await new Promise((resolve) => setTimeout(resolve, 40));
+                    return { exitCode: 0, signal: null };
+                })
+                .on("terminal/kill", () => ({}))
+                .on("terminal/release", (params) => {
+                    state.terminals?.delete(params.terminalId);
+                    return {};
+                })
+                .onMessage((event) => {
+                    const { direction, message, note } = event;
+                    if (direction === "transport") return logLine("transport", note ?? "transport");
+                    if (direction === "error") return logLine("error", note ?? "error");
+                    if (direction === "out") {
+                        const label = message.method
+                            ? `→ ${message.method}${message.params?.sessionId ? ` (session ${shortId(message.params.sessionId)})` : ""}`
+                            : `→ response#${message.id}`;
+                        return logLine("out", label, message);
+                    }
+                    const m = message;
+					if (m.method === "session/update") {
+						handleSessionUpdate(m.params);
+						return logLine("in", `← session/update · ${m.params.update.sessionUpdate}`, m.params.update);
+					}
+                    if (m.method) return logLine("in", `← ${m.method} (server request #${m.id ?? "-"})`, m);
+                    if (m.error) return logLine("error", `← response#${m.id} error ${m.error.code} ${m.error.message}`, m.error);
+                    return logLine("in", `← response#${m.id}`, m.result);
+                });
+        }
+
+        function handleSessionUpdate(params) {
+            const update = params.update;
+            switch (update.sessionUpdate) {
+                case "agent_message_chunk":
+                    if (update.content.type === "text") chat("agent", update.content.text, { append: true });
+                    break;
+                case "agent_thought_chunk":
+                    if (update.content.type === "text" && update.content.text.trim()) {
+                        chat("thinking", update.content.text, { append: true });
+                    }
+                    break;
+                case "tool_call":
+                    toolCard(update);
+                    break;
+                case "tool_call_update":
+                    toolCard(update);
+                    break;
+                case "usage_update":
+                    $("usageIndicator").textContent = `usage ${update.used}/${update.size}`;
+                    break;
+                default:
+                    logLine("transport", `session/update: ${update.sessionUpdate}`, update);
+            }
+        }
+
+        /* -------------------------------- 连接 -------------------------------- */
+
+        async function connect() {
+            const url = $("endpoint").value.trim();
+            const capabilities = {};
+            if ($("capRead").checked || $("capWrite").checked) {
+                capabilities.fs = { readTextFile: $("capRead").checked, writeTextFile: $("capWrite").checked };
+            }
+            if ($("capTerminal").checked) capabilities.terminal = true;
+
+            setStatus("连接中…", "busy");
+            $("connectBtn").disabled = true;
+
+            const client = new AcpHttpClient(url, { token: $("token").value.trim() || undefined });
+            registerClientCapabilities(client);
+
+            try {
+                const result = await client.initialize({
+                    protocolVersion: PROTOCOL_VERSION,
+                    clientName: "steve-browser-test",
+                    clientVersion: "1.0.0",
+                    capabilities,
+                });
+                state.client = client;
+                state.agentInfo = result.agentInfo ?? null;
+                $("agentName").textContent = `${result.agentInfo?.name ?? "unknown"} v${result.agentInfo?.version ?? "?"}`;
+                $("protocolVersion").textContent = result.protocolVersion;
+                $("agentCapabilities").textContent = JSON.stringify(result.agentCapabilities ?? {});
+                $("connectionIndicator").textContent = `conn ${shortId(result.connectionId)}`;
+                $("connectionIndicator").className = "status-item success";
+                setStatus("已连接", "success");
+                $("newSessionBtn").disabled = false;
+                $("disconnectBtn").disabled = false;
+                chat("system", `已连接 ${result.agentInfo?.name ?? "agent"}（protocol ${result.protocolVersion}）`);
+                await newSession();
+            } catch (error) {
+                setStatus("连接失败", "error");
+                $("connectBtn").disabled = false;
+                chat("error", `连接失败：${error.message}`);
+                logLine("error", "initialize 失败", { message: error.message });
+                await client.close().catch(() => undefined);
+            }
+        }
+
+        async function newSession() {
+            if (!state.client) return;
+            const cwd = $("cwd").value.trim() || "/tmp";
+            try {
+                const session = await state.client.newSession({ cwd });
+                state.sessionId = session.sessionId;
+                $("currentSession").textContent = shortId(session.sessionId);
+                $("sessionCount").textContent = state.client.sessions.length;
+                chat("system", `session 就绪：${session.sessionId}（cwd ${cwd}）`);
+            } catch (error) {
+                chat("error", `session/new 失败：${error.message}`);
+            }
+        }
+
+        async function disconnect() {
+            if (!state.client) return;
+            await state.client.close();
+            state.client = null;
+            state.sessionId = null;
+            setStatus("未连接");
+            $("connectionIndicator").textContent = "-";
+            $("connectionIndicator").className = "status-item";
+            $("currentSession").textContent = "-";
+            $("sessionCount").textContent = "0";
+            $("connectBtn").disabled = false;
+            $("newSessionBtn").disabled = true;
+            $("disconnectBtn").disabled = true;
+            chat("system", "已断开连接");
+        }
+
+        /* -------------------------------- 对话 -------------------------------- */
+
+        async function sendMessage() {
+            const input = $("quickMessage");
+            const text = input.value.trim();
+            if (!text || !state.client) return;
+            input.value = "";
+            chat("user", text);
+
+            if (!state.sessionId) await newSession();
+            if (!state.sessionId) return;
+
+            state.textNode = null;
+            setBusy(true);
+            try {
+                const response = await state.client.prompt(state.sessionId, [{ type: "text", text }]);
+                state.turns += 1;
+                chat("system", `本轮结束 · ${response.stopReason} · tokens in/out ${response.usage?.inputTokens ?? 0}/${response.usage?.outputTokens ?? 0}`);
+            } catch (error) {
+                chat("error", `本轮失败：${error.message}`);
+            } finally {
+                setBusy(false);
+            }
+        }
+
+        /* ------------------------------- 事件绑定 ------------------------------ */
+
+        $("connectBtn").addEventListener("click", connect);
+        $("newSessionBtn").addEventListener("click", newSession);
+        $("disconnectBtn").addEventListener("click", disconnect);
+        $("sendMessageBtn").addEventListener("click", sendMessage);
+        $("quickMessage").addEventListener("keydown", (event) => {
+            if (event.key === "Enter") sendMessage();
+        });
+        $("cancelBtn").addEventListener("click", async () => {
+            if (state.client && state.sessionId) {
+                await state.client.cancel(state.sessionId);
+                chat("system", "已发送 session/cancel");
+            }
+        });
+        $("applyFilesBtn").addEventListener("click", parseFiles);
+        $("clearLogBtn").addEventListener("click", () => {
+            $("responseArea").textContent = "";
+            $("responseArea").dataset.placeholder = "";
+        });
+        $("toggleRawBtn").addEventListener("click", () => {
+            state.foldJson = !state.foldJson;
+            logLine("transport", `JSON 折叠：${state.foldJson ? "开" : "关"}`);
+        });
+
+        function buildTemplate(method) {
+            const id = Math.floor(Math.random() * 100000);
+            const cwd = $("cwd").value.trim() || "/tmp";
+            const base = { jsonrpc: "2.0", id };
+            switch (method) {
+                case "initialize":
+                    return {
+                        ...base,
+                        method,
+                        params: {
+                            protocolVersion: PROTOCOL_VERSION,
+                            clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
+                            clientInfo: { name: "steve-browser-test", version: "1.0.0" },
+                        },
+                    };
+                case "session/new":
+                    return { ...base, method, params: { cwd, mcpServers: [] } };
+                case "session/prompt":
+                    return {
+                        ...base,
+                        method,
+                        params: { sessionId: state.sessionId ?? "<先 session/new>", prompt: [{ type: "text", text: "你好，介绍一下你自己" }] },
+                    };
+                case "session/cancel":
+                    return { jsonrpc: "2.0", method, params: { sessionId: state.sessionId ?? "<先 session/new>" } };
+                case "session/list":
+                    return { ...base, method, params: {} };
+                default:
+                    return base;
+            }
+        }
+
+        for (const button of document.querySelectorAll("[data-template]")) {
+            button.addEventListener("click", () => {
+                $("requestInput").value = JSON.stringify(buildTemplate(button.dataset.template), null, 2);
+            });
+        }
+
+        $("sendRequestBtn").addEventListener("click", async () => {
+            let message;
+            try {
+                message = JSON.parse($("requestInput").value);
+            } catch (error) {
+                return logLine("error", `不是有效的 JSON: ${error.message}`);
+            }
+            if (!state.client) {
+                // initialize 可以独立发送，其它方法必须先有连接。
+                if (message.method === "initialize") return connect();
+                return logLine("error", "请先点击「initialize + 连接」");
+            }
+            try {
+                if (message.method && !("id" in message)) {
+                    await state.client.notify(message.method, message.params);
+                    chat("system", `已发送通知 ${message.method}`);
+                    return;
+                }
+                const result = await state.client.request(message.method, message.params, {
+                    sessionId: message.method === "session/new" ? null : undefined,
+                });
+                if (message.method === "session/new" && result?.sessionId) {
+                    state.sessionId = result.sessionId;
+					await state.client.openSessionStream(result.sessionId);
+                    $("currentSession").textContent = shortId(result.sessionId);
+                }
+                logLine("transport", `${message.method} 结果`, result);
+            } catch (error) {
+                logLine("error", `${message.method} 失败`, { message: error.message, code: error.code, data: error.data });
+            }
+        });
+
+        $("requestInput").value = JSON.stringify(buildTemplate("initialize"), null, 2);
+        logLine("transport", "页面就绪，等待连接");
+
+        // 便于在 DevTools 或自动化测试里驱动页面（浏览器控制台可直接使用）
+        window.acpTest = {
+            state,
+            connect,
+            newSession,
+            disconnect,
+            sendText: async (text) => {
+                $("quickMessage").value = text;
+                return sendMessage();
+            },
+            chatText: () => $("chatArea").innerText,
+            logText: () => $("responseArea").innerText,
+            terminalText: () => $("terminalArea").innerText,
+            filesText: () => $("virtualFiles").value,
+        };
+
+    </script>
+</body>
+</html>
