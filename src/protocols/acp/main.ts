@@ -19,6 +19,7 @@ Transport
   --token <token>            require "Authorization: Bearer <token>" on http transport
   --ui / --no-ui             serve the browser test client on / (default on)
   --cors <origins>           allow browser origins, comma separated or * (default off)
+  --extension <path>         load a plugin, repeatable (or STEVE_EXTENSIONS=a,b)
 
 Behaviour
   --permissions <ask|allow>  ask the editor before write/run tools (default ask)
@@ -35,12 +36,15 @@ Editors normally launch this over stdio:
 interface CliOptions {
 	transport: AcpTransport;
 	permissionMode: PermissionMode;
+	/** Plugin files/directories to load per session. */
+	extensionPaths: string[];
 	quiet: boolean;
 }
 
 const BOOLEAN_FLAGS = new Set(["--quiet", "--ui", "--no-ui"]);
 function parseArgs(argv: string[]): CliOptions | "help" {
 	const values = new Map<string, string>();
+	const extensionPaths: string[] = [];
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index] ?? "";
 		if (arg === "--help" || arg === "-h") return "help";
@@ -52,6 +56,10 @@ function parseArgs(argv: string[]): CliOptions | "help" {
 			const [flag, inline] = arg.slice(2).split("=");
 			const value = inline ?? argv[index + 1] ?? "";
 			if (inline === undefined) index += 1;
+			if (flag === "extension") {
+				if (value) extensionPaths.push(value);
+				continue;
+			}
 			if (flag) values.set(flag, value);
 		}
 	}
@@ -101,6 +109,13 @@ function parseArgs(argv: string[]): CliOptions | "help" {
 						...(token ? { token } : {}),
 					},
 		permissionMode,
+		extensionPaths: [
+			...extensionPaths,
+			...(process.env.STEVE_EXTENSIONS ?? "")
+				.split(",")
+				.map((entry) => entry.trim())
+				.filter(Boolean),
+		],
 		quiet: values.get("quiet") === "true",
 	};
 }
@@ -123,12 +138,14 @@ async function main(): Promise<void> {
 	// stdout carries the JSON-RPC stream in stdio mode, so status goes to stderr.
 	log(`${AGENT_NAME} ${AGENT_VERSION} · model=${config.model.id} api=${config.model.api} auth=${config.authStyle}`);
 	log(`transport=${parsed.transport.kind} permissions=${parsed.permissionMode}`);
+	if (parsed.extensionPaths.length > 0) log(`extensions=${parsed.extensionPaths.join(",")}`);
 
 	await serveAcp({
 		createAgent: () =>
 			createAcpAgentApp({
 				config,
 				permissionMode: parsed.permissionMode,
+				extensionPaths: parsed.extensionPaths,
 				logger: warn,
 			}),
 		transport: parsed.transport,

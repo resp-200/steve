@@ -12,7 +12,10 @@ import {
 	type AgentTool,
 	type BeforeToolCallContext,
 	type BeforeToolCallResult,
+	type AfterToolCallContext,
+	type AfterToolCallResult,
 } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AppConfig } from "../model/config.js";
 import { createStreamFn } from "../model/stream.js";
 
@@ -20,6 +23,12 @@ import { createStreamFn } from "../model/stream.js";
 export interface KernelHooks {
 	/** Runs before every tool call; return `{ block: true }` to refuse it. */
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
+	/** Observes/rewrites a tool result before the model sees it. */
+	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
+	/** Refines the transcript after the built-in failed-turn filter ran. */
+	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]> | AgentMessage[];
+	/** Mutates provider request headers in place (synchronous, see `createStreamFn`). */
+	beforeProviderHeaders?: (headers: Record<string, string>, model: Model<Api>) => void;
 }
 
 export interface KernelAgentOptions {
@@ -47,10 +56,15 @@ function withoutFailedTurns(messages: AgentMessage[]): AgentMessage[] {
 
 export function createKernelAgent(options: KernelAgentOptions): Agent {
 	return new Agent({
-		streamFn: createStreamFn(() => options.config.apiKey, options.config.authStyle),
+		streamFn: createStreamFn(() => options.config.apiKey, options.config.authStyle, options.hooks?.beforeProviderHeaders),
 		getApiKey: () => options.config.apiKey,
-		transformContext: async (messages) => withoutFailedTurns(messages),
+		// The failed-turn filter always runs first; extensions may refine it further.
+		transformContext: async (messages, signal) => {
+			const filtered = withoutFailedTurns(messages);
+			return options.hooks?.transformContext ? options.hooks.transformContext(filtered, signal) : filtered;
+		},
 		beforeToolCall: options.hooks?.beforeToolCall,
+		afterToolCall: options.hooks?.afterToolCall,
 		initialState: {
 			systemPrompt: options.systemPrompt ?? options.config.systemPrompt,
 			model: options.config.model,

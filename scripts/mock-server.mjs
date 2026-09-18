@@ -10,7 +10,8 @@
 // Behaviour: a user message containing "21" triggers a `calculate` tool call,
 // "boom" triggers a tool call with an invalid expression (tool error path), and
 // a tool result produces the final answer; anything else streams a fixed reply.
-// A message containing "flaky" gets two HTTP 429s before succeeding (retry path).
+// A message containing "flaky" gets two HTTP 429s before succeeding (retry path);
+// one containing "rm -rf" plans a destructive run_command (guard-hook path).
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8899);
@@ -141,6 +142,10 @@ function planToolCall(text) {
 	const path = (text.match(/\/[^\s"'`,;)]+/) ?? [])[0];
 	if (/\b(read|cat|open)\b/i.test(text) && path) return { name: "read_file", input: { path, limit: 20 } };
 	if (/\b(write|save|create)\b/i.test(text) && path) return { name: "write_file", input: { path, content: "hello from the mock model\n" } };
+	// A destructive-looking command, so tool_call guards are reachable offline.
+	if (/\brm\b/i.test(text) && /-rf|--recursive/i.test(text)) {
+		return { name: "run_command", input: { command: "rm", args: ["-rf", "/tmp/steve-demo"] } };
+	}
 	if (/\b(run|exec|execute|ls|shell)\b/i.test(text)) return { name: "run_command", input: { command: "ls" } };
 	if (text.includes("boom")) return { name: "calculate", input: { expression: "1 +" } };
 	if (text.includes("21")) return { name: "calculate", input: { expression: "21 * 2" } };
@@ -239,7 +244,10 @@ createServer((req, res) => {
 					: completionEvents(reply);
 		}
 
-		console.log(`[mock] ${req.url} model=${payload.model} messages=${list.length} tools=${payload.tools?.length ?? 0} toolResult=${sawToolResult}`);
+		const pluginHeader = req.headers["x-steve-plugin"];
+		console.log(
+			`[mock] ${req.url} model=${payload.model} messages=${list.length} tools=${payload.tools?.length ?? 0} toolResult=${sawToolResult}${pluginHeader ? ` plugin-header=${pluginHeader}` : ""}`,
+		);
 		streamEvents(res, events);
 	});
 }).listen(PORT, "127.0.0.1", () => console.log(`[mock] listening on http://127.0.0.1:${PORT}/v1`));

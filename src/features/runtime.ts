@@ -5,7 +5,9 @@
  * counters live here, so protocols and entries never touch pi directly — they
  * consume {@link AgentRuntimeEvent} and {@link TurnResult}.
  */
-import type { AgentMessage, AgentTool, BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
+import type { AfterToolCallContext, AfterToolCallResult, AgentMessage, AgentTool, BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
+import type { PluginCommand } from "../extensions/api.js";
+import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
 import type { AgentRuntimeEvent, PromptImage, TurnStopReason, TurnUsage } from "./events.js";
@@ -66,6 +68,8 @@ export interface AgentRuntimeOptions {
 	/** Defaults to `config.systemPrompt`. */
 	systemPrompt?: string;
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
+	/** Plugins loaded for this session (their tools, hooks, commands and events). */
+	extensions?: ExtensionHost;
 	/** Extra attempts after a failed turn that ran no tool. Default: 2. */
 	retries?: number;
 }
@@ -73,12 +77,16 @@ export interface AgentRuntimeOptions {
 export interface AgentRuntime {
 	/** Names of the tools this runtime registered. */
 	readonly toolNames: string[];
+	/** Slash commands registered by plugins. */
+	readonly commands: PluginCommand[];
 	/** Subscribes to normalised events; the returned function unsubscribes. */
 	subscribe(listener: (event: AgentRuntimeEvent) => void): () => void;
 	prompt(text: string, options?: PromptOptions): Promise<TurnResult>;
 	abort(): void;
 	waitForIdle(): Promise<void>;
 	reset(): void;
+	/** Runs a plugin command; `undefined` when no plugin owns that name. */
+	runCommand(name: string, args: string): Promise<string | undefined>;
 	stats(): AgentStats;
 }
 
@@ -108,15 +116,59 @@ function toUsage(usage: AssistantTurn["usage"]): TurnUsage {
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 	const config = options.config;
-	const agentTools = options.tools ?? defaultTools;
+	const extensions = options.extensions;
+	const pluginTools = (extensions?.tools ?? []).map(
+		(tool): AgentTool<any> => ({
+			name: tool.name,
+			label: tool.label ?? tool.name,
+			description: tool.description,
+			parameters: tool.parameters as AgentTool<any>["parameters"],
+			execute: tool.execute,
+		}),
+	);
+	const agentTools = [...(options.tools ?? defaultTools), ...pluginTools];
 	const defaultRetries = options.retries ?? 2;
 	const listeners = new Set<(event: AgentRuntimeEvent) => void>();
+
+	/** Plugins may refuse a tool call before the permission gate ever asks. */
+	const beforeToolCall = async (context: BeforeToolCallContext, signal?: AbortSignal) => {
+		const decision = await extensions?.runToolCall({ toolName: context.toolCall.name, toolCallId: context.toolCall.id, args: context.args });
+		if (decision?.block) {
+			return { block: true, reason: decision.reason ?? `Blocked by an extension: ${context.toolCall.name}` };
+		}
+		return options.beforeToolCall?.(context, signal);
+	};
+
+	/** `tool_result` plugins may rewrite the result the model sees. */
+	const afterToolCall = async (context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> => {
+		const details = (context.result as { details?: unknown } | undefined)?.details;
+		const patch = await extensions!.runToolResult({
+			toolName: context.toolCall.name,
+			toolCallId: context.toolCall.id,
+			isError: context.isError,
+			text: firstText(context.result) ?? "",
+			...(details !== undefined ? { details } : {}),
+		});
+		if (!patch) return undefined;
+		return {
+			...(patch.text !== undefined ? { content: [{ type: "text" as const, text: patch.text }] } : {}),
+			...(patch.details !== undefined ? { details: patch.details } : {}),
+			...(patch.isError !== undefined ? { isError: patch.isError } : {}),
+		};
+	};
 
 	const agent = createKernelAgent({
 		config,
 		tools: agentTools,
 		...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
-		...(options.beforeToolCall ? { hooks: { beforeToolCall: options.beforeToolCall } } : {}),
+		hooks: {
+			...(extensions || options.beforeToolCall ? { beforeToolCall } : {}),
+			...(extensions?.counts.toolResult ? { afterToolCall } : {}),
+			...(extensions?.counts.context ? { transformContext: (messages: AgentMessage[]) => extensions.runContext(messages) } : {}),
+			...(extensions?.counts.headers
+				? { beforeProviderHeaders: (headers: Record<string, string>, model: { id: string; api: string }) => extensions.runHeaders(headers, { model: model.id, api: model.api }) }
+				: {}),
+		},
 	});
 
 	const emit = (event: AgentRuntimeEvent): void => {
@@ -127,6 +179,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 				/* a broken front end must not break the agent loop */
 			}
 		}
+		extensions?.dispatch(event);
 	};
 
 	/** pi's event stream, translated into the vocabulary the layers above speak. */
@@ -186,6 +239,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
 	return {
 		toolNames: agentTools.map((tool) => tool.name),
+		commands: extensions?.commands ?? [],
+		runCommand: (name, args) => extensions?.runCommand(name, args) ?? Promise.resolve(undefined),
 
 		subscribe(listener) {
 			listeners.add(listener);

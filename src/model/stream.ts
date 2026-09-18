@@ -66,7 +66,12 @@ function wantsBearerHeader(model: Model<Api>, authStyle: AuthStyle): boolean {
  * Routes `Agent` requests to pi-ai's streaming adapters. Everything a model
  * needs (baseUrl, compat, maxTokens) lives on the `Model` built in config.ts.
  */
-export function createStreamFn(getApiKey: () => string | undefined, authStyle: AuthStyle = "auto"): StreamFn {
+export function createStreamFn(
+	getApiKey: () => string | undefined,
+	authStyle: AuthStyle = "auto",
+	/** Mutates provider request headers in place; must be synchronous (the stream fn cannot await). */
+	onHeaders?: (headers: Record<string, string>, model: Model<Api>) => void,
+): StreamFn {
 	return (model, context, options) => {
 		const apiKey = options?.apiKey ?? getApiKey();
 		if (!apiKey) {
@@ -74,9 +79,13 @@ export function createStreamFn(getApiKey: () => string | undefined, authStyle: A
 		}
 
 		try {
-			const headers = wantsBearerHeader(model, authStyle)
-				? { ...options?.headers, Authorization: `Bearer ${apiKey}` }
-				: options?.headers;
+			const bearer = wantsBearerHeader(model, authStyle);
+			let headers = options?.headers as Record<string, string> | undefined;
+			if (bearer || onHeaders) {
+				headers = { ...headers };
+				if (bearer) headers.Authorization = `Bearer ${apiKey}`;
+			}
+			onHeaders?.(headers ?? {}, model);
 			const streamOptions = { ...options, apiKey, headers };
 
 			if (hasApi(model, "anthropic-messages")) return anthropicStreamSimple(model, context, streamOptions);

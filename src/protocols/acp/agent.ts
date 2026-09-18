@@ -8,6 +8,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
 import type { Logger } from "../../types.js";
+import { loadExtensions } from "../../extensions/host.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
 export const AGENT_NAME = "steve";
@@ -17,6 +18,8 @@ export interface AcpAgentOptions {
 	config: AppConfig;
 	logger: Logger;
 	permissionMode: PermissionMode;
+	/** Plugin files/directories to load for every session. */
+	extensionPaths?: string[];
 }
 
 /**
@@ -68,8 +71,16 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 
 			.onRequest("authenticate", () => ({}))
 
-			.onRequest("session/new", (ctx) => {
+			.onRequest("session/new", async (ctx) => {
 				const id = crypto.randomUUID();
+				// Plugins are per session: they may register tools or hooks with session state.
+				const extensions = await loadExtensions({
+					cwd: ctx.params.cwd,
+					mode: "acp",
+					sessionId: id,
+					paths: options.extensionPaths ?? [],
+					log: options.logger,
+				});
 				const session = new AcpSession({
 					id,
 					cwd: ctx.params.cwd,
@@ -78,10 +89,14 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					client: ctx.client,
 					clientCapabilities,
 					permissionMode: options.permissionMode,
+					extensions,
 					logger: options.logger,
 				});
 				sessions.set(id, session);
-				options.logger(`session/new: ${id} cwd=${session.cwd} tools=${session.toolNames.join(",")}`);
+				await session.announceCommands();
+				options.logger(
+					`session/new: ${id} cwd=${session.cwd} tools=${session.toolNames.join(",")}${extensions.files.length > 0 ? ` plugins=${extensions.files.length}` : ""}`,
+				);
 				return { sessionId: id };
 			})
 

@@ -10,6 +10,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
 import type { AgentRuntimeEvent, TurnStopReason, TurnUsage } from "../../features/events.js";
+import type { ExtensionHost } from "../../extensions/host.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest } from "../../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
 import { tools as localTools } from "../../features/tools.js";
@@ -40,6 +41,8 @@ export interface AcpSessionOptions {
 	client: AgentContext;
 	clientCapabilities: ClientCapabilities;
 	permissionMode: PermissionMode;
+	/** Plugins loaded for this session. */
+	extensions: ExtensionHost;
 	logger: Logger;
 }
 
@@ -88,6 +91,7 @@ export class AcpSession {
 		this.runtime = createAgentRuntime({
 			config: options.config,
 			tools,
+			extensions: options.extensions,
 			systemPrompt: this.systemPrompt(),
 			beforeToolCall: createPermissionGate({
 				mode: options.permissionMode,
@@ -113,6 +117,16 @@ export class AcpSession {
 		const images = this.supportsImages ? blocksToImages(request.prompt) : [];
 		if (!text.trim() && images.length === 0) {
 			throw RequestError.invalidParams(undefined, "Prompt contained no usable content");
+		}
+
+		// A plugin command is answered locally; anything else goes to the model.
+		const command = /^\/([\w-]+)\s*([\s\S]*)$/.exec(text.trim());
+		if (command && this.runtime.commands.some((entry) => entry.name === command[1])) {
+			const output = await this.runtime.runCommand(command[1] ?? "", command[2]?.trim() ?? "");
+			if (output) {
+				await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
+			}
+			return { stopReason: "end_turn", usage: { ...this.usage } };
 		}
 
 		this.running = true;
@@ -147,6 +161,15 @@ export class AcpSession {
 		}
 
 		return { stopReason: STOP_REASONS[result.stopReason], usage: { ...this.usage } };
+	}
+
+	/** Tells the client which slash commands the loaded plugins provide. */
+	async announceCommands(): Promise<void> {
+		if (this.runtime.commands.length === 0) return;
+		await this.send({
+			sessionUpdate: "available_commands_update",
+			availableCommands: this.runtime.commands.map((command) => ({ name: command.name, description: command.description })),
+		});
 	}
 
 	cancel(): void {

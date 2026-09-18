@@ -19,7 +19,7 @@
 | L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
 | L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
 | L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地工具、统计 |
-| L3′ 拓展 | `src/extensions/`（规划中） | 插件宿主：发现 / 加载 / 隔离扩展；与功能层平级，只对功能层的接缝说话 |
+| L3′ 拓展 | `src/extensions/` | 插件宿主：发现 / 加载 / 隔离插件，并把它们挂到功能层的接缝上 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
 | L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
 
@@ -33,6 +33,9 @@ src/features/events.ts    L3 事件词表：这以上（协议/入口）只说�
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
 src/features/contract.ts  L3 工具契约：协议层定义工具的唯一入口（TypeBox/AgentTool）
 src/features/tools.ts     L3 3 个 AgentTool 示例
+src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
+src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
+examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
@@ -79,7 +82,7 @@ LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic 
 LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/v1 npm run dev
 # OpenAI responses
 LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/v1 npm run dev
-# 说 "what is 21 * 2?" 触发 calculate 工具调用；说 "boom" 触发工具报错路径；说 "flaky" 触发两次 429 的重试路径
+# 说 "what is 21 * 2?" 触发 calculate 工具调用；"boom" 触发工具报错路径；"flaky" 触发两次 429 的重试路径；"rm -rf" 触发危险命令规划（给 guard 插件用）
 ```
 
 ## 环境变量
@@ -155,6 +158,46 @@ runtime.subscribe((event) => {
 `src/features/runtime.ts` 在 `prompt()` 之后检查最后一条 assistant 消息：如果 `stopReason` 是 `error` 且这一轮没跑过工具，就把这轮消息整体回滚再重试（网关 429/502 很常见）；**取消（aborted）不重试**，那是用户的意图。「空内容且失败」的 `transformContext` 过滤放在 `src/kernel/agent.ts`。
 
 这套重试是协议无关的，因此 CLI 与编辑器行为一致：`npm run acp:ui-test` 的第 16 项断言就是让 mock 先注入两次 429，再验证客户端只看到成功那一轮。
+
+## 拓展（插件）
+
+插件是构建之外的独立 ES module，按约定发现：
+
+| 位置 | 作用 |
+| --- | --- |
+| `<cwd>/.steve/extensions/*.mjs` | 项目级 |
+| `~/.steve/extensions/*.mjs` | 全局 |
+| `--extension <path>`（ACP）/ `STEVE_EXTENSIONS=a,b`（两端） | 显式指定 |
+
+```js
+// examples/extensions/git-status.mjs
+export default function gitStatus(pi) {
+  pi.registerTool({
+    name: "git_status",
+    description: "Show the git working tree status.",
+    parameters: pi.Type.Object({ short: pi.Type.Optional(pi.Type.Boolean({})) }),
+    execute: async (_id, params) => ({ content: [{ type: "text", text: (await pi.ctx.exec("git", ["status"])).stdout }] }),
+  });
+  pi.registerCommand({ name: "git-status", description: "git status --short --branch", run: async () => (await pi.ctx.exec("git", ["status", "--short", "--branch"])).stdout });
+}
+```
+
+插件能挂的接缝（全部定义在 `src/extensions/api.ts`）：
+
+| 接缝 | 语义 | 落到哪里 |
+| --- | --- | --- |
+| `on("tool_call")` | 返回 `{ block: true }` 直接拒绝这次工具调用 | pi 的 `beforeToolCall`（在权限闸门**之前**） |
+| `on("tool_result")` | 改写工具结果（`text` / `details` / `isError`） | pi 的 `afterToolCall` |
+| `on("context")` | 改写发给模型的消息数组 | pi 的 `transformContext`（在内置失败轮过滤之后） |
+| `on("before_provider_headers")` | 就地改请求头（**同步**：streamFn 不能 await） | `src/model/stream.ts` 的 header 钩子 |
+| `on("text_delta" … "turn_end")` | 观察归一化事件（`src/features/events.ts` 那套词表） | 功能层事件派发 |
+| `registerTool` / `registerCommand` | 加工具、加斜杠命令 | 工具表；CLI 斜杠命令 + ACP `available_commands_update` |
+
+三条设计约束：
+
+- **插件只说功能层的词汇**，不吐协议专属事件，所以同一个插件在两端行为一致：`/git-status` 在终端是斜杠命令，在编辑器里由 `available_commands_update` 播报、由 ACP 本地执行。
+- **隔离**：加载期抛错的插件被记录并跳过；钩子抛错只写日志，不会中断 agent 循环（`npm run plugins:test` 有专门断言）。
+- **不是 pi 扩展的兼容层**：pi 的扩展由 `pi-coding-agent` 的 extension runner 加载，本仓库刻意不依赖它；这里的 API 只是「pi 风格」（同名 `on(...)`、`ctx.hasUI`），因此不保证能直接跑 pi 的扩展文件。
 
 ## ACP：把 Agent 暴露给编辑器客户端
 
@@ -242,6 +285,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:probe` | Node 版 HTTP client（import 浏览器同一份 `web/acp-http-client.js`），带真实的 fs/terminal 回调 |
 | `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），16 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
+| `npm run plugins:test` | 插件层 17 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
@@ -277,3 +321,4 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - 换模型：改 `.env` 即可。换协议时只需要 `LLM_API`（或让 baseUrl 自动判定），`Agent` 侧代码一行都不用动。
 - 加工具：在 `src/features/tools.ts` 写好 `AgentTool`，加进 `tools` 数组，并在 `execute` 里返回 `content`（回灌给模型）+ `details`（给 UI/日志）。只给 ACP 用的工具放 `src/protocols/acp/tools.ts`（比如依赖客户端能力的那些）。
 - 改内核装配（streamFn / 上下文净化 / thinking 等级 / hooks）：只动 `src/kernel/agent.ts` 一处，CLI 与 ACP 同时生效。
+- 加能力而不改代码：写个插件（见上文「拓展」），`STEVE_EXTENSIONS=...` 或 `--extension` 加载即可，两端同时生效。
