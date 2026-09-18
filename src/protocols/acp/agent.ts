@@ -6,8 +6,9 @@ import {
 	type ClientCapabilities,
 	type Implementation,
 } from "@agentclientprotocol/sdk";
-import type { AppConfig } from "../config.js";
-import { AcpSession, type Logger, type PermissionMode } from "./session.js";
+import type { AppConfig } from "../../model/config.js";
+import type { Logger } from "../../types.js";
+import { AcpSession, type PermissionMode } from "./session.js";
 
 export const AGENT_NAME = "steve";
 export const AGENT_VERSION = "0.1.0";

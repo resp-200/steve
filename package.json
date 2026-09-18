@@ -8,15 +8,16 @@
 		"node": ">=22.19.0"
 	},
 	"scripts": {
-		"dev": "tsx src/index.ts",
+		"dev": "tsx src/entries/cli.ts",
 		"mock": "node scripts/mock-server.mjs",
-		"acp": "node dist/acp/main.js",
-		"acp:dev": "tsx src/acp/main.ts",
+		"acp": "node dist/protocols/acp/main.js",
+		"acp:dev": "tsx src/protocols/acp/main.ts",
 		"acp:client": "node scripts/acp-client.mjs",
 		"acp:probe": "node scripts/acp-http-probe.mjs",
 		"acp:ui-test": "node scripts/acp-ui-test.mjs",
-		"start": "node dist/index.js",
-		"build": "tsc -p tsconfig.json",
+		"start": "node dist/entries/cli.js",
+		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+		"build": "npm run clean && tsc -p tsconfig.json",
 		"typecheck": "tsc -p tsconfig.json --noEmit",
 		"acp:ui-sync": "node scripts/sync-ui-client.mjs"
 	},

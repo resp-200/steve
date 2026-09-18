@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { createAcpAgentApp, AGENT_NAME, AGENT_VERSION } from "./agent.js";
-import { loadConfig } from "../config.js";
+import { loadConfig } from "../../model/config.js";
 import type { PermissionMode } from "./session.js";
 import { serveAcp, type AcpTransport } from "./transport.js";
 
@@ -29,7 +29,7 @@ Environment
   ACP_TRANSPORT, ACP_PORT, ACP_HOST, ACP_PATH, ACP_TOKEN, ACP_PERMISSIONS, ACP_CORS, ACP_UI
 
 Editors normally launch this over stdio:
-  { "command": "node", "args": ["dist/acp/main.js"] }
+  { "command": "node", "args": ["dist/protocols/acp/main.js"] }
 `.trim();
 
 interface CliOptions {

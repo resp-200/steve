@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { createInterface } from "node:readline";
-import { createChatAgent, type ChatAgent } from "./agent.js";
-import { loadConfig, type AppConfig } from "./config.js";
+import { createChatAgent, type ChatAgent } from "../features/runtime.js";
+import { loadConfig, type AppConfig } from "../model/config.js";
 import { color, Renderer } from "./render.js";
-import { tools } from "./tools.js";
+import { tools } from "../features/tools.js";
 
 const HELP = `
 Commands

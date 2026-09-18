@@ -4,7 +4,7 @@
 // request with real Node capabilities. This is the same code path the bundled
 // test page uses, so a green run means the wire protocol in the page is correct.
 //
-//   node dist/acp/main.js --port 8890 --permissions ask --cors "*" &
+//   node dist/protocols/acp/main.js --port 8890 --permissions ask --cors "*" &
 //   node scripts/acp-http-probe.mjs --url http://127.0.0.1:8890/acp "list files here"
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Minimal ACP *client* used to exercise `src/acp` (and as a reference for
+// Minimal ACP *client* used to exercise `src/protocols/acp` (and as a reference for
 // embedding this agent in another host).
 //
 //   node scripts/acp-client.mjs "list the files here"          # spawns the agent over stdio
@@ -29,7 +29,7 @@ function parseArgs(argv) {
 		http: undefined,
 		token: undefined,
 		command: "node",
-		agentArgs: ["dist/acp/main.js"],
+		agentArgs: ["dist/protocols/acp/main.js"],
 		decision: "allow_once",
 		cancelAfter: undefined,
 	};

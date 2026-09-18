@@ -1,6 +1,6 @@
-import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { AppConfig } from "./config.js";
-import { createStreamFn } from "./stream.js";
+import type { Agent, AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AppConfig } from "../model/config.js";
+import { createKernelAgent } from "../kernel/agent.js";
 import { tools } from "./tools.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -37,27 +37,7 @@ export interface AgentStats {
 }
 
 export function createChatAgent(config: AppConfig, agentTools: AgentTool<any>[] = tools): ChatAgent {
-	const agent = new Agent({
-		streamFn: createStreamFn(() => config.apiKey, config.authStyle),
-		// Never replay a broken/aborted turn (no content) to the provider on the next request.
-		transformContext: async (messages) =>
-			messages.filter(
-				(message) =>
-					!(
-						message.role === "assistant" &&
-						message.content.length === 0 &&
-						(message.stopReason === "error" || message.stopReason === "aborted")
-					),
-			),
-		getApiKey: () => config.apiKey,
-		initialState: {
-			systemPrompt: config.systemPrompt,
-			model: config.model,
-			thinkingLevel: config.model.reasoning ? "low" : "off",
-			tools: agentTools,
-			messages: [],
-		},
-	});
+	const agent = createKernelAgent({ config, tools: agentTools });
 
 	/** Failed turns that ran no tools can be rolled back and retried safely. */
 	async function attempt(input: string, retries: number, options: SendOptions): Promise<SendResult> {

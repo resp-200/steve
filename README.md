@@ -12,34 +12,48 @@
 
 ## 分层
 
+自下而上五层，**只允许上层依赖下层，同层之间不互相依赖**：
+
+| 层 | 目录 | 职责 |
+| --- | --- | --- |
+| L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
+| L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
+| L3 功能 | `src/features/` | 会话策略：本地工具、失败重试与回滚、统计 |
+| L3′ 拓展 | `src/extensions/`（规划中） | 插件宿主：发现 / 加载 / 隔离扩展；与功能层平级，只对功能层的接缝说话 |
+| L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
+| L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
+
 ```
-src/index.ts    CLI：REPL / 单次提问 / slash 命令 / Ctrl+C 中断
-src/render.ts   AgentEvent -> 终端渲染（文本、thinking、工具调用、错误、用量）
-src/agent.ts    Agent 装配：streamFn、transformContext、失败重试与回滚、统计
-src/stream.ts   StreamFn：按 model.api 路由到 pi-ai 的流式适配器，错误编码进流
-src/config.ts   .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
-src/tools.ts    3 个 AgentTool 示例
-src/acp/*       ACP 服务端：协议 <-> pi 会话/工具/权限的桥接（见下文）
-web/*           ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
-test-acp-jsonrpc.html  浏览器 ACP 测试页（由 --ui 提供）
-scripts/*       离线 mock 网关 + ACP 测试客户端 / probe / headless 浏览器测试
+src/types.ts             跨层共享类型（Logger 等，零依赖）
+src/entries/cli.ts       L1 CLI：REPL / 单次提问 / slash 命令 / Ctrl+C 中断
+src/entries/render.ts    L1 AgentEvent -> 终端渲染（文本、thinking、工具调用、错误、用量）
+src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content）
+src/features/runtime.ts  L3 会话运行时：失败重试与回滚、reset、统计
+src/features/tools.ts    L3 3 个 AgentTool 示例
+src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
+src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
+src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
+web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
+test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
+scripts/*                离线 mock 网关 + ACP 测试客户端 / probe / headless 浏览器测试
 ```
+
+CLI 与 ACP 走的是同一个内核装配点，所以「接 pi 的位置」只有一处；协议层不碰 pi 的类型，只把功能层的事件翻译成 ACP 的 `session/update`。
 
 数据流：
 
 ```
-用户输入 ─▶ Agent.prompt()
-              │  组装 Context(systemPrompt, messages, tools)
-              ▼
-        streamFn(model, context, options)      ← src/stream.ts
-              ▼
-   pi-ai 适配器 (anthropic-messages / openai-completions / openai-responses)
-              ▼
-        AssistantMessageEventStream ──事件──▶ AgentEvent ─▶ Renderer
-              ▼
-        toolCall? ─▶ 执行工具 ─▶ 结果回灌上下文 ─▶ 下一轮（循环直到 stop）
+   用户输入 ─▶ 入口层 ─▶ 功能层（runtime / ACP session） ─▶ createKernelAgent()   ← src/kernel/agent.ts
+                                                              │ 组装 Context(systemPrompt, messages, tools)
+                                                              ▼
+                                                streamFn(model, context, options)  ← src/model/stream.ts
+                                                              ▼
+                                    pi-ai 适配器 (anthropic-messages / openai-completions / openai-responses)
+                                                              ▼
+                              AssistantMessageEventStream ──事件──▶ AgentEvent ─▶ Renderer / session/update
+                                                              ▼
+                                toolCall? ─▶ hooks.beforeToolCall ─▶ 执行工具 ─▶ 结果回灌 ─▶ 下一轮（直到 stop）
 ```
-
 ## 快速开始
 
 ```bash
@@ -87,7 +101,7 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 ### 1. 用 pi 的 `Model` 描述任意网关
 
-`src/config.ts` 依据 `LLM_API` 生成 `Model<"anthropic-messages" | "openai-completions" | "openai-responses">`。`api` 决定用哪个适配器，`baseUrl`/`compat`/`maxTokens` 决定请求长什么样：
+`src/model/config.ts` 依据 `LLM_API` 生成 `Model<"anthropic-messages" | "openai-completions" | "openai-responses">`。`api` 决定用哪个适配器，`baseUrl`/`compat`/`maxTokens` 决定请求长什么样：
 
 ```ts
 // OpenAI 兼容网关常拒绝 OpenAI 专有字段
@@ -98,7 +112,7 @@ compat: { supportsEagerToolInputStreaming: false, supportsCacheControlOnTools: f
 
 ### 2. 鉴权：Anthropic SDK 的 `x-api-key` vs 网关的 `Authorization: Bearer`
 
-Anthropic 官方 SDK 默认发 `x-api-key`，但很多 Anthropic 兼容网关只认 `Authorization: Bearer`（本仓库用的网关就是这种，单独发 `x-api-key` 会 401）。`src/stream.ts` 因此在需要时额外补一个 Bearer 头（SDK 仍会照发 `x-api-key`，两者并存已被验证可用）：
+Anthropic 官方 SDK 默认发 `x-api-key`，但很多 Anthropic 兼容网关只认 `Authorization: Bearer`（本仓库用的网关就是这种，单独发 `x-api-key` 会 401）。`src/model/stream.ts` 因此在需要时额外补一个 Bearer 头（SDK 仍会照发 `x-api-key`，两者并存已被验证可用）：
 
 ```ts
 // auto: 除 api.anthropic.com 之外的 anthropic-messages 端点都补 Bearer
@@ -109,7 +123,7 @@ Anthropic 官方 SDK 默认发 `x-api-key`，但很多 Anthropic 兼容网关只
 
 ### 3. `streamFn` 是 pi-ai 与 pi-agent-core 的接缝
 
-`Agent` 只认 `StreamFn = (model, context, options) => AssistantMessageEventStream`，而 pi-ai 的 `api/*` 模块导出的 `streamSimple` 正好符合这个形状，所以按 `model.api` 分支即可（`hasApi()` 负责类型收窄）。注意契约要求 **streamFn 不能抛异常**，失败必须以 `{ type: "error", error }` 事件收尾，因此 `src/stream.ts` 里做了 `try/catch` 兜底。
+`Agent` 只认 `StreamFn = (model, context, options) => AssistantMessageEventStream`，而 pi-ai 的 `api/*` 模块导出的 `streamSimple` 正好符合这个形状，所以按 `model.api` 分支即可（`hasApi()` 负责类型收窄）。注意契约要求 **streamFn 不能抛异常**，失败必须以 `{ type: "error", error }` 事件收尾，因此 `src/model/stream.ts` 里做了 `try/catch` 兜底。
 
 ### 4. 工具就是一个普通对象
 
@@ -122,7 +136,7 @@ export const calculateTool: AgentTool<typeof CalculateParams> = {
 };
 ```
 
-`execute` 抛错会被 pi 转成 `isError` 的工具结果回灌给模型，模型可自行修正参数重试（`src/tools.ts` 的计算器就是这样抛错的）。
+`execute` 抛错会被 pi 转成 `isError` 的工具结果回灌给模型，模型可自行修正参数重试（`src/features/tools.ts` 的计算器就是这样抛错的）。
 
 ### 5. 事件订阅做 UI
 
@@ -132,23 +146,23 @@ agent.subscribe((event) => {
 });
 ```
 
-`src/render.ts` 处理了 `text_delta` / `thinking_delta` / `tool_execution_start` / `tool_execution_end` / `message_end`(error) 这几类事件。不同协议映射到同一套事件：Anthropic 的 `thinking`/`tool_use` 块、OpenAI 的 `reasoning_content`/`tool_calls` 都由 pi-ai 归一化。
+`src/entries/render.ts` 处理了 `text_delta` / `thinking_delta` / `tool_execution_start` / `tool_execution_end` / `message_end`(error) 这几类事件。不同协议映射到同一套事件：Anthropic 的 `thinking`/`tool_use` 块、OpenAI 的 `reasoning_content`/`tool_calls` 都由 pi-ai 归一化。
 
 ### 6. 失败重试与上下文卫生
 
-`src/agent.ts` 在 `prompt()` 之后检查最后一条 assistant 消息：如果 `stopReason` 是 `error`/`aborted` 且这一轮没跑过工具，就把这轮消息整体回滚再重试（网关 429/502 很常见）。另外注册了 `transformContext` 过滤掉「空内容且失败」的 assistant 消息，避免把坏轮次再发给模型。
+`src/features/runtime.ts` 在 `prompt()` 之后检查最后一条 assistant 消息：如果 `stopReason` 是 `error`/`aborted` 且这一轮没跑过工具，就把这轮消息整体回滚再重试（网关 429/502 很常见）。「空内容且失败」的 `transformContext` 过滤放在 `src/kernel/agent.ts`，CLI 与 ACP 共用同一份，不会被漏改。
 
 ## ACP：把 Agent 暴露给编辑器客户端
 
-`src/acp/` 是一个基于 [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk) 的 ACP **服务端**（agent 侧）：编辑器（Zed 等）作为 client 启动/连接它，就能拿 pi 当后端对话。
+`src/protocols/acp/` 是一个基于 [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk) 的 ACP **服务端**（agent 侧）：编辑器（Zed 等）作为 client 启动/连接它，就能拿 pi 当后端对话。
 
 ```
-src/acp/main.ts      CLI：--transport stdio|http、--port、--token、--permissions、--ui、--cors
-src/acp/transport.ts 传输层：stdio（ndJsonStream）/ Streamable HTTP + WebSocket（experimental/server + node 适配器）/ 静态托管测试页
-src/acp/agent.ts     每个连接一个 AgentApp：initialize / session/new / session/prompt / session/cancel
-src/acp/session.ts   一个 ACP session = 一个 pi Agent；事件流转成 session/update，权限走 beforeToolCall
-src/acp/tools.ts     由**客户端**执行的工具：read_file / write_file / run_command
-src/acp/content.ts   ACP ContentBlock <-> pi 文本/图片
+src/protocols/acp/main.ts      CLI：--transport stdio|http、--port、--token、--permissions、--ui、--cors
+src/protocols/acp/transport.ts 传输层：stdio（ndJsonStream）/ Streamable HTTP + WebSocket（experimental/server + node 适配器）/ 静态托管测试页
+src/protocols/acp/agent.ts     每个连接一个 AgentApp：initialize / session/new / session/prompt / session/cancel
+src/protocols/acp/session.ts   一个 ACP session = 一个 Agent（经 createKernelAgent）；事件流转成 session/update，权限走 hooks.beforeToolCall
+src/protocols/acp/tools.ts     由**客户端**执行的工具：read_file / write_file / run_command
+src/protocols/acp/content.ts   ACP ContentBlock <-> pi 文本/图片
 web/acp-http-client.js   ACP over Streamable HTTP client（浏览器与 Node 共用，测试页和 probe 都跑它）
 test-acp-jsonrpc.html    浏览器测试页：连接、对话、原始 JSON-RPC 日志、client 能力模拟
 ```
@@ -171,7 +185,7 @@ Zed 的 `settings.json`：
   "agent_servers": {
     "steve": {
       "command": "node",
-      "args": ["/绝对路径/steve/dist/acp/main.js"],
+      "args": ["/绝对路径/steve/dist/protocols/acp/main.js"],
       "env": { "LLM_API_KEY": "..." }   // 不设也能读同目录的 .env
     }
   }
@@ -235,7 +249,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 
 | ACP | pi |
 | --- | --- |
-| `session/new` | 新建一个 `Agent`（systemPrompt 里带上 cwd / workspace roots，工具 = 本地工具 + 客户端能力允许的工具） |
+| `session/new` | 新建一个 `Agent`（经 `createKernelAgent`；systemPrompt 里带上 cwd / workspace roots，工具 = 本地工具 + 客户端能力允许的工具） |
 | `session/prompt` | `agent.prompt(text, images)`，返回 `stopReason` + 累计 usage |
 | `agent_message_chunk` / `agent_thought_chunk` | `message_update` 的 `text_delta` / `thinking_delta` |
 | `tool_call` / `tool_call_update` | `tool_execution_start` / `tool_execution_end`（含 kind、locations、终端内嵌内容） |
@@ -254,4 +268,5 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 ## 换个模型 / 加个工具
 
 - 换模型：改 `.env` 即可。换协议时只需要 `LLM_API`（或让 baseUrl 自动判定），`Agent` 侧代码一行都不用动。
-- 加工具：在 `src/tools.ts` 写好 `AgentTool`，加进 `tools` 数组，并在 `execute` 里返回 `content`（回灌给模型）+ `details`（给 UI/日志）。
+- 加工具：在 `src/features/tools.ts` 写好 `AgentTool`，加进 `tools` 数组，并在 `execute` 里返回 `content`（回灌给模型）+ `details`（给 UI/日志）。只给 ACP 用的工具放 `src/protocols/acp/tools.ts`（比如依赖客户端能力的那些）。
+- 改内核装配（streamFn / 上下文净化 / thinking 等级 / hooks）：只动 `src/kernel/agent.ts` 一处，CLI 与 ACP 同时生效。

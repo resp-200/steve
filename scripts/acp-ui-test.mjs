@@ -6,7 +6,7 @@
 //
 //   npm run mock &
 //   LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic \
-//     node dist/acp/main.js --port 8891 &
+//     node dist/protocols/acp/main.js --port 8891 &
 //   node scripts/acp-ui-test.mjs --url http://127.0.0.1:8891/
 //
 // The full suite asserts against the offline mock gateway (keyword-driven tool

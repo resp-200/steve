@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { AcpServer } from "@agentclientprotocol/sdk/experimental/server";
 import { createNodeHttpHandler, createNodeWebSocketUpgradeHandler, type NodeWebSocketUpgradeServer } from "@agentclientprotocol/sdk/experimental/node";
 import { ndJsonStream, type AgentApp } from "@agentclientprotocol/sdk";
-import type { Logger } from "./session.js";
+import type { Logger } from "../../types.js";
 
 export type AcpTransport =
 	| { kind: "stdio" }
@@ -28,7 +28,7 @@ export interface ServeAcpOptions {
 	logger: Logger;
 }
 
-const PROJECT_ROOT = new URL("../../", import.meta.url);
+const PROJECT_ROOT = new URL("../../../", import.meta.url);
 
 /** Files served by `--ui`, relative to the project root. */
 const UI_FILES = new Map<string, { file: string; type: string; inject?: boolean }>([

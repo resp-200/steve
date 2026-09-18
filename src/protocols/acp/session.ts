@@ -1,4 +1,4 @@
-import { Agent, type AgentEvent, type AgentTool, type BeforeToolCallResult } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentEvent, AgentTool, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	RequestError,
@@ -12,13 +12,13 @@ import {
 	type ToolKind,
 	type Usage,
 } from "@agentclientprotocol/sdk";
-import type { AppConfig } from "../config.js";
-import { createStreamFn } from "../stream.js";
-import { tools as localTools } from "../tools.js";
+import type { AppConfig } from "../../model/config.js";
+import { createKernelAgent } from "../../kernel/agent.js";
+import { tools as localTools } from "../../features/tools.js";
 import { blocksToImages, blocksToText, firstText, locationsFromArgs, truncate } from "./content.js";
 import { createAcpTools } from "./tools.js";
+import type { Logger } from "../../types.js";
 
-export type Logger = (message: string) => void;
 
 export type PermissionMode = "ask" | "allow";
 
@@ -135,26 +135,12 @@ export class AcpSession {
 		];
 		this.toolNames = tools.map((tool) => tool.name);
 
-		this.agent = new Agent({
-			streamFn: createStreamFn(() => options.config.apiKey, options.config.authStyle),
-			getApiKey: () => options.config.apiKey,
-			// Failed turns are never replayed to the provider.
-			transformContext: async (messages) =>
-				messages.filter(
-					(message) =>
-						!(
-							message.role === "assistant" &&
-							message.content.length === 0 &&
-							(message.stopReason === "error" || message.stopReason === "aborted")
-						),
-				),
-			beforeToolCall: async ({ toolCall, args }) => this.authorize(toolCall.name, toolCall.id, args),
-			initialState: {
-				systemPrompt: this.systemPrompt(),
-				model: options.config.model,
-				thinkingLevel: options.config.model.reasoning ? "low" : "off",
-				tools,
-				messages: [],
+		this.agent = createKernelAgent({
+			config: options.config,
+			tools,
+			systemPrompt: this.systemPrompt(),
+			hooks: {
+				beforeToolCall: async (context) => this.authorize(context.toolCall.name, context.toolCall.id, context.args),
 			},
 		});
 
