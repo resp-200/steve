@@ -1,4 +1,4 @@
-import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import type { AgentRuntimeEvent } from "../features/events.js";
 
 const useColor = process.stdout.isTTY === true && !process.env.NO_COLOR;
 
@@ -14,70 +14,57 @@ export const color = {
 	magenta: (text: string) => paint("35", text),
 };
 
-function summarizeToolResult(event: Extract<AgentEvent, { type: "tool_execution_end" }>): string {
-	const result = event.result as { content?: Array<{ type: string; text?: string }> } | undefined;
-	const text = result?.content?.find((part) => part.type === "text")?.text;
-	if (!text) return event.isError ? "failed" : "done";
-	const oneLine = text.replace(/\s+/g, " ").trim();
-	return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
+function oneLine(text: string, max = 120): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat;
 }
 
 /**
- * Renders agent stream events to a terminal: streamed text, thinking,
- * tool calls and per-turn token usage.
+ * Renders normalised runtime events to a terminal: streamed text, thinking,
+ * tool calls and per-turn failures.
  */
 export class Renderer {
 	private textStarted = false;
 	private thinkingStarted = false;
 
-	handle(event: AgentEvent): void {
+	handle(event: AgentRuntimeEvent): void {
 		switch (event.type) {
 			case "turn_start":
 				this.textStarted = false;
 				this.thinkingStarted = false;
 				break;
 
-			case "message_update": {
-				const inner = event.assistantMessageEvent;
-				if (inner.type === "text_delta") {
-					this.thinkingStarted = false;
-					if (!this.textStarted) {
-						this.textStarted = true;
-						process.stdout.write(`\n${color.cyan("assistant")} ${color.dim("›")} `);
-					}
-					process.stdout.write(inner.delta);
-				} else if (inner.type === "thinking_delta") {
-					if (!this.thinkingStarted) {
-						this.thinkingStarted = true;
-						process.stdout.write(`\n${color.dim("thinking › ")}`);
-					}
-					process.stdout.write(color.dim(inner.delta));
+			case "text_delta":
+				this.thinkingStarted = false;
+				if (!this.textStarted) {
+					this.textStarted = true;
+					process.stdout.write(`\n${color.cyan("assistant")} ${color.dim("›")} `);
 				}
-				break;
-			}
-
-			case "tool_execution_start":
-				process.stdout.write(
-					`\n${color.yellow("tool")} ${color.dim("›")} ${color.bold(event.toolName)} ${color.dim(JSON.stringify(event.args))}`,
-				);
+				process.stdout.write(event.text);
 				break;
 
-			case "tool_execution_end": {
-				const result = summarizeToolResult(event);
+			case "thinking_delta":
+				if (!this.thinkingStarted) {
+					this.thinkingStarted = true;
+					process.stdout.write(`\n${color.dim("thinking › ")}`);
+				}
+				process.stdout.write(color.dim(event.text));
+				break;
+
+			case "tool_start":
+				process.stdout.write(`\n${color.yellow("tool")} ${color.dim("›")} ${color.bold(event.name)} ${color.dim(JSON.stringify(event.args))}`);
+				break;
+
+			case "tool_end": {
 				const label = event.isError ? color.red("error") : color.green("result");
-				process.stdout.write(`\n  ${label} ${color.dim(result)}\n`);
+				process.stdout.write(`\n  ${label} ${color.dim(oneLine(event.text))}\n`);
 				break;
 			}
 
-			case "message_end": {
-				const message = event.message;
-				if (message.role === "assistant" && message.errorMessage) {
-					process.stdout.write(`\n${color.red("error")} ${color.dim(message.errorMessage)}\n`);
+			case "turn_end":
+				if (event.errorMessage) {
+					process.stdout.write(`\n${color.red("error")} ${color.dim(event.errorMessage)}\n`);
 				}
-				break;
-			}
-
-			case "agent_end":
 				process.stdout.write("\n");
 				break;
 

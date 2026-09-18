@@ -1,5 +1,4 @@
-import { Type, type Static } from "@earendil-works/pi-ai";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type, type Static, type AgentTool } from "../../features/contract.js";
 import type { AgentContext, ClientCapabilities } from "@agentclientprotocol/sdk";
 
 /**

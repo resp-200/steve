@@ -18,7 +18,7 @@
 | --- | --- | --- |
 | L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
 | L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
-| L3 功能 | `src/features/` | 会话策略：本地工具、失败重试与回滚、统计 |
+| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地工具、统计 |
 | L3′ 拓展 | `src/extensions/`（规划中） | 插件宿主：发现 / 加载 / 隔离扩展；与功能层平级，只对功能层的接缝说话 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
 | L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
@@ -26,10 +26,13 @@
 ```
 src/types.ts             跨层共享类型（Logger 等，零依赖）
 src/entries/cli.ts       L1 CLI：REPL / 单次提问 / slash 命令 / Ctrl+C 中断
-src/entries/render.ts    L1 AgentEvent -> 终端渲染（文本、thinking、工具调用、错误、用量）
-src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content）
-src/features/runtime.ts  L3 会话运行时：失败重试与回滚、reset、统计
-src/features/tools.ts    L3 3 个 AgentTool 示例
+src/entries/render.ts    L1 归一化事件 -> 终端渲染（文本、thinking、工具调用、失败）
+src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content / tool-call）
+src/features/runtime.ts  L3 会话运行时：事件归一化、失败重试与回滚、reset、统计
+src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
+src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
+src/features/contract.ts  L3 工具契约：协议层定义工具的唯一入口（TypeBox/AgentTool）
+src/features/tools.ts     L3 3 个 AgentTool 示例
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
@@ -76,7 +79,7 @@ LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic 
 LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/v1 npm run dev
 # OpenAI responses
 LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/v1 npm run dev
-# 说 "what is 21 * 2?" 触发 calculate 工具调用；说 "boom" 触发工具报错路径
+# 说 "what is 21 * 2?" 触发 calculate 工具调用；说 "boom" 触发工具报错路径；说 "flaky" 触发两次 429 的重试路径
 ```
 
 ## 环境变量
@@ -140,17 +143,18 @@ export const calculateTool: AgentTool<typeof CalculateParams> = {
 
 ### 5. 事件订阅做 UI
 
-```ts
-agent.subscribe((event) => {
-  if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") process.stdout.write(event.assistantMessageEvent.delta);
+runtime.subscribe((event) => {
+  if (event.type === "text_delta") process.stdout.write(event.text);
 });
 ```
 
-`src/entries/render.ts` 处理了 `text_delta` / `thinking_delta` / `tool_execution_start` / `tool_execution_end` / `message_end`(error) 这几类事件。不同协议映射到同一套事件：Anthropic 的 `thinking`/`tool_use` 块、OpenAI 的 `reasoning_content`/`tool_calls` 都由 pi-ai 归一化。
+`src/entries/render.ts` 处理了 `text_delta` / `thinking_delta` / `tool_start` / `tool_end` / `turn_end` —— 这些是**功能层的归一化事件**（`src/features/events.ts`）。pi 的 `message_update` / `tool_execution_*` 由 `src/features/runtime.ts` 翻译成这套词表，所以协议层与入口层不需要认识 pi 的事件名；而不同线上协议之间的差异（Anthropic 的 `thinking`/`tool_use` 块、OpenAI 的 `reasoning_content`/`tool_calls`）早已被 pi-ai 归一化。
 
 ### 6. 失败重试与上下文卫生
 
-`src/features/runtime.ts` 在 `prompt()` 之后检查最后一条 assistant 消息：如果 `stopReason` 是 `error`/`aborted` 且这一轮没跑过工具，就把这轮消息整体回滚再重试（网关 429/502 很常见）。「空内容且失败」的 `transformContext` 过滤放在 `src/kernel/agent.ts`，CLI 与 ACP 共用同一份，不会被漏改。
+`src/features/runtime.ts` 在 `prompt()` 之后检查最后一条 assistant 消息：如果 `stopReason` 是 `error` 且这一轮没跑过工具，就把这轮消息整体回滚再重试（网关 429/502 很常见）；**取消（aborted）不重试**，那是用户的意图。「空内容且失败」的 `transformContext` 过滤放在 `src/kernel/agent.ts`。
+
+这套重试是协议无关的，因此 CLI 与编辑器行为一致：`npm run acp:ui-test` 的第 16 项断言就是让 mock 先注入两次 429，再验证客户端只看到成功那一轮。
 
 ## ACP：把 Agent 暴露给编辑器客户端
 
@@ -162,7 +166,8 @@ src/protocols/acp/transport.ts 传输层：stdio（ndJsonStream）/ Streamable H
 src/protocols/acp/agent.ts     每个连接一个 AgentApp：initialize / session/new / session/prompt / session/cancel
 src/protocols/acp/session.ts   一个 ACP session = 一个 Agent（经 createKernelAgent）；事件流转成 session/update，权限走 hooks.beforeToolCall
 src/protocols/acp/tools.ts     由**客户端**执行的工具：read_file / write_file / run_command
-src/protocols/acp/content.ts   ACP ContentBlock <-> pi 文本/图片
+src/protocols/acp/content.ts   ACP ContentBlock <-> 与 provider 无关的文本/图片
+src/protocols/acp/tool-call.ts 工具卡片呈现：kind / 标题 / 内容块（含终端内嵌）
 web/acp-http-client.js   ACP over Streamable HTTP client（浏览器与 Node 共用，测试页和 probe 都跑它）
 test-acp-jsonrpc.html    浏览器测试页：连接、对话、原始 JSON-RPC 日志、client 能力模拟
 ```
@@ -235,12 +240,12 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | --- | --- |
 | `npm run acp:client` | 完整 ACP client，走 **stdio** 或 `--http` / `--ws`，可在真编辑器之外验证服务端 |
 | `npm run acp:probe` | Node 版 HTTP client（import 浏览器同一份 `web/acp-http-client.js`），带真实的 fs/terminal 回调 |
-| `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），15 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消等 |
+| `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），16 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
-npm run acp:ui-test  -- --url http://127.0.0.1:8890/                        # 离线 mock：15 项断言
+npm run acp:ui-test  -- --url http://127.0.0.1:8890/                        # 离线 mock：16 项断言
 npm run acp:ui-test  -- --url file://$PWD/test-acp-jsonrpc.html             # 直接开本地文件（需 --cors "*"）
 npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍你自己"   # 真实网关：只验证一轮往返
 ```
@@ -253,7 +258,8 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | `session/prompt` | `agent.prompt(text, images)`，返回 `stopReason` + 累计 usage |
 | `agent_message_chunk` / `agent_thought_chunk` | `message_update` 的 `text_delta` / `thinking_delta` |
 | `tool_call` / `tool_call_update` | `tool_execution_start` / `tool_execution_end`（含 kind、locations、终端内嵌内容） |
-| `session/request_permission` | `beforeToolCall` 钩子：拒绝时返回 `{ block: true }`，变成 `isError` 的工具结果回灌给模型 |
+| `session/request_permission` | 功能层的权限闸门（内部就是 pi 的 `beforeToolCall`）：拒绝时返回 `{ block: true }`，变成 `isError` 的工具结果回灌给模型 |
+| 失败重试 | 功能层 `prompt()` 里的回滚重试：只有 429/5xx 这类**未跑工具**的失败才重试，客户端只看到最后成功那一轮 |
 | `session/cancel` | `agent.abort()`；本轮 `stopReason=cancelled` |
 | `usage_update` | 每轮 assistant 的 `usage`（used = 本轮上下文 tokens，size = `contextWindow`） |
 | `fs/read_text_file` `fs/write_text_file` `terminal/*` | 反向调用：pi 的工具通过 ACP 请求客户端的文件系统/终端 |
@@ -261,7 +267,8 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 几个刻意设计：
 
 - **客户端能力决定工具集**：`initialize` 里客户端没声明 `fs` / `terminal` 能力，对应的 `read_file` / `run_command` 就不会注册，模型看不到也用不了。
-- **权限交给编辑器**：`write_file` / `run_command` 默认走 `session/request_permission`（`--permissions allow` 可关闭），UI 上是标准的 ACP 授权弹窗。
+- **权限交给编辑器**：`write_file` / `run_command` 默认走 `session/request_permission`（`--permissions allow` 可关闭），UI 上是标准的 ACP 授权弹窗。「总是允许」只记在当前 session 的闸门里，不会串到别的会话。
+- **重试与协议无关**：429/5xx 的回滚重试在功能层，所以编辑器里也能吃到（客户端看不到失败轮）；取消不会被重试。
 - **每条连接独立**：HTTP/WS 传输下每个连接有自己的 `AgentApp` 和 session 表，session 之间不串上下文。
 - **stdout 只走协议**：stdio 模式下所有日志都写到 stderr，`--quiet` 可只留错误。
 

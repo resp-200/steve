@@ -300,6 +300,16 @@ async function main() {
 				`window.acpTest.state.client.request("session/list", {}).then(() => null, (error) => String(error.message))`,
 			);
 			check("未实现的方法返回 JSON-RPC 错误", typeof listError === "string" && listError.length > 0, String(listError).slice(0, 70));
+
+			// 10. 传输层 429 会被自动重试：mock 对含 “flaky” 的一轮先失败两次
+			const chatBefore = await cdp.evaluate(sessionId, "window.acpTest.chatText()");
+			const flaky = await sendAndApprove("flaky 请回答 ok");
+			const flakyTurn = (await cdp.evaluate(sessionId, "window.acpTest.chatText()")).slice(chatBefore.length);
+			check(
+				"provider 429 自动重试后成功（客户端看不到失败轮）",
+				flaky.result === "ok" && flakyTurn.includes("flaky-recovered after 2 injected 429s") && !flakyTurn.includes("⚠️"),
+				flakyTurn.slice(-110).replace(/\n/g, " "),
+			);
 		}
 
 		await cdp.evaluate(sessionId, "window.acpTest.disconnect()");

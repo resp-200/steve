@@ -10,11 +10,19 @@
 // Behaviour: a user message containing "21" triggers a `calculate` tool call,
 // "boom" triggers a tool call with an invalid expression (tool error path), and
 // a tool result produces the final answer; anything else streams a fixed reply.
+// A message containing "flaky" gets two HTTP 429s before succeeding (retry path).
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8899);
 const REPLY = "你好！我是一个基于 pi-agent-core 与 pi-ai 的最小对话 Agent。";
 const FINAL = "21 * 2 = 42 ✅ (computed with the calculate tool)";
+
+// Failure injection so retry behaviour is testable offline: a turn that mentions
+// "flaky" is answered with HTTP 429 until it happened FLAKY_FAILURES times, then the
+// successful reply carries FLAKY_MARKER plus how many failures were injected.
+const FLAKY_FAILURES = 2;
+const FLAKY_MARKER = "flaky-recovered";
+let flakyFailures = 0;
 
 const usage = () => ({ prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 });
 
@@ -190,9 +198,29 @@ createServer((req, res) => {
 					(Array.isArray(lastMessage.content) && lastMessage.content.some((block) => block.type === "tool_result"))),
 		);
 		const asked = JSON.stringify(list.at(-1)?.content ?? list.at(-1)?.content?.[0]?.text ?? payload.input ?? "");
+
+		if (!asked.includes("flaky")) {
+			flakyFailures = 0; // a different turn resets the scenario
+		} else if (flakyFailures < FLAKY_FAILURES) {
+			flakyFailures += 1;
+			console.log(`[mock] injected 429 ${flakyFailures}/${FLAKY_FAILURES}`);
+			res.writeHead(429, { "content-type": "application/json" });
+			res.end(
+				JSON.stringify(
+					pathname.endsWith("/messages")
+						? { type: "error", error: { type: "rate_limit_error", message: "gateway_concurrency_limit" } }
+						: { error: { type: "rate_limit_error", message: "gateway_concurrency_limit", code: "rate_limit_exceeded" } },
+				),
+			);
+			return;
+		}
+
 		const planned = sawToolResult ? undefined : planToolCall(asked);
 		const toolResult = sawToolResult ? toolResultText(list) : undefined;
 		const answer = toolResult ? `工具返回：${toolResult.slice(0, 400)}` : FINAL;
+		const reply = asked.includes("flaky")
+			? `${REPLY} [${FLAKY_MARKER} after ${flakyFailures} injected 429s]`
+			: REPLY;
 
 		let events;
 		if (pathname.endsWith("/messages")) {
@@ -200,15 +228,15 @@ createServer((req, res) => {
 				? anthropicText(answer)
 				: planned
 					? anthropicToolCall(planned.name, planned.input)
-					: anthropicText(REPLY);
+					: anthropicText(reply);
 		} else if (responsesApi) {
-			events = responseEvents(sawToolResult ? answer : REPLY);
+			events = responseEvents(sawToolResult ? answer : reply);
 		} else {
 			events = sawToolResult
 				? completionEvents(answer)
 				: planned
 					? completionToolCallEvents(planned.name, planned.input)
-					: completionEvents(REPLY);
+					: completionEvents(reply);
 		}
 
 		console.log(`[mock] ${req.url} model=${payload.model} messages=${list.length} tools=${payload.tools?.length ?? 0} toolResult=${sawToolResult}`);

@@ -1,5 +1,5 @@
 import type { ContentBlock, ToolCallLocation } from "@agentclientprotocol/sdk";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { PromptImage } from "../../features/events.js";
 
 /**
  * Flattens ACP prompt content blocks into the single text prompt that pi takes.
@@ -41,11 +41,11 @@ export function blocksToText(blocks: ContentBlock[]): string {
 	return parts.join("\n\n").trim();
 }
 
-/** pi-ai image content and ACP image content share the same shape. */
-export function blocksToImages(blocks: ContentBlock[]): ImageContent[] {
+/** ACP image blocks, in the provider-neutral shape the runtime takes. */
+export function blocksToImages(blocks: ContentBlock[]): PromptImage[] {
 	return blocks
 		.filter((block): block is Extract<ContentBlock, { type: "image" }> => block.type === "image")
-		.map((block) => ({ type: "image", data: block.data, mimeType: block.mimeType }));
+		.map((block) => ({ mimeType: block.mimeType, data: block.data }));
 }
 
 export function textBlock(text: string): ContentBlock {
@@ -59,17 +59,6 @@ export function locationsFromArgs(args: unknown): ToolCallLocation[] | undefined
 	return typeof path === "string" && path.length > 0 ? [{ path }] : undefined;
 }
 
-export function firstText(result: unknown): string | undefined {
-	const content = (result as { content?: unknown } | undefined)?.content;
-	if (!Array.isArray(content)) return undefined;
-	for (const block of content) {
-		if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
-			const text = (block as { text?: unknown }).text;
-			if (typeof text === "string") return text;
-		}
-	}
-	return undefined;
-}
 
 export function truncate(text: string, max = 4_000): string {
 	return text.length > max ? `${text.slice(0, max)}… (+${text.length - max} chars)` : text;

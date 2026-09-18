@@ -1,31 +1,55 @@
-import type { Agent, AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+/**
+ * Session runtime: one pi agent plus the behaviour every front end shares.
+ *
+ * Event normalisation, failure retries with transcript rollback, cancellation and
+ * counters live here, so protocols and entries never touch pi directly — they
+ * consume {@link AgentRuntimeEvent} and {@link TurnResult}.
+ */
+import type { AgentMessage, AgentTool, BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
-import { tools } from "./tools.js";
+import type { AgentRuntimeEvent, PromptImage, TurnStopReason, TurnUsage } from "./events.js";
+import { tools as defaultTools } from "./tools.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-export interface SendOptions {
-	/** Extra attempts after a request fails before any tool ran. Default: 2. */
+/** The assistant half of pi's message union, without importing pi-ai for a name. */
+type AssistantTurn = Extract<AgentMessage, { role: "assistant" }>;
+
+const EMPTY_USAGE: TurnUsage = { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+
+/** pi stop reasons -> our vocabulary (the mapping to a client's is a protocol concern). */
+const STOP_REASONS: Record<string, TurnStopReason> = {
+	stop: "stop",
+	toolUse: "tool_use",
+	pending: "stop",
+	deferred: "stop",
+	length: "length",
+	aborted: "cancelled",
+	error: "error",
+};
+
+export interface PromptOptions {
+	images?: PromptImage[];
+	signal?: AbortSignal;
+	/** Extra attempts after a turn fails without running any tool. Default: 2. */
 	retries?: number;
 	/** Delay before attempt N (1-based retry index). */
 	retryDelayMs?: (attempt: number) => number;
 	onRetry?: (reason: string, attempt: number) => void;
 }
 
-export interface SendResult {
-	/** True when the last assistant message ended in an error/abort. */
+export interface TurnResult {
+	/** True when the turn was still failing after the retries were used up. */
 	failed: boolean;
 	errorMessage?: string;
-	/** Number of retries that were used. */
+	/** Retries that were needed before the turn settled. */
 	retries: number;
-}
-
-export interface ChatAgent {
-	agent: Agent;
-	send(input: string, options?: SendOptions): Promise<SendResult>;
-	reset(): void;
-	stats(): AgentStats;
+	stopReason: TurnStopReason;
+	/** Usage reported for the final assistant message of the turn. */
+	usage: TurnUsage;
+	/** Tokens the transcript occupied after this turn. */
+	contextTokens: number;
 }
 
 export interface AgentStats {
@@ -36,42 +60,190 @@ export interface AgentStats {
 	outputTokens: number;
 }
 
-export function createChatAgent(config: AppConfig, agentTools: AgentTool<any>[] = tools): ChatAgent {
-	const agent = createKernelAgent({ config, tools: agentTools });
+export interface AgentRuntimeOptions {
+	config: AppConfig;
+	tools?: AgentTool<any>[];
+	/** Defaults to `config.systemPrompt`. */
+	systemPrompt?: string;
+	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
+	/** Extra attempts after a failed turn that ran no tool. Default: 2. */
+	retries?: number;
+}
 
-	/** Failed turns that ran no tools can be rolled back and retried safely. */
-	async function attempt(input: string, retries: number, options: SendOptions): Promise<SendResult> {
-		for (let tryIndex = 0; ; tryIndex += 1) {
-			const before = agent.state.messages.length;
-			await agent.prompt(input);
+export interface AgentRuntime {
+	/** Names of the tools this runtime registered. */
+	readonly toolNames: string[];
+	/** Subscribes to normalised events; the returned function unsubscribes. */
+	subscribe(listener: (event: AgentRuntimeEvent) => void): () => void;
+	prompt(text: string, options?: PromptOptions): Promise<TurnResult>;
+	abort(): void;
+	waitForIdle(): Promise<void>;
+	reset(): void;
+	stats(): AgentStats;
+}
 
-			const appended: AgentMessage[] = agent.state.messages.slice(before);
-			const last = appended.at(-1);
-			let failure: string | undefined;
-			if (last && last.role === "assistant" && (last.stopReason === "error" || last.stopReason === "aborted")) {
-				failure = last.errorMessage ?? `request ${last.stopReason}`;
-			}
-
-			const toolsRan = appended.some((message) => message.role === "toolResult");
-			if (failure === undefined || toolsRan || tryIndex >= retries) {
-				return { failed: failure !== undefined, ...(failure ? { errorMessage: failure } : {}), retries: tryIndex };
-			}
-
-			options.onRetry?.(failure, tryIndex + 1);
-			// Drop the failed user/assistant pair so the retry starts from a clean transcript.
-			agent.state.messages = agent.state.messages.slice(0, before);
-			await sleep(options.retryDelayMs?.(tryIndex + 1) ?? Math.min(1_000 * 2 ** tryIndex, 8_000));
+/** Reads the text out of a pi tool result (those shapes stop here). */
+function firstText(result: unknown): string | undefined {
+	const content = (result as { content?: unknown } | undefined)?.content;
+	if (!Array.isArray(content)) return undefined;
+	for (const block of content) {
+		if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
+			const text = (block as { text?: unknown }).text;
+			if (typeof text === "string") return text;
 		}
 	}
+	return undefined;
+}
+
+function toUsage(usage: AssistantTurn["usage"]): TurnUsage {
+	return {
+		input: usage.input,
+		output: usage.output,
+		total: usage.totalTokens,
+		cacheRead: usage.cacheRead,
+		cacheWrite: usage.cacheWrite,
+		reasoning: usage.reasoning ?? 0,
+	};
+}
+
+export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+	const config = options.config;
+	const agentTools = options.tools ?? defaultTools;
+	const defaultRetries = options.retries ?? 2;
+	const listeners = new Set<(event: AgentRuntimeEvent) => void>();
+
+	const agent = createKernelAgent({
+		config,
+		tools: agentTools,
+		...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+		...(options.beforeToolCall ? { hooks: { beforeToolCall: options.beforeToolCall } } : {}),
+	});
+
+	const emit = (event: AgentRuntimeEvent): void => {
+		for (const listener of listeners) {
+			try {
+				listener(event);
+			} catch {
+				/* a broken front end must not break the agent loop */
+			}
+		}
+	};
+
+	/** pi's event stream, translated into the vocabulary the layers above speak. */
+	const normalize = (event: Parameters<Parameters<typeof agent.subscribe>[0]>[0]): AgentRuntimeEvent | undefined => {
+		switch (event.type) {
+			case "turn_start":
+				return { type: "turn_start" };
+
+			case "message_update": {
+				const inner = event.assistantMessageEvent;
+				if (inner.type === "text_delta" && inner.delta.length > 0) return { type: "text_delta", text: inner.delta };
+				if (inner.type === "thinking_delta" && inner.delta.length > 0) return { type: "thinking_delta", text: inner.delta };
+				return undefined;
+			}
+
+			case "tool_execution_start":
+				return { type: "tool_start", id: event.toolCallId, name: event.toolName, args: event.args };
+
+			case "tool_execution_update": {
+				const text = firstText(event.partialResult);
+				return text === undefined ? undefined : { type: "tool_update", id: event.toolCallId, name: event.toolName, text };
+			}
+
+			case "tool_execution_end": {
+				const details = (event.result as { details?: unknown } | undefined)?.details;
+				return {
+					type: "tool_end",
+					id: event.toolCallId,
+					name: event.toolName,
+					isError: event.isError,
+					text: firstText(event.result) ?? (event.isError ? "Tool failed without a message" : "Tool finished without output"),
+					...(details !== undefined ? { details } : {}),
+				};
+			}
+
+			default:
+				return undefined;
+		}
+	};
+
+	agent.subscribe((event) => {
+		const normalized = normalize(event);
+		if (normalized) emit(normalized);
+	});
+
+	const summarize = (assistant: AssistantTurn | undefined, failure: string | undefined, retriesUsed: number): TurnResult => {
+		const usage = assistant ? toUsage(assistant.usage) : EMPTY_USAGE;
+		return {
+			failed: failure !== undefined,
+			...(failure !== undefined ? { errorMessage: failure } : {}),
+			retries: retriesUsed,
+			stopReason: assistant ? (STOP_REASONS[assistant.stopReason] ?? "stop") : "stop",
+			usage,
+			contextTokens: usage.total,
+		};
+	};
 
 	return {
-		agent,
-		send: (input, options = {}) => attempt(input, options.retries ?? 2, options),
+		toolNames: agentTools.map((tool) => tool.name),
+
+		subscribe(listener) {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+
+		/**
+		 * A turn that failed without running any tool can be rolled back safely, so
+		 * provider hiccups (429/502 and friends) are retried before the front end
+		 * ever hears about them.
+		 */
+		async prompt(text, promptOptions = {}) {
+			const images = promptOptions.images ?? [];
+			const retries = promptOptions.retries ?? defaultRetries;
+			const forwardAbort = (): void => agent.abort();
+			promptOptions.signal?.addEventListener("abort", forwardAbort, { once: true });
+
+			try {
+				for (let tryIndex = 0; ; tryIndex += 1) {
+					const before = agent.state.messages.length;
+					await agent.prompt(text, images.length > 0 ? images.map((image) => ({ type: "image" as const, ...image })) : undefined);
+
+					const appended: AgentMessage[] = agent.state.messages.slice(before);
+					const last = appended.at(-1);
+					const assistant = last?.role === "assistant" ? last : undefined;
+					const aborted = assistant?.stopReason === "aborted";
+					const failure =
+						assistant && (aborted || assistant.stopReason === "error")
+							? (assistant.errorMessage ?? `request ${assistant.stopReason}`)
+							: undefined;
+					const toolsRan = appended.some((message) => message.role === "toolResult");
+
+					// Cancelling is intentional, so only provider failures are retried.
+					if (failure === undefined || aborted || toolsRan || tryIndex >= retries) {
+						const result = summarize(assistant, failure, tryIndex);
+						emit({ type: "turn_end", ...result });
+						return result;
+					}
+
+					promptOptions.onRetry?.(failure, tryIndex + 1);
+					// Drop the failed user/assistant pair so the retry starts from a clean transcript.
+					agent.state.messages = agent.state.messages.slice(0, before);
+					await sleep(promptOptions.retryDelayMs?.(tryIndex + 1) ?? Math.min(1_000 * 2 ** tryIndex, 8_000));
+				}
+			} finally {
+				promptOptions.signal?.removeEventListener("abort", forwardAbort);
+			}
+		},
+
+		abort: () => agent.abort(),
+		waitForIdle: () => agent.waitForIdle(),
+
 		reset: () => {
 			agent.reset();
-			agent.state.systemPrompt = config.systemPrompt;
+			agent.state.systemPrompt = options.systemPrompt ?? config.systemPrompt;
 			agent.state.tools = agentTools;
 		},
+
 		stats: () => {
 			let turns = 0;
 			let userMessages = 0;

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { createInterface } from "node:readline";
-import { createChatAgent, type ChatAgent } from "../features/runtime.js";
+import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
 import { color, Renderer } from "./render.js";
 import { tools } from "../features/tools.js";
@@ -38,7 +38,7 @@ function onRetry(reason: string, attempt: number): void {
 }
 
 /** Handles a `/command`. Returns false when the REPL should stop. */
-function runCommand(chat: ChatAgent, config: AppConfig, input: string): boolean {
+function runCommand(chat: AgentRuntime, config: AppConfig, input: string): boolean {
 	const [command] = input.split(/\s+/);
 
 	switch (command) {
@@ -84,12 +84,12 @@ function runCommand(chat: ChatAgent, config: AppConfig, input: string): boolean 
 	}
 }
 
-async function runOneShot(chat: ChatAgent, input: string): Promise<void> {
-	const result = await chat.send(input, { onRetry });
+async function runOneShot(chat: AgentRuntime, input: string): Promise<void> {
+	const result = await chat.prompt(input, { onRetry });
 	process.exitCode = result.failed ? 1 : 0;
 }
 
-async function runRepl(chat: ChatAgent, config: AppConfig): Promise<void> {
+async function runRepl(chat: AgentRuntime, config: AppConfig): Promise<void> {
 	banner(config);
 
 	const interactive = process.stdin.isTTY === true;
@@ -103,7 +103,7 @@ async function runRepl(chat: ChatAgent, config: AppConfig): Promise<void> {
 	const onSigint = (): void => {
 		if (running) {
 			process.stdout.write(color.yellow("\nAborting current answer...\n"));
-			chat.agent.abort();
+			chat.abort();
 			return;
 		}
 		process.stdout.write("\n");
@@ -130,7 +130,7 @@ async function runRepl(chat: ChatAgent, config: AppConfig): Promise<void> {
 
 			running = true;
 			try {
-				await chat.send(input, { onRetry });
+				await chat.prompt(input, { onRetry });
 			} catch (error) {
 				process.stdout.write(`${color.red("fatal")} ${error instanceof Error ? error.message : String(error)}\n`);
 			} finally {
@@ -146,9 +146,9 @@ async function runRepl(chat: ChatAgent, config: AppConfig): Promise<void> {
 
 async function main(): Promise<void> {
 	const config = loadConfig();
-	const chat = createChatAgent(config);
+	const chat = createAgentRuntime({ config });
 	const renderer = new Renderer();
-	chat.agent.subscribe((event) => renderer.handle(event));
+	chat.subscribe((event) => renderer.handle(event));
 
 	const oneShot = process.argv.slice(2).join(" ").trim();
 	if (oneShot === "--help" || oneShot === "-h") {
