@@ -115,6 +115,52 @@ async function toolChecks() {
 	const timedOut = await toolNamed(tools, "run_command").execute("t", { command: "sleep 2", timeout_ms: 150 });
 	check("run_command 超时被标记", textOf(timedOut).includes("timed out"), textOf(timedOut).replace(/\n/g, " "));
 
+	// --- images ---------------------------------------------------------------
+	const png = Buffer.from(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
+		"base64",
+	);
+	writeFileSync(join(workspace, "pixel.png"), png);
+
+	const visionTools = createLocalTools({ roots: [workspace], supportsImages: true });
+	const imageResult = await toolNamed(visionTools, "read_file").execute("t", { path: "pixel.png" });
+	const imageBlock = imageResult.content.find((part) => part.type === "image");
+	check(
+		"支持图片时 read_file 返回 image 内容块",
+		imageBlock?.mimeType === "image/png" && (imageBlock?.data ?? "").length > 50 && imageResult.details?.image === true,
+		JSON.stringify(imageResult.content.map((part) => part.type)),
+	);
+	const noVision = await failure(() => read.execute("t", { path: "pixel.png" }));
+	check("不支持图片时仍按二进制拒绝", noVision.includes("looks binary"), noVision);
+	const tinyCap = createLocalTools({ roots: [workspace], supportsImages: true, maxImageBytes: 10 });
+	const tooBig = await failure(() => toolNamed(tinyCap, "read_file").execute("t", { path: "pixel.png" }));
+	check("超出图片上限时拒绝", tooBig.includes("images are limited to"), tooBig);
+
+	// --- change previews ------------------------------------------------------
+	const { createLocalToolDescriber } = await import("../dist/features/local-tools.js");
+	const describe = createLocalToolDescriber({ roots: [workspace], allowWrite: true, allowExec: true });
+
+	const createPreview = await describe("write_file", { path: "fresh.txt", content: "one\ntwo\n" });
+	check("预览：新建文件", createPreview?.summary.startsWith("create fresh.txt") === true && createPreview?.file?.oldText === undefined, createPreview?.summary ?? "");
+
+	const overwritePreview = await describe("write_file", { path: "notes.md", content: "# notes\nDONE\n" });
+	check(
+		"预览：覆盖文件带 +/- diff",
+		overwritePreview?.summary.startsWith("overwrite notes.md") === true &&
+			(overwritePreview?.text ?? "").includes("-TODO: shipped") &&
+			(overwritePreview?.text ?? "").includes("+DONE"),
+		(overwritePreview?.text ?? "").split("\n").slice(2, 6).join(" | "),
+	);
+
+	const editPreview = await describe("edit_file", { path: "notes.md", old_string: "TODO: shipped", new_string: "DONE: shipped" });
+	check(
+		"预览：编辑给出发生次数与 diff",
+		(editPreview?.summary ?? "").includes("1 occurrence") && (editPreview?.text ?? "").includes("-TODO: shipped") && (editPreview?.text ?? "").includes("+DONE: shipped"),
+		(editPreview?.text ?? "").split("\n").slice(2, 5).join(" | "),
+	);
+	check("预览：执行命令只给摘要", (await describe("run_command", { command: "ls -la" }))?.summary === "run ls -la");
+	check("预览：越界路径直接报错", (await failure(() => describe("write_file", { path: join(outside, "x.txt"), content: "x" }))).includes("outside the workspace roots"));
+
 	rmSync(workspace, { recursive: true, force: true });
 	rmSync(outside, { recursive: true, force: true });
 }
@@ -145,6 +191,37 @@ async function cliChecks() {
 			child.on("exit", () => resolve(stdout));
 		});
 
+	/**
+	 * Runs the REPL and answers each permission prompt as soon as it appears, so
+	 * the interactive approval path is exercised without timing guesses.
+	 */
+	const runCliInteractive = (prompt, answers) =>
+		new Promise((resolve) => {
+			const child = spawn(process.execPath, [join(ROOT, "dist/entries/cli.js")], { cwd: workspace, env, stdio: ["pipe", "pipe", "pipe"] });
+			let stdout = "";
+			let answered = 0;
+			let closing = false;
+			const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+
+			child.stdout.on("data", (chunk) => {
+				stdout += chunk;
+				const prompts = stdout.split("[y] once").length - 1;
+				while (answered < prompts && answered < answers.length) {
+					child.stdin.write(`${answers[answered]}\n`);
+					answered += 1;
+				}
+				if (answered >= answers.length && !closing) {
+					closing = true;
+					setTimeout(() => child.stdin.write("/exit\n"), 300);
+				}
+			});
+			child.on("exit", () => {
+				clearTimeout(timer);
+				resolve(stdout);
+			});
+			child.stdin.write(`${prompt}\n`);
+		});
+
 	try {
 		await waitForPort(MOCK_PORT);
 
@@ -163,6 +240,17 @@ async function cliChecks() {
 		const banner = await runCli(["--read-only"]);
 		check("--read-only 不出现在工具列表里", readOnly.includes("--read-only") && !banner.includes("write_file"), banner.split("\n").find((line) => line.includes("tools")) ?? "");
 		check("--read-only 在横幅里标明", banner.includes("read-only"), banner.split("\n").find((line) => line.includes("access")) ?? "");
+
+		// Interactive: the prompt must show what is about to change before asking.
+		const previewPath = join(workspace, "preview.txt");
+		writeFileSync(previewPath, "old line\n");
+		const interactive = await runCliInteractive(`write ${previewPath}`, ["n"]);
+		check(
+			"审批提示带 diff 预览",
+			interactive.includes("overwrite preview.txt") && interactive.includes("-old line") && interactive.includes("+hello from the mock model"),
+			interactive.split("\n").filter((line) => /^\s*[+-]/.test(line)).slice(0, 3).join(" | ").slice(0, 120),
+		);
+		check("回答 n 后文件未被修改", readFileSync(previewPath, "utf8") === "old line\n");
 	} finally {
 		mock.kill("SIGTERM");
 		await sleep(200);
@@ -200,13 +288,15 @@ async function acpFallbackChecks() {
 
 		const updates = [];
 		let approvals = 0;
+		const permissionRequests = [];
 		const client = new AcpHttpClient(`http://127.0.0.1:${acpPort}/acp`, {});
 		client
 			.onMessage((event) => {
 				if (event.message?.method === "session/update") updates.push(event.message.params.update);
 			})
-			.on("session/request_permission", () => {
+			.on("session/request_permission", (params) => {
 				approvals += 1;
+				permissionRequests.push(params);
 				return { outcome: { outcome: "selected", optionId: "allow_once" } };
 			});
 
@@ -214,6 +304,12 @@ async function acpFallbackChecks() {
 		await client.initialize({ clientName: "steve-local-fallback", clientVersion: "1.0.0", capabilities: {} });
 		const session = await client.newSession({ cwd: ROOT });
 		await sleep(150);
+
+		const textOfUpdates = (list) =>
+			list
+				.filter((update) => update.sessionUpdate === "agent_message_chunk")
+				.map((update) => update.content?.text ?? "")
+				.join("");
 
 		const toolText = () =>
 			updates
@@ -223,12 +319,37 @@ async function acpFallbackChecks() {
 
 		check("无 fs/terminal 能力时会话改用本地工具", /tools=.*read_file/.test(serverLog.join("")), serverLog.join("").match(/tools=[^\s]*/)?.[0] ?? "");
 
+		const commands = updates.find((update) => update.sessionUpdate === "available_commands_update")?.availableCommands ?? [];
+		check(
+			"播报内置命令（tools/stats/model/new）",
+			["tools", "stats", "model", "new"].every((name) => commands.some((command) => command.name === name)),
+			commands.map((command) => command.name).join(","),
+		);
+
+		updates.length = 0;
+		await client.prompt(session.sessionId, [{ type: "text", text: "/tools" }]);
+		check("内置 /tools 在 ACP 里本地执行", textOfUpdates(updates).includes("read_file"), textOfUpdates(updates).slice(0, 80));
+
 		await client.prompt(session.sessionId, [{ type: "text", text: `read ${join(ROOT, ".env.example")}` }]);
 		check("本地 read_file 在 ACP 里可用", toolText().includes("LLM_API_KEY"), toolText().replace(/\n/g, " ").slice(0, 100));
 
 		updates.length = 0;
 		await client.prompt(session.sessionId, [{ type: "text", text: "run ls" }]);
 		check("本地 run_command 在 ACP 里可用且经权限确认", approvals > 0 && toolText().includes("package.json"), `approvals=${approvals} ${toolText().replace(/\n/g, " ").slice(0, 80)}`);
+
+		updates.length = 0;
+		permissionRequests.length = 0;
+		const previewPath = join(ROOT, ".steve", "acp-preview.txt");
+		await client.prompt(session.sessionId, [{ type: "text", text: `write ${previewPath}` }]);
+		const request = permissionRequests.at(-1);
+		const diff = request?.toolCall?.content?.find((part) => part.type === "diff");
+		check(
+			"ACP 审批请求带 diff 预览",
+			diff?.path === previewPath && typeof diff?.newText === "string" && String(request?.toolCall?.title).startsWith("create"),
+			JSON.stringify(request?.toolCall?.content ?? null).slice(0, 120),
+		);
+		check("审批通过后本地写入生效", existsSync(previewPath) && readFileSync(previewPath, "utf8").includes("hello from the mock model"));
+		rmSync(previewPath, { force: true });
 
 		await client.close();
 	} finally {

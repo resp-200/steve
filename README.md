@@ -159,7 +159,7 @@ runtime.subscribe((event) => {
 
 `src/features/runtime.ts` 在 `prompt()` 之后检查最后一条 assistant 消息：如果 `stopReason` 是 `error` 且这一轮没跑过工具，就把这轮消息整体回滚再重试（网关 429/502 很常见）；**取消（aborted）不重试**，那是用户的意图。「空内容且失败」的 `transformContext` 过滤放在 `src/kernel/agent.ts`。
 
-这套重试是协议无关的，因此 CLI 与编辑器行为一致：`npm run acp:ui-test` 的第 16 项断言就是让 mock 先注入两次 429，再验证客户端只看到成功那一轮。
+这套重试是协议无关的，因此 CLI 与编辑器行为一致：`npm run acp:ui-test` 的第 17 项断言就是让 mock 先注入两次 429，再验证客户端只看到成功那一轮。
 
 ## 本地文件与命令工具
 
@@ -167,12 +167,19 @@ runtime.subscribe((event) => {
 
 | 工具 | 说明 | 需要批准 |
 | --- | --- | --- |
-| `read_file` | 读 UTF-8 文本，带行号区间与截断标记；二进制拒绝 | 否 |
+| `read_file` | 读 UTF-8 文本（行号区间、截断标记、二进制拒绝）；图片文件在模型支持视觉时以 image 内容返回（默认上限 4 MiB） | 否 |
 | `glob` | `src/**/*.ts` 这类模式列文件（跳过 .git/node_modules/dist 与隐藏项） | 否 |
 | `grep` | 正则搜内容，返回 `path:line: text`，可用 `glob` 过滤文件名 | 否 |
-| `write_file` | 建目录 + 覆盖写 | **是** |
-| `edit_file` | 精确替换，要求唯一匹配，否则报错让模型补充上下文 | **是** |
+| `write_file` | 建目录 + 覆盖写 | **是**（带 diff 预览） |
+| `edit_file` | 精确替换，要求唯一匹配，否则报错让模型补充上下文 | **是**（带 diff 预览） |
 | `run_command` | `sh -lc` 执行，带超时与输出上限 | **是** |
+
+审批不是盲批：功能层会算出**将要发生什么**（`src/features/change-preview.ts`），两端各取所需——
+
+- CLI 打印 `--- / +++` 形式的 diff（改动行绿/红）；
+- ACP 把预览放进 `session/request_permission`：`toolCall.title` 是一行摘要，`toolCall.content` 是 `{ type: "diff", path, oldText, newText }`，编辑器可直接渲染（内置测试页就会把 diff 画在授权卡片上）。
+
+预览读取“改动前内容”的后端与工具一致：本地工具读磁盘，ACP 走编辑器的 `fs/read_text_file`；读不到就当新建处理。预览失败不会阻塞审批，只会退化成一行说明。
 
 安全边界（都有断言覆盖，见 `npm run tools:test`）：
 
@@ -315,14 +322,14 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | --- | --- |
 | `npm run acp:client` | 完整 ACP client，走 **stdio** 或 `--http` / `--ws`，可在真编辑器之外验证服务端 |
 | `npm run acp:probe` | Node 版 HTTP client（import 浏览器同一份 `web/acp-http-client.js`），带真实的 fs/terminal 回调 |
-| `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），16 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
+| `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），17 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 | `npm run plugins:test` | 插件层 17 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
-| `npm run tools:test` | 本地工具 25 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制拒绝、命令退出码与超时、CLI `--yes`/默认拒绝/`--read-only`、ACP 无能力时的本地回退 |
+| `npm run tools:test` | 本地工具 39 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
-npm run acp:ui-test  -- --url http://127.0.0.1:8890/                        # 离线 mock：16 项断言
+npm run acp:ui-test  -- --url http://127.0.0.1:8890/                        # 离线 mock：17 项断言
 npm run acp:ui-test  -- --url file://$PWD/test-acp-jsonrpc.html             # 直接开本地文件（需 --cors "*"）
 npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍你自己"   # 真实网关：只验证一轮往返
 ```
@@ -348,6 +355,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **重试与协议无关**：429/5xx 的回滚重试在功能层，所以编辑器里也能吃到（客户端看不到失败轮）；取消不会被重试。
 - **每条连接独立**：HTTP/WS 传输下每个连接有自己的 `AgentApp` 和 session 表，session 之间不串上下文。
 - **stdout 只走协议**：stdio 模式下所有日志都写到 stderr，`--quiet` 可只留错误。
+- **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
 
 ## 换个模型 / 加个工具
 

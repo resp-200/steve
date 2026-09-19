@@ -274,6 +274,15 @@ async function main() {
 			const filesText = await cdp.evaluate(sessionId, "window.acpTest.filesText()");
 			check("fs/write_text_file 写入虚拟文件系统", write.result === "ok" && filesText.includes("note.txt"));
 
+			// 6b. 审批卡片渲染 agent 给出的 diff（原始 JSON-RPC 里也能看到）
+			const diffCard = await cdp.evaluate(sessionId, "document.querySelector('.permission .diff')?.textContent ?? ''");
+			const diffLogged = await cdp.evaluate(sessionId, "window.acpTest.logText()");
+			check(
+				"授权卡片显示 diff 预览",
+				diffCard.includes("note.txt") && diffCard.includes("+hello from the mock model") && /\"type\":\s*\"diff\"/.test(diffLogged),
+				diffCard.replace(/\n/g, " | ").slice(0, 100),
+			);
+
 			// 7. 原始 JSON-RPC 日志
 			const logText = await cdp.evaluate(sessionId, "window.acpTest.logText()");
 			check(

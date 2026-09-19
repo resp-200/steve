@@ -6,6 +6,8 @@
  * presentation logic stay separately readable.
  */
 import type { ToolCallContent, ToolKind } from "@agentclientprotocol/sdk";
+import type { PromptImage } from "../../features/events.js";
+import type { ToolChangePreview } from "../../features/permissions.js";
 import { truncate } from "./content.js";
 
 /** Tool name -> the kind of tool call ACP clients render. */
@@ -42,14 +44,30 @@ export function describeToolCall(name: string, args: unknown): string {
 	}
 }
 
-/** Tool output shown in the client's tool-call UI (text plus embedded terminal). */
-export function toolCallContent(text: string, details: unknown): ToolCallContent[] {
+/** Tool output shown in the client's tool-call UI: text, images, embedded terminal. */
+export function toolCallContent(text: string, details: unknown, images: PromptImage[] = []): ToolCallContent[] {
 	const content: ToolCallContent[] = [];
 
 	const terminalId = (details as { terminalId?: unknown } | undefined)?.terminalId;
 	if (typeof terminalId === "string") content.push({ type: "terminal", terminalId });
 
-	content.push({ type: "content", content: { type: "text", text: truncate(text) } });
+	if (text) content.push({ type: "content", content: { type: "text", text: truncate(text) } });
+	for (const image of images) {
+		content.push({ type: "content", content: { type: "image", data: image.data, mimeType: image.mimeType } });
+	}
 
 	return content;
+}
+
+/** ACP renders file changes as a real diff when the agent can describe them. */
+export function diffContent(preview: ToolChangePreview): ToolCallContent[] {
+	if (!preview.file) return [];
+	return [
+		{
+			type: "diff",
+			path: preview.file.path,
+			oldText: preview.file.oldText ?? null,
+			newText: preview.file.newText ?? "",
+		},
+	];
 }

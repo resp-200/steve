@@ -11,13 +11,16 @@ import {
 import type { AppConfig } from "../../model/config.js";
 import type { AgentRuntimeEvent, TurnStopReason, TurnUsage } from "../../features/events.js";
 import type { ExtensionHost } from "../../extensions/host.js";
-import { createPermissionGate, type PermissionDecision, type PermissionRequest } from "../../features/permissions.js";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { editPreview, writePreview } from "../../features/change-preview.js";
+import { createPermissionGate, type PermissionDecision, type PermissionRequest, type ToolChangePreview } from "../../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
 import { LOCAL_PERMISSION_TOOLS, createLocalTools } from "../../features/local-tools.js";
 import { tools as demoTools } from "../../features/tools.js";
 import type { Logger } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
-import { TOOL_KINDS, describeToolCall, toolCallContent } from "./tool-call.js";
+import { TOOL_KINDS, describeToolCall, diffContent, toolCallContent } from "./tool-call.js";
 import { ACP_PERMISSION_TOOLS, createAcpTools } from "./tools.js";
 
 export type PermissionMode = "ask" | "allow";
@@ -90,13 +93,13 @@ export class AcpSession {
 
 		// Local tools only fill the gaps the editor does not cover, so names never clash.
 		const taken = new Set([...demoTools, ...clientTools].map((tool) => tool.name));
-		const fallbackTools = options.allowLocalTools
-			? createLocalTools({
-					roots: [options.cwd, ...options.additionalDirectories],
-					allowWrite: true,
-					allowExec: true,
-				}).filter((tool) => !taken.has(tool.name))
-			: [];
+		const localOptions = {
+			roots: [options.cwd, ...options.additionalDirectories],
+			allowWrite: true,
+			allowExec: true,
+			supportsImages: this.supportsImages,
+		};
+		const fallbackTools = options.allowLocalTools ? createLocalTools(localOptions).filter((tool) => !taken.has(tool.name)) : [];
 
 		const tools = [...demoTools, ...clientTools, ...fallbackTools];
 
@@ -108,6 +111,7 @@ export class AcpSession {
 			beforeToolCall: createPermissionGate({
 				mode: options.permissionMode,
 				requires: [...ACP_PERMISSION_TOOLS, ...LOCAL_PERMISSION_TOOLS],
+				describe: (request) => this.describeChange(request.toolName, request.args),
 				ask: (request) => this.askPermission(request),
 			}),
 		});
@@ -131,14 +135,21 @@ export class AcpSession {
 			throw RequestError.invalidParams(undefined, "Prompt contained no usable content");
 		}
 
-		// A plugin command is answered locally; anything else goes to the model.
+		// Slash commands are answered locally; anything else goes to the model.
 		const command = /^\/([\w-]+)\s*([\s\S]*)$/.exec(text.trim());
-		if (command && this.runtime.commands.some((entry) => entry.name === command[1])) {
-			const output = await this.runtime.runCommand(command[1] ?? "", command[2]?.trim() ?? "");
-			if (output) {
-				await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
+		if (command) {
+			const name = command[1] ?? "";
+			const args = command[2]?.trim() ?? "";
+			const builtin = this.builtinCommands().find((entry) => entry.name === name);
+			const isPluginCommand = this.runtime.commands.some((entry) => entry.name === name);
+
+			if (builtin || isPluginCommand) {
+				const output = builtin ? builtin.run(args) : await this.runtime.runCommand(name, args);
+				if (output) {
+					await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
+				}
+				return { stopReason: "end_turn", usage: { ...this.usage } };
 			}
-			return { stopReason: "end_turn", usage: { ...this.usage } };
 		}
 
 		this.running = true;
@@ -175,12 +186,91 @@ export class AcpSession {
 		return { stopReason: STOP_REASONS[result.stopReason], usage: { ...this.usage } };
 	}
 
-	/** Tells the client which slash commands the loaded plugins provide. */
+	/** Slash commands this session answers itself (plus whatever plugins added). */
+	private builtinCommands(): { name: string; description: string; run: (args: string) => string }[] {
+		const { config } = this.options;
+		return [
+			{ name: "help", description: "List the commands this session understands.", run: () => this.builtinCommands().map((entry) => `/${entry.name} — ${entry.description}`).join("\n") },
+			{ name: "tools", description: "List the tools the agent can call.", run: () => this.toolNames.join(", ") },
+			{ name: "model", description: "Show the model and endpoint in use.", run: () => `${config.model.id} via ${config.model.baseUrl} (api: ${config.model.api})` },
+			{
+				name: "stats",
+				description: "Show turn and token counters.",
+				run: () => {
+					const stats = this.runtime.stats();
+					return `turns ${stats.turns} · user messages ${stats.userMessages} · tool calls ${stats.toolCalls} · tokens in/out ${stats.inputTokens}/${stats.outputTokens}`;
+				},
+			},
+			{
+				name: "new",
+				description: "Start a fresh conversation in this session.",
+				run: () => {
+					this.runtime.reset();
+					return "Started a new conversation.";
+				},
+			},
+		];
+	}
+
+	/**
+	 * Previews what a write/edit is about to do. The previous content comes from the
+	 * editor's filesystem when it has one, otherwise from the local fallback.
+	 */
+	private async describeChange(toolName: string, args: unknown): Promise<ToolChangePreview | undefined> {
+		const input = (args ?? {}) as Record<string, unknown>;
+		const text = (key: string): string => (typeof input[key] === "string" ? (input[key] as string) : "");
+
+		if (toolName === "run_command") {
+			const command = text("command");
+			return command ? { summary: `run ${command}` } : undefined;
+		}
+
+		const rawPath = text("path");
+		if (!rawPath) return undefined;
+		const path = isAbsolute(rawPath) ? rawPath : join(this.cwd, rawPath);
+
+		if (toolName === "write_file") {
+			const before = await this.readForPreview(path);
+			return writePreview({ path, shown: path, ...(before === undefined ? {} : { before }), after: text("content") });
+		}
+
+		if (toolName === "edit_file") {
+			const before = await this.readForPreview(path);
+			if (before === undefined) return undefined;
+			return editPreview({ path, shown: path, before, find: text("old_string"), replace: text("new_string") });
+		}
+
+		return undefined;
+	}
+
+	/** Reads a file for preview purposes only; failures just mean "no preview". */
+	private async readForPreview(path: string): Promise<string | undefined> {
+		if (this.options.clientCapabilities.fs?.readTextFile) {
+			try {
+				const response = await this.options.client.request("fs/read_text_file", { sessionId: this.id, path, line: null, limit: null });
+				return response.content;
+			} catch {
+				return undefined;
+			}
+		}
+
+		if (!this.options.allowLocalTools) return undefined;
+		try {
+			return await readFile(path, "utf8");
+		} catch {
+			return undefined;
+		}
+	}
+
 	async announceCommands(): Promise<void> {
-		if (this.runtime.commands.length === 0) return;
+		const commands = [
+			...this.builtinCommands().map(({ name, description }) => ({ name, description })),
+			...this.runtime.commands.map((command) => ({ name: command.name, description: command.description })),
+		];
+
 		await this.send({
 			sessionUpdate: "available_commands_update",
-			availableCommands: this.runtime.commands.map((command) => ({ name: command.name, description: command.description })),
+			availableCommands: commands,
 		});
 	}
 
@@ -220,11 +310,13 @@ export class AcpSession {
 			sessionId: this.id,
 			toolCall: {
 				toolCallId: request.toolCallId,
-				title: describeToolCall(request.toolName, request.args),
+				title: request.preview?.summary ?? describeToolCall(request.toolName, request.args),
 				kind: TOOL_KINDS[request.toolName] ?? "other",
 				status: "pending",
 				rawInput: request.args,
 				locations: locationsFromArgs(request.args) ?? null,
+				// Clients that render diffs show exactly what is about to change.
+				...(request.preview ? { content: diffContent(request.preview) } : {}),
 			},
 			options: [
 				{ optionId: "allow_once", name: "Allow once", kind: "allow_once" },
@@ -292,7 +384,7 @@ export class AcpSession {
 					sessionUpdate: "tool_call_update",
 					toolCallId: event.id,
 					status: event.isError ? "failed" : "completed",
-					content: toolCallContent(event.text, event.details),
+					content: toolCallContent(event.text, event.details, event.images),
 					rawOutput: event.details ?? null,
 				});
 				break;

@@ -10,10 +10,26 @@ import type { BeforeToolCallContext, BeforeToolCallResult } from "@earendil-work
 /** What the user decided about one tool call. */
 export type PermissionDecision = "allow_once" | "allow_always" | "deny" | "cancel";
 
+/**
+ * What a pending tool call is about to change, so the user can approve it with
+ * their eyes open. Front ends render whatever they can: terminals print `text`,
+ * ACP clients get `file` as a real diff.
+ */
+export interface ToolChangePreview {
+	/** One-line summary, e.g. `edit src/app.ts (2 lines)`. */
+	summary: string;
+	/** Compact diff for terminals and logs. */
+	text?: string;
+	/** Structured change for clients that render diffs. */
+	file?: { path: string; oldText?: string; newText?: string };
+}
+
 export interface PermissionRequest {
 	toolName: string;
 	toolCallId: string;
 	args: unknown;
+	/** Filled in by the gate when a `describe` callback is configured. */
+	preview?: ToolChangePreview;
 }
 
 export interface PermissionGateOptions {
@@ -23,6 +39,11 @@ export interface PermissionGateOptions {
 	requires: Iterable<string>;
 	/** Asks the user, e.g. by sending `session/request_permission` to the editor. */
 	ask: (request: PermissionRequest) => Promise<PermissionDecision>;
+	/**
+	 * Optional: summarise what the call is about to change. The result is handed to
+	 * `ask` as `request.preview`, so both front ends show the same diff.
+	 */
+	describe?: (request: PermissionRequest) => Promise<ToolChangePreview | undefined> | ToolChangePreview | undefined;
 }
 
 export type PermissionHook = (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
@@ -41,9 +62,21 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 		if (options.mode === "allow") return undefined;
 		if (!required.has(toolCall.name) || alwaysAllowed.has(toolCall.name)) return undefined;
 
+		const request: PermissionRequest = { toolName: toolCall.name, toolCallId: toolCall.id, args };
+		if (options.describe) {
+			try {
+				const preview = await options.describe(request);
+				if (preview) request.preview = preview;
+			} catch (error) {
+				// A preview is a courtesy: a failure must not block the permission flow.
+				const message = error instanceof Error ? error.message : String(error);
+				request.preview = { summary: `${toolCall.name} (preview unavailable: ${message})` };
+			}
+		}
+
 		let decision: PermissionDecision;
 		try {
-			decision = await options.ask({ toolName: toolCall.name, toolCallId: toolCall.id, args });
+			decision = await options.ask(request);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return { block: true, reason: `Could not ask for permission: ${message}` };

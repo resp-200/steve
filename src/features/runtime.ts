@@ -103,6 +103,20 @@ function firstText(result: unknown): string | undefined {
 	return undefined;
 }
 
+/** Image blocks a tool returned (read_file on a screenshot, for instance). */
+function resultImages(result: unknown): PromptImage[] {
+	const content = (result as { content?: unknown } | undefined)?.content;
+	if (!Array.isArray(content)) return [];
+
+	return content
+		.filter((block) => block && typeof block === "object" && (block as { type?: string }).type === "image")
+		.map((block) => ({
+			mimeType: String((block as { mimeType?: unknown }).mimeType ?? "application/octet-stream"),
+			data: String((block as { data?: unknown }).data ?? ""),
+		}))
+		.filter((image) => image.data.length > 0);
+}
+
 function toUsage(usage: AssistantTurn["usage"]): TurnUsage {
 	return {
 		input: usage.input,
@@ -205,13 +219,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
 			case "tool_execution_end": {
 				const details = (event.result as { details?: unknown } | undefined)?.details;
+				const images = resultImages(event.result);
+				const text =
+					firstText(event.result) ??
+					(images.length > 0
+						? `[${images.length} image(s) returned]`
+						: event.isError
+							? "Tool failed without a message"
+							: "Tool finished without output");
 				return {
 					type: "tool_end",
 					id: event.toolCallId,
 					name: event.toolName,
 					isError: event.isError,
-					text: firstText(event.result) ?? (event.isError ? "Tool failed without a message" : "Tool finished without output"),
+					text,
 					...(details !== undefined ? { details } : {}),
+					...(images.length > 0 ? { images } : {}),
 				};
 			}
 

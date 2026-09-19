@@ -12,8 +12,10 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type, type AgentTool } from "./contract.js";
+import { editPreview, writePreview } from "./change-preview.js";
+import type { ToolChangePreview } from "./permissions.js";
 
 /** Tool names that need the user's approval before they run. */
 export const LOCAL_WRITE_TOOLS = ["write_file", "edit_file"] as const;
@@ -23,6 +25,15 @@ export const LOCAL_PERMISSION_TOOLS = [...LOCAL_WRITE_TOOLS, ...LOCAL_EXEC_TOOLS
 /** Directories that are never walked by glob/grep. */
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", "dist", ".next", "target", "vendor"]);
 
+/** Image types `read_file` can hand to a vision model. */
+const IMAGE_MIME_TYPES: Record<string, string> = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+};
+
 export interface LocalToolOptions {
 	/** Workspace roots; every path must resolve inside one of them. */
 	roots: string[];
@@ -30,8 +41,12 @@ export interface LocalToolOptions {
 	allowWrite?: boolean;
 	/** Register run_command (still gated by permissions). */
 	allowExec?: boolean;
+	/** Return image files as image content instead of refusing them. */
+	supportsImages?: boolean;
 	/** Cap for read_file / run_command output. Default: 200 KiB. */
 	maxBytes?: number;
+	/** Cap for image files handed to the model. Default: 4 MiB. */
+	maxImageBytes?: number;
 	/** Cap for glob/grep result counts. Default: 200. */
 	maxResults?: number;
 	/** Shell timeout. Default: 30s. */
@@ -141,6 +156,8 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 	const timeoutMs = options.timeoutMs ?? 30_000;
 	const base = roots[0] ?? process.cwd();
 	const canonicalRoots = roots.map(canonicalize);
+	const maxImageBytes = options.maxImageBytes ?? 4 * 1024 * 1024;
+	const canonicalBase = canonicalRoots[0] ?? canonicalize(base);
 
 	/**
 	 * Absolute and inside a workspace root, or an error the model can read.
@@ -159,9 +176,11 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		return path;
 	};
 
+	/** Paths are shown relative to the canonical root, so a symlinked cwd stays readable. */
 	const relativeToBase = (path: string): string => {
-		const relativePath = relative(base, path);
-		return relativePath === "" ? "." : relativePath;
+		const relativePath = relative(canonicalBase, canonicalize(path));
+		if (relativePath === "") return ".";
+		return relativePath.startsWith("..") ? path : relativePath;
 	};
 
 	/** Breadth-first walk with a hard entry budget so a huge tree cannot hang us. */
@@ -204,6 +223,22 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 			const path = resolveInside(params.path);
 			const info = await stat(path);
 			if (info.isDirectory()) throw new Error(`${path} is a directory.`);
+
+			// Images go to the model as image content when it can actually see them.
+			const mimeType = options.supportsImages ? IMAGE_MIME_TYPES[extname(path).toLowerCase()] : undefined;
+			if (mimeType) {
+				if (info.size > maxImageBytes) {
+					throw new Error(`${path} is ${info.size} bytes; images are limited to ${maxImageBytes} bytes.`);
+				}
+				const data = (await readFile(path)).toString("base64");
+				return {
+					content: [
+						{ type: "text", text: `${relativeToBase(path)} (${mimeType}, ${info.size} bytes)` },
+						{ type: "image", data, mimeType },
+					],
+					details: { path, mimeType, bytes: info.size, image: true },
+				};
+			}
 
 			const buffer = await readFile(path);
 			if (looksBinary(buffer)) throw new Error(`${path} looks binary; refusing to read it as text.`);
@@ -370,3 +405,63 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		...(options.allowExec ? [runCommandTool] : []),
 	];
 }
+
+/* ---------------------------- change previews ---------------------------- */
+
+/**
+ * Describes what `write_file` / `edit_file` / `run_command` are about to do, so
+ * the permission prompt can show a diff before anything is touched.
+ *
+ * Shares the path confinement rules with the tools themselves.
+ */
+export function createLocalToolDescriber(options: LocalToolOptions): (toolName: string, args: unknown) => Promise<ToolChangePreview | undefined> {
+	const roots = options.roots.map((root) => resolve(root));
+	const base = roots[0] ?? process.cwd();
+	const canonicalRoots = roots.map(canonicalize);
+
+	const resolveInside = (target: string): string => {
+		const path = isAbsolute(target) ? resolve(target) : resolve(base, target);
+		const canonical = canonicalize(path);
+		if (!canonicalRoots.some((root) => canonical === root || canonical.startsWith(root + sep))) {
+			throw new Error(`${path} is outside the workspace roots.`);
+		}
+		return path;
+	};
+
+	return async (toolName, args) => {
+		const input = (args ?? {}) as Record<string, unknown>;
+		const text = (key: string): string | undefined => (typeof input[key] === "string" ? (input[key] as string) : undefined);
+
+		if (toolName === "run_command") {
+			const command = text("command");
+			if (!command) return undefined;
+			return { summary: `run ${command}` };
+		}
+
+		const rawPath = text("path");
+		if (!rawPath) return undefined;
+		const path = resolveInside(rawPath);
+		const shown = shownPath(base, path);
+
+		if (toolName === "write_file") {
+			const after = text("content") ?? "";
+			const before = await readFile(path, "utf8").catch(() => undefined);
+			return writePreview({ path, shown, ...(before === undefined ? {} : { before }), after });
+		}
+
+		if (toolName === "edit_file") {
+			const before = await readFile(path, "utf8");
+			return editPreview({ path, shown, before, find: text("old_string") ?? "", replace: text("new_string") ?? "" });
+		}
+
+		return undefined;
+	};
+}
+
+/** Display path relative to the canonical root (never a `../../..` chain). */
+function shownPath(base: string, path: string): string {
+	const relativePath = relative(canonicalize(base), canonicalize(path));
+	if (relativePath === "") return path;
+	return relativePath.startsWith("..") ? path : relativePath;
+}
+

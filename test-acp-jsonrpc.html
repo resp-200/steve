@@ -731,6 +731,18 @@
                 const raw = document.createElement("pre");
                 raw.style.cssText = "color:#bbb;font-size:11px;white-space:pre-wrap;margin-bottom:8px;";
                 raw.textContent = JSON.stringify(params.toolCall.rawInput ?? {}, null, 2);
+
+                // The agent describes file changes as a real diff: show it before asking.
+                const diff = (params.toolCall.content ?? []).find((part) => part.type === "diff");
+                if (diff) {
+                    const preview = document.createElement("pre");
+                    preview.className = "diff";
+                    preview.style.cssText = "color:#ddd;font-size:11px;white-space:pre-wrap;margin-bottom:8px;";
+                    const before = (diff.oldText ?? "").split("\n").slice(0, 20);
+                    const after = (diff.newText ?? "").split("\n").slice(0, 20);
+                    preview.textContent = [`--- ${diff.path} (current)`, ...before.map((line) => `-${line}`), `+++ ${diff.path} (new)`, ...after.map((line) => `+${line}`)].join("\n");
+                    card.appendChild(preview);
+                }
                 const row = document.createElement("div");
                 row.className = "btn-row";
 

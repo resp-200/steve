@@ -30,7 +30,7 @@ export type AgentRuntimeEvent =
 	| { type: "thinking_delta"; text: string }
 	| { type: "tool_start"; id: string; name: string; args: unknown }
 	| { type: "tool_update"; id: string; name: string; text: string }
-	| { type: "tool_end"; id: string; name: string; isError: boolean; text: string; details?: unknown }
+	| { type: "tool_end"; id: string; name: string; isError: boolean; text: string; details?: unknown; images?: PromptImage[] }
 	| {
 			type: "turn_end";
 			stopReason: TurnStopReason;

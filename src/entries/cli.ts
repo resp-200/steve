@@ -3,7 +3,7 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
 import type { AgentTool } from "../features/contract.js";
-import { LOCAL_PERMISSION_TOOLS, createLocalTools } from "../features/local-tools.js";
+import { LOCAL_PERMISSION_TOOLS, createLocalToolDescriber, createLocalTools } from "../features/local-tools.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
 import { tools as demoTools } from "../features/tools.js";
@@ -106,7 +106,24 @@ function askPermission(request: PermissionRequest, options: CliOptions): Promise
 		return Promise.resolve("deny");
 	}
 
-	process.stdout.write(`\n${color.yellow("permission")} ${describeRequest(request)}\n  ${color.dim("[y] once · [a] always this tool · [n] deny › ")}`);
+	const preview = request.preview;
+	const heading = preview?.summary ?? describeRequest(request);
+	process.stdout.write(`\n${color.yellow("permission")} ${heading}\n`);
+	if (preview?.text) {
+		process.stdout.write(
+			preview.text
+				.split("\n")
+				.map((line) =>
+					line.startsWith("+") && !line.startsWith("+++")
+						? color.green(`  ${line}`)
+						: line.startsWith("-") && !line.startsWith("---")
+							? color.red(`  ${line}`)
+							: color.dim(`  ${line}`),
+				)
+				.join("\n") + "\n",
+		);
+	}
+	process.stdout.write(`  ${color.dim("[y] once · [a] always this tool · [n] deny › ")}`);
 	return new Promise<PermissionDecision>((resolve) => {
 		pendingApproval = (line) => {
 			pendingApproval = null;
@@ -326,11 +343,14 @@ async function main(): Promise<void> {
 		log: (message) => process.stderr.write(`${color.dim(message)}\n`),
 	});
 
-	const localTools = createLocalTools({
+	const localToolOptions = {
 		roots: [cwd],
 		allowWrite: !parsed.readOnly,
 		allowExec: !parsed.readOnly,
-	});
+		supportsImages: config.model.input.includes("image"),
+	};
+	const localTools = createLocalTools(localToolOptions);
+	const describeChange = createLocalToolDescriber(localToolOptions);
 	const catalog: AgentTool<any>[] = [...demoTools, ...localTools];
 
 	const chat = createAgentRuntime({
@@ -340,6 +360,7 @@ async function main(): Promise<void> {
 		beforeToolCall: createPermissionGate({
 			mode: parsed.autoApprove ? "allow" : "ask",
 			requires: LOCAL_PERMISSION_TOOLS,
+			describe: (request) => describeChange(request.toolName, request.args),
 			ask: (request) => askPermission(request, parsed),
 		}),
 	});
