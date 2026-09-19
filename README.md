@@ -197,6 +197,27 @@ npm run dev -- --read-only      # 只注册读工具，没有审批提示
 
 ACP 侧沿用编辑器的授权弹窗；只有客户端**没有**声明 `fs`/`terminal` 能力时，才可用 `--allow-local-tools` 让会话回退到本地工具（默认关闭，避免编辑器里的 agent 绕过沙箱改本机文件）。同名工具不会重复注册：客户端提供了就用客户端的。
 
+## 跨平台
+
+核心逻辑不依赖平台：零原生模块、路径全走 `node:path`（glob/grep 匹配时统一成 `/`）、`clean` 脚本用 `node -e` 而不是 `rm -rf`、临时目录走 `os.tmpdir()`、MCP 分帧对 CRLF 容错。
+
+| 能力 | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| CLI / ACP / 插件 / MCP / 会话持久化 | ✅ | ✅（已实测） | ⚠️ 已按平台语义分支，未在真机验证 |
+| `read_file` / `glob` / `grep` / `write_file` / `edit_file` | ✅ | ✅ | ⚠️ 路径收敛按大小写不敏感比较 |
+| `run_command` | `$SHELL -lc` | `$SHELL -lc` | `%COMSPEC% /d /s /c`（默认 `cmd.exe`） |
+| `npm run acp:ui-test` | ✅（需 chrome/chromium） | ✅（Chrome / Chromium / Edge） | ⚠️ 已加 `Program Files` 候选，或设 `CHROME_PATH` |
+
+已知差异与应对：
+
+- **shell**：`run_command` 默认取 `$SHELL`（POSIX）/ `%COMSPEC%`（Windows）。想固定用别的 shell（Git Bash、pwsh 等）就设这两个环境变量，或在代码里给 `createLocalTools({ shell: { file, args } })` 传值。
+- **路径大小写**：Windows 与默认的 macOS 文件系统不区分大小写，路径收敛会先 `toLowerCase()` 再比；Linux 保持敏感，边界不放宽。
+- **环境变量前缀写法**：文档里的 `LLM_API_KEY=mock npm run dev` 是 POSIX 语法；PowerShell 用 `$env:LLM_API_KEY="mock"; npm run dev`。
+- **隐藏项**：`glob`/`grep` 靠 `.` 前缀跳过隐藏文件，Windows 的"隐藏"属性不生效（安全边界仍由路径收敛保证）。
+- **测试脚本**收尾用 `SIGTERM`，Windows 上只杀直接子进程，偶发残留进程属测试噪音。
+
+> 所有验证都在 macOS 上跑过（含 4 个测试脚本 + headless Chrome）；Windows 分支是按平台语义写的，**未在真机实测**。
+
 ## 拓展（插件）
 
 插件是构建之外的独立 ES module，按约定发现：

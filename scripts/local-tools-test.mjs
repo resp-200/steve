@@ -75,6 +75,37 @@ async function toolChecks() {
 	);
 	check("只读模式只给读工具", createLocalTools({ roots: [workspace] }).map((tool) => tool.name).join(",") === "read_file,glob,grep");
 
+	// --- platform behaviour ---------------------------------------------------
+	const { isInside, resolveShell } = await import("../dist/features/local-tools.js");
+	const posix = { caseInsensitive: false, separator: "/" };
+	check("isInside：根自身与子路径算在内", isInside("/a/b", "/a/b", posix) && isInside("/a/b", "/a/b/c.txt", posix));
+	check("isInside：前缀相同的兄弟目录不算", !isInside("/a/b", "/a/bc", posix) && !isInside("/a/b", "/a", posix));
+	const windows = { caseInsensitive: true, separator: "\\" };
+	check(
+		"isInside：Windows 大小写不敏感且用 \\ 作边界",
+		isInside("C:\\Users\\zz\\Project", "c:\\users\\zz\\project\\x.txt", windows) &&
+			!isInside("C:\\Users\\zz\\Project", "c:\\users\\zz\\project2\\x.txt", windows),
+	);
+	check("isInside：macOS 大小写不敏感（/ 边界）", isInside("/Users/zz/Project", "/users/zz/project/x.txt", { caseInsensitive: true }));
+	check("isInside：Linux 保持大小写敏感", !isInside("/home/zz/Project", "/home/zz/project/x.txt", posix));
+	check("isInside：末尾分隔符不会放宽边界", isInside("/a/b/", "/a/b/c", posix) && !isInside("/a/b/", "/a/bc", posix));
+	check(
+		"resolveShell：POSIX 用 $SHELL -lc",
+		JSON.stringify(resolveShell("darwin", {})) === JSON.stringify({ file: "/bin/sh", args: ["-lc"] }) &&
+			JSON.stringify(resolveShell("linux", { SHELL: "/bin/bash" })) === JSON.stringify({ file: "/bin/bash", args: ["-lc"] }),
+		JSON.stringify(resolveShell("linux", {})),
+	);
+	check(
+		"resolveShell：Windows 用 COMSPEC /d /s /c",
+		JSON.stringify(resolveShell("win32", {})) === JSON.stringify({ file: "cmd.exe", args: ["/d", "/s", "/c"] }) &&
+			JSON.stringify(resolveShell("win32", { COMSPEC: "C:\\Windows\\System32\\cmd.exe" })) === JSON.stringify({ file: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/s", "/c"] }),
+		JSON.stringify(resolveShell("win32", {})),
+	);
+	check(
+		"run_command 可以换 shell（powershell 场景）",
+		JSON.stringify(createLocalTools({ roots: [workspace], allowExec: true, shell: { file: "pwsh", args: ["-NoProfile", "-Command"] } })) !== "[]",
+	);
+
 	const read = toolNamed(tools, "read_file");
 	const readResult = await read.execute("t", { path: "notes.md" });
 	check("read_file 读回内容并带行号信息", textOf(readResult).includes("TODO: ship it") && textOf(readResult).includes("lines 1-3"), textOf(readResult).split("\n")[0]);

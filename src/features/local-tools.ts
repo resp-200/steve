@@ -51,6 +51,8 @@ export interface LocalToolOptions {
 	maxResults?: number;
 	/** Shell timeout. Default: 30s. */
 	timeoutMs?: number;
+	/** Override how shell commands are run (defaults to `resolveShell()`). */
+	shell?: ShellCommand;
 }
 
 const ReadParams = Type.Object({
@@ -150,6 +152,45 @@ function canonicalize(path: string): string {
 	}
 }
 
+/**
+ * True when `candidate` is inside `root`.
+ *
+ * Windows and default macOS filesystems compare paths case-insensitively, so
+ * containment has to as well — otherwise a path that differs only in case is
+ * wrongly refused. Linux stays case-sensitive to keep the boundary tight.
+ */
+export interface ContainmentOptions {
+	/** Compare case-insensitively. Default: true on Windows and macOS. */
+	caseInsensitive?: boolean;
+	/** Separator used for the boundary check. Default: the platform's `sep`. */
+	separator?: string;
+}
+
+export function isInside(root: string, candidate: string, options: ContainmentOptions = {}): boolean {
+	const caseInsensitive = options.caseInsensitive ?? (process.platform === "win32" || process.platform === "darwin");
+	const separator = options.separator ?? sep;
+	const [a, b] = caseInsensitive ? [root.toLowerCase(), candidate.toLowerCase()] : [root, candidate];
+	return b === a || b.startsWith(a.endsWith(separator) ? a : a + separator);
+}
+
+/** How this platform runs a shell command. */
+export interface ShellCommand {
+	file: string;
+	args: string[];
+}
+
+/**
+ * `sh -lc` on POSIX, `cmd.exe /d /s /c` on Windows. Override with
+ * `LocalToolOptions.shell` (or `SHELL`/`COMSPEC`) when you want another shell.
+ */
+export function resolveShell(platform: string = process.platform, env: NodeJS.ProcessEnv = process.env): ShellCommand {
+	if (platform === "win32") {
+		return { file: env.COMSPEC || "cmd.exe", args: ["/d", "/s", "/c"] };
+	}
+
+	return { file: env.SHELL || "/bin/sh", args: ["-lc"] };
+}
+
 export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 	const roots = options.roots.map((root) => resolve(root));
 	const maxBytes = options.maxBytes ?? 200 * 1024;
@@ -170,7 +211,7 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 	const resolveInside = (target: string): string => {
 		const path = isAbsolute(target) ? resolve(target) : resolve(base, target);
 		const canonical = canonicalize(path);
-		const inside = canonicalRoots.some((root) => canonical === root || canonical.startsWith(root + sep));
+		const inside = canonicalRoots.some((root) => isInside(root, canonical));
 		if (!inside) {
 			throw new Error(`Refused: ${path} is outside the workspace roots (${roots.join(", ")}).`);
 		}
@@ -393,10 +434,11 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 			const cwd = params.cwd ? resolveInside(params.cwd) : base;
 			const limit = params.timeout_ms ?? timeoutMs;
 
+			const shell = options.shell ?? resolveShell();
 			const result = await new Promise<{ stdout: string; stderr: string; code: number | null; timedOut: boolean }>((resolvePromise) => {
 				const child = execFile(
-					process.env.SHELL || "/bin/sh",
-					["-lc", params.command],
+					shell.file,
+					[...shell.args, params.command],
 					{ cwd, timeout: limit, maxBuffer: maxBytes, encoding: "utf8" },
 					(error, stdout, stderr) => {
 						const failure = error as (Error & { code?: number | string; killed?: boolean }) | null;
@@ -446,7 +488,7 @@ export function createLocalToolDescriber(options: LocalToolOptions): (toolName: 
 	const resolveInside = (target: string): string => {
 		const path = isAbsolute(target) ? resolve(target) : resolve(base, target);
 		const canonical = canonicalize(path);
-		if (!canonicalRoots.some((root) => canonical === root || canonical.startsWith(root + sep))) {
+		if (!canonicalRoots.some((root) => isInside(root, canonical))) {
 			throw new Error(`${path} is outside the workspace roots.`);
 		}
 		return path;
