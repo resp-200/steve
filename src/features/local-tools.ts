@@ -14,7 +14,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type, type AgentTool } from "./contract.js";
-import { editPreview, writePreview } from "./change-preview.js";
+import { editPreview, findOccurrences, writePreview } from "./change-preview.js";
 import type { ToolChangePreview } from "./permissions.js";
 
 /** Tool names that need the user's approval before they run. */
@@ -81,6 +81,7 @@ const EditParams = Type.Object({
 	old_string: Type.String({ description: "Exact text to replace; must be unique unless replace_all is set." }),
 	new_string: Type.String({ description: "Replacement text." }),
 	replace_all: Type.Optional(Type.Boolean({ description: "Replace every occurrence." })),
+	line: Type.Optional(Type.Number({ description: "1-based line the match must start on, to disambiguate repeated snippets." })),
 });
 
 const CommandParams = Type.Object({
@@ -343,19 +344,42 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		parameters: EditParams,
 		execute: async (_toolCallId, params) => {
 			const path = resolveInside(params.path);
+			const shown = relativeToBase(path);
 			const original = await readFile(path, "utf8");
-			const occurrences = original.split(params.old_string).length - 1;
+			const occurrences = findOccurrences(original, params.old_string);
 
-			if (occurrences === 0) throw new Error(`old_string was not found in ${relativeToBase(path)}.`);
-			if (occurrences > 1 && !params.replace_all) {
-				throw new Error(`old_string appears ${occurrences} times in ${relativeToBase(path)}; add more context or set replace_all.`);
+			if (occurrences.length === 0) throw new Error(`old_string was not found in ${shown}.`);
+
+			// Ambiguity is reported with candidates, so the model can pass `line` next.
+			if (occurrences.length > 1 && !params.replace_all && params.line === undefined) {
+				const candidates = occurrences.map((occurrence) => `  line ${occurrence.line}: ${occurrence.snippet}`).join("\n");
+				throw new Error(
+					`old_string appears ${occurrences.length} times in ${shown}; pass \`line\` to pick one, or set replace_all. Candidates:\n${candidates}`,
+				);
 			}
 
-			const updated = params.replace_all ? original.split(params.old_string).join(params.new_string) : original.replace(params.old_string, params.new_string);
+			const selected =
+				params.line === undefined
+					? params.replace_all
+						? occurrences
+						: occurrences.slice(0, 1)
+					: occurrences.filter((occurrence) => occurrence.line === params.line);
+
+			if (selected.length === 0) {
+				throw new Error(
+					`no occurrence of old_string starts at line ${params.line} in ${shown} (candidates: ${occurrences.map((occurrence) => occurrence.line).join(", ")}).`,
+				);
+			}
+
+			const updated = selected.reduce((text, occurrence) => {
+				const start = occurrence.index;
+				return `${text.slice(0, start)}${params.new_string}${text.slice(start + params.old_string.length)}`;
+			}, original);
 			await writeFile(path, updated, "utf8");
+
 			return {
-				content: [{ type: "text", text: `Replaced ${occurrences} occurrence(s) in ${relativeToBase(path)}.` }],
-				details: { path, occurrences, bytes: updated.length },
+				content: [{ type: "text", text: `Replaced ${selected.length} of ${occurrences.length} occurrence(s) in ${shown} (line ${selected.map((o) => o.line).join(", ")}).` }],
+				details: { path, occurrences: selected.length, lines: selected.map((occurrence) => occurrence.line), bytes: updated.length },
 			};
 		},
 	};
@@ -451,7 +475,15 @@ export function createLocalToolDescriber(options: LocalToolOptions): (toolName: 
 
 		if (toolName === "edit_file") {
 			const before = await readFile(path, "utf8");
-			return editPreview({ path, shown, before, find: text("old_string") ?? "", replace: text("new_string") ?? "" });
+			return editPreview({
+				path,
+				shown,
+				before,
+				find: text("old_string") ?? "",
+				replace: text("new_string") ?? "",
+				...(typeof input.line === "number" ? { line: input.line } : {}),
+				...(input.replace_all === true ? { replaceAll: true } : {}),
+			});
 		}
 
 		return undefined;

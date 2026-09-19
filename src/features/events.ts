@@ -24,6 +24,12 @@ export interface PromptImage {
 	data: string;
 }
 
+/** One entry of a replayed transcript, in provider-neutral terms. */
+export type TranscriptEntry =
+	| { role: "user"; text: string; images: number }
+	| { role: "assistant"; thinking: string; text: string; toolCalls: { id: string; name: string; args: unknown }[] }
+	| { role: "tool"; toolCallId: string; name: string; isError: boolean; text: string };
+
 export type AgentRuntimeEvent =
 	| { type: "turn_start" }
 	| { type: "text_delta"; text: string }

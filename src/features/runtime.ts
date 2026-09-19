@@ -10,7 +10,7 @@ import type { PluginCommand } from "../extensions/api.js";
 import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
-import type { AgentRuntimeEvent, PromptImage, TurnStopReason, TurnUsage } from "./events.js";
+import type { AgentRuntimeEvent, PromptImage, TranscriptEntry, TurnStopReason, TurnUsage } from "./events.js";
 import { tools as defaultTools } from "./tools.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -79,6 +79,12 @@ export interface AgentRuntime {
 	readonly toolNames: string[];
 	/** Slash commands registered by plugins. */
 	readonly commands: PluginCommand[];
+	/** Opaque, JSON-serializable transcript (what a session store persists). */
+	snapshot(): unknown[];
+	/** Replaces the transcript, e.g. when a stored session is resumed. */
+	restore(snapshot: unknown[]): void;
+	/** The transcript in provider-neutral terms, for replaying to a client. */
+	transcript(): TranscriptEntry[];
 	/** Subscribes to normalised events; the returned function unsubscribes. */
 	subscribe(listener: (event: AgentRuntimeEvent) => void): () => void;
 	prompt(text: string, options?: PromptOptions): Promise<TurnResult>;
@@ -115,6 +121,60 @@ function resultImages(result: unknown): PromptImage[] {
 			data: String((block as { data?: unknown }).data ?? ""),
 		}))
 		.filter((image) => image.data.length > 0);
+}
+
+/** pi messages -> provider-neutral transcript entries (for replaying history). */
+function toTranscript(messages: AgentMessage[]): TranscriptEntry[] {
+	const entries: TranscriptEntry[] = [];
+
+	for (const message of messages) {
+		if (message.role === "user") {
+			const blocks = Array.isArray(message.content) ? message.content : [];
+			entries.push({
+				role: "user",
+				text: blocks
+					.filter((block) => block.type === "text")
+					.map((block) => (block as { text?: string }).text ?? "")
+					.join("\n"),
+				images: blocks.filter((block) => block.type === "image").length,
+			});
+			continue;
+		}
+
+		if (message.role === "assistant") {
+			const blocks = Array.isArray(message.content) ? message.content : [];
+			entries.push({
+				role: "assistant",
+				thinking: blocks
+					.filter((block) => block.type === "thinking")
+					.map((block) => (block as { thinking?: string }).thinking ?? "")
+					.join(""),
+				text: blocks
+					.filter((block) => block.type === "text")
+					.map((block) => (block as { text?: string }).text ?? "")
+					.join(""),
+				toolCalls: blocks
+					.filter((block) => block.type === "toolCall")
+					.map((block) => {
+						const call = block as { id?: string; name?: string; arguments?: unknown };
+						return { id: call.id ?? "", name: call.name ?? "", args: call.arguments ?? {} };
+					}),
+			});
+			continue;
+		}
+
+		if (message.role === "toolResult") {
+			entries.push({
+				role: "tool",
+				toolCallId: message.toolCallId,
+				name: message.toolName,
+				isError: message.isError === true,
+				text: firstText(message) ?? "",
+			});
+		}
+	}
+
+	return entries;
 }
 
 function toUsage(usage: AssistantTurn["usage"]): TurnUsage {
@@ -263,6 +323,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 	return {
 		toolNames: agentTools.map((tool) => tool.name),
 		commands: extensions?.commands ?? [],
+
+		snapshot: () => [...agent.state.messages],
+		restore: (snapshot) => {
+			agent.state.messages = snapshot as AgentMessage[];
+		},
+		transcript: () => toTranscript(agent.state.messages),
 		runCommand: (name, args) => extensions?.runCommand(name, args) ?? Promise.resolve(undefined),
 
 		subscribe(listener) {

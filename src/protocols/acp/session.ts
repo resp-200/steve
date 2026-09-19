@@ -12,6 +12,7 @@ import type { AppConfig } from "../../model/config.js";
 import type { AgentRuntimeEvent, TurnStopReason, TurnUsage } from "../../features/events.js";
 import type { ExtensionHost } from "../../extensions/host.js";
 import { readFile } from "node:fs/promises";
+import type { SessionStore, StoredSession } from "../../features/session-store.js";
 import { isAbsolute, join } from "node:path";
 import { editPreview, writePreview } from "../../features/change-preview.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest, type ToolChangePreview } from "../../features/permissions.js";
@@ -49,6 +50,10 @@ export interface AcpSessionOptions {
 	allowLocalTools?: boolean;
 	/** Plugins loaded for this session. */
 	extensions: ExtensionHost;
+	/** Where the transcript is persisted (omitted in tests that do not need it). */
+	store?: SessionStore;
+	/** A stored transcript to resume instead of starting empty. */
+	restore?: StoredSession;
 	logger: Logger;
 }
 
@@ -68,6 +73,7 @@ export class AcpSession {
 	private readonly runtime: AgentRuntime;
 	private readonly supportsImages: boolean;
 	private readonly unsubscribe: () => void;
+	private readonly createdAt: string;
 	private readonly usage: Usage = {
 		totalTokens: 0,
 		inputTokens: 0,
@@ -116,6 +122,11 @@ export class AcpSession {
 			}),
 		});
 		this.toolNames = this.runtime.toolNames;
+		this.createdAt = options.restore?.createdAt ?? new Date().toISOString();
+		if (options.restore) {
+			this.runtime.restore(options.restore.messages);
+			this.accountUsage(options.restore.usage as TurnUsage | undefined);
+		}
 		this.unsubscribe = this.runtime.subscribe((event) => this.publish(event));
 	}
 
@@ -183,10 +194,59 @@ export class AcpSession {
 			});
 		}
 
+		await this.persist();
 		return { stopReason: STOP_REASONS[result.stopReason], usage: { ...this.usage } };
 	}
 
-	/** Slash commands this session answers itself (plus whatever plugins added). */
+	/** Saves the transcript so the session can be resumed after a restart. */
+	private async persist(): Promise<void> {
+		if (!this.options.store) return;
+		await this.options.store.save({
+			id: this.id,
+			cwd: this.cwd,
+			createdAt: this.createdAt,
+			updatedAt: new Date().toISOString(),
+			messages: this.runtime.snapshot(),
+			usage: { ...this.usage },
+		});
+	}
+
+	/** Replays a stored transcript to the client (used by `session/load`). */
+	async replay(): Promise<void> {
+		for (const entry of this.runtime.transcript()) {
+			if (entry.role === "user") {
+				const suffix = entry.images > 0 ? `\n[${entry.images} image(s)]` : "";
+				await this.send({ sessionUpdate: "user_message_chunk", content: { type: "text", text: `${entry.text}${suffix}` } });
+				continue;
+			}
+
+			if (entry.role === "assistant") {
+				if (entry.thinking) await this.send({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: entry.thinking } });
+				if (entry.text) await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: entry.text } });
+				for (const call of entry.toolCalls) {
+					await this.send({
+						sessionUpdate: "tool_call",
+						toolCallId: call.id,
+						title: describeToolCall(call.name, call.args),
+						name: call.name,
+						kind: TOOL_KINDS[call.name] ?? "other",
+						status: "in_progress",
+						rawInput: call.args,
+						locations: locationsFromArgs(call.args),
+					});
+				}
+				continue;
+			}
+
+			await this.send({
+				sessionUpdate: "tool_call_update",
+				toolCallId: entry.toolCallId,
+				status: entry.isError ? "failed" : "completed",
+				content: toolCallContent(entry.text, undefined),
+			});
+		}
+	}
+
 	private builtinCommands(): { name: string; description: string; run: (args: string) => string }[] {
 		const { config } = this.options;
 		return [
@@ -237,7 +297,15 @@ export class AcpSession {
 		if (toolName === "edit_file") {
 			const before = await this.readForPreview(path);
 			if (before === undefined) return undefined;
-			return editPreview({ path, shown: path, before, find: text("old_string"), replace: text("new_string") });
+			return editPreview({
+				path,
+				shown: path,
+				before,
+				find: text("old_string"),
+				replace: text("new_string"),
+				...(typeof input.line === "number" ? { line: input.line } : {}),
+				...(input.replace_all === true ? { replaceAll: true } : {}),
+			});
 		}
 
 		return undefined;
@@ -295,7 +363,8 @@ export class AcpSession {
 		].join("\n");
 	}
 
-	private accountUsage(usage: TurnUsage): void {
+	private accountUsage(usage: TurnUsage | undefined): void {
+		if (!usage) return;
 		this.usage.inputTokens += usage.input;
 		this.usage.outputTokens += usage.output;
 		this.usage.totalTokens += usage.total;

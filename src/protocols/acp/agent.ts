@@ -9,6 +9,7 @@ import {
 import type { AppConfig } from "../../model/config.js";
 import type { Logger } from "../../types.js";
 import { loadExtensions } from "../../extensions/host.js";
+import type { SessionStore } from "../../features/session-store.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
 export const AGENT_NAME = "steve";
@@ -22,6 +23,8 @@ export interface AcpAgentOptions {
 	extensionPaths?: string[];
 	/** Let sessions fall back to local file/exec tools when the client offers none. */
 	allowLocalTools?: boolean;
+	/** Session store; without it sessions are ephemeral and `session/load` is not offered. */
+	store?: SessionStore;
 }
 
 /**
@@ -60,7 +63,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					protocolVersion: Math.min(clientVersion, PROTOCOL_VERSION),
 					agentInfo: { name: AGENT_NAME, version: AGENT_VERSION },
 					agentCapabilities: {
-						loadSession: false,
+						loadSession: Boolean(options.store),
 						promptCapabilities: {
 							image: options.config.model.input.includes("image"),
 							audio: false,
@@ -92,6 +95,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					clientCapabilities,
 					permissionMode: options.permissionMode,
 					...(options.allowLocalTools ? { allowLocalTools: true } : {}),
+					...(options.store ? { store: options.store } : {}),
 					extensions,
 					logger: options.logger,
 				});
@@ -101,6 +105,43 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					`session/new: ${id} cwd=${session.cwd} tools=${session.toolNames.join(",")}${extensions.files.length > 0 ? ` plugins=${extensions.files.length}` : ""}`,
 				);
 				return { sessionId: id };
+			})
+
+			.onRequest("session/load", async (ctx) => {
+				const stored = await options.store?.load(ctx.params.sessionId);
+				if (!stored) {
+					throw RequestError.invalidParams({ sessionId: ctx.params.sessionId }, `Unknown session "${ctx.params.sessionId}"`);
+				}
+
+				const cwd = ctx.params.cwd || stored.cwd;
+				const extensions = await loadExtensions({
+					cwd,
+					mode: "acp",
+					sessionId: stored.id,
+					paths: options.extensionPaths ?? [],
+					log: options.logger,
+				});
+				const session = new AcpSession({
+					id: stored.id,
+					cwd,
+					additionalDirectories: ctx.params.additionalDirectories ?? [],
+					config: options.config,
+					client: ctx.client,
+					clientCapabilities,
+					permissionMode: options.permissionMode,
+					...(options.allowLocalTools ? { allowLocalTools: true } : {}),
+					extensions,
+					...(options.store ? { store: options.store } : {}),
+					restore: stored,
+					logger: options.logger,
+				});
+				sessions.set(stored.id, session);
+
+				// Replay history first, then the command list, so the client sees a full session.
+				await session.replay();
+				await session.announceCommands();
+				options.logger(`session/load: ${stored.id} messages=${stored.messages.length}`);
+				return {};
 			})
 
 			.onRequest("session/prompt", async (ctx) => sessionFor(ctx.params.sessionId).prompt(ctx.params, ctx.signal))

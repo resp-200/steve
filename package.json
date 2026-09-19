@@ -17,6 +17,7 @@
 		"acp:ui-test": "node scripts/acp-ui-test.mjs",
 		"plugins:test": "node scripts/plugin-test.mjs",
 		"tools:test": "node scripts/local-tools-test.mjs",
+		"sessions:test": "node scripts/session-test.mjs",
 		"start": "node dist/entries/cli.js",
 		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		"build": "npm run clean && tsc -p tsconfig.json",

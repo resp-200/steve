@@ -131,7 +131,16 @@ export class AcpHttpClient {
 		return result;
 	}
 
-	/** Sends a prompt and resolves with the PromptResponse once the turn ends. */
+	/**
+	 * Resumes a stored session. Its stream is opened *before* asking, so the history
+	 * the agent replays during `session/load` has somewhere to go.
+	 */
+	async loadSession({ sessionId, cwd, additionalDirectories = [], mcpServers = [] }) {
+		if (!sessionId) throw new Error("loadSession needs a sessionId");
+		await this.#ensureSessionStream(sessionId);
+		return this.request("session/load", { sessionId, cwd, additionalDirectories, mcpServers });
+	}
+
 	async prompt(sessionId, prompt, { timeoutMs = 10 * 60_000 } = {}) {
 		await this.#ensureSessionStream(sessionId);
 		return this.request("session/prompt", { sessionId, prompt }, { sessionId, timeoutMs });

@@ -178,6 +178,13 @@
                     <label>session/new 的 cwd（必须是绝对路径）</label>
                     <input type="text" id="cwd" />
                 </div>
+                <div class="field">
+                    <label>恢复已有会话：粘贴 session id 后点「恢复」（服务端默认把 transcript 存在 &lt;cwd&gt;/.steve/sessions）</label>
+                    <div style="display:flex;gap:8px;">
+                        <input type="text" id="resumeSessionId" placeholder="session id（可留空）" style="flex:1;" />
+                        <button id="resumeBtn" type="button">恢复</button>
+                    </div>
+                </div>
 
                 <div class="notice" id="fileHint" hidden style="margin-bottom: 12px; color: #a06a00;">
                     ⚠️ 当前是 <code>file://</code> 直接打开：浏览器会以 <code>Origin: null</code> 发起跨域请求，
@@ -411,7 +418,16 @@
     		return result;
     	}
 
-    	/** Sends a prompt and resolves with the PromptResponse once the turn ends. */
+    	/**
+    	 * Resumes a stored session. Its stream is opened *before* asking, so the history
+    	 * the agent replays during `session/load` has somewhere to go.
+    	 */
+    	async loadSession({ sessionId, cwd, additionalDirectories = [], mcpServers = [] }) {
+    		if (!sessionId) throw new Error("loadSession needs a sessionId");
+    		await this.#ensureSessionStream(sessionId);
+    		return this.request("session/load", { sessionId, cwd, additionalDirectories, mcpServers });
+    	}
+
     	async prompt(sessionId, prompt, { timeoutMs = 10 * 60_000 } = {}) {
     		await this.#ensureSessionStream(sessionId);
     		return this.request("session/prompt", { sessionId, prompt }, { sessionId, timeoutMs });
@@ -980,6 +996,26 @@
             }
         }
 
+        /** Resumes a session stored on the server: history is replayed as session/update. */
+        async function resumeSession() {
+            if (!state.client) return;
+            const sessionId = $("resumeSessionId").value.trim();
+            if (!sessionId) {
+                chat("error", "先填 session id（服务端 <cwd>/.steve/sessions/<id>.json 的文件名）");
+                return;
+            }
+            const cwd = $("cwd").value.trim() || "/tmp";
+            try {
+                await state.client.loadSession({ sessionId, cwd });
+                state.sessionId = sessionId;
+                $("currentSession").textContent = shortId(sessionId);
+                $("sessionCount").textContent = state.client.sessions.length;
+                chat("system", `已恢复 session：${sessionId}（历史已回放）`);
+            } catch (error) {
+                chat("error", `session/load 失败：${error.message}`);
+            }
+        }
+
         async function disconnect() {
             if (!state.client) return;
             await state.client.close();
@@ -1024,6 +1060,7 @@
         /* ------------------------------- 事件绑定 ------------------------------ */
 
         $("connectBtn").addEventListener("click", connect);
+        $("resumeBtn").addEventListener("click", resumeSession);
         $("newSessionBtn").addEventListener("click", newSession);
         $("disconnectBtn").addEventListener("click", disconnect);
         $("sendMessageBtn").addEventListener("click", sendMessage);

@@ -326,6 +326,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 | `npm run plugins:test` | 插件层 17 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 39 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
+| `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
@@ -356,6 +357,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **每条连接独立**：HTTP/WS 传输下每个连接有自己的 `AgentApp` 和 session 表，session 之间不串上下文。
 - **stdout 只走协议**：stdio 模式下所有日志都写到 stderr，`--quiet` 可只留错误。
 - **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
+- **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，编辑器重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
 
 ## 换个模型 / 加个工具
 

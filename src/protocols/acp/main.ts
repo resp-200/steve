@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
+import { join } from "node:path";
 import { createAcpAgentApp, AGENT_NAME, AGENT_VERSION } from "./agent.js";
+import { createSessionStore } from "../../features/session-store.js";
 import { loadConfig } from "../../model/config.js";
 import type { PermissionMode } from "./session.js";
 import { serveAcp, type AcpTransport } from "./transport.js";
@@ -21,6 +23,8 @@ Transport
   --cors <origins>           allow browser origins, comma separated or * (default off)
   --extension <path>         load a plugin, repeatable (or STEVE_EXTENSIONS=a,b)
   --allow-local-tools        let sessions use local file/exec tools when the client offers none
+  --session-dir <path>       where transcripts live (default <cwd>/.steve/sessions)
+  --no-sessions              keep sessions ephemeral (no persistence, no session/load)
 
 Behaviour
   --permissions <ask|allow>  ask the editor before write/run tools (default ask)
@@ -39,12 +43,16 @@ interface CliOptions {
 	permissionMode: PermissionMode;
 	/** Plugin files/directories to load per session. */
 	extensionPaths: string[];
+	/** Where transcripts are persisted (`--session-dir`, default `<cwd>/.steve/sessions`). */
+	sessionDir?: string;
+	/** `--no-sessions` disables persistence and the `session/load` capability. */
+	noSessions: boolean;
 	/** Fall back to local file/exec tools when the client offers none (default off). */
 	allowLocalTools: boolean;
 	quiet: boolean;
 }
 
-const BOOLEAN_FLAGS = new Set(["--quiet", "--ui", "--no-ui", "--allow-local-tools"]);
+const BOOLEAN_FLAGS = new Set(["--quiet", "--ui", "--no-ui", "--allow-local-tools", "--no-sessions"]);
 function parseArgs(argv: string[]): CliOptions | "help" {
 	const values = new Map<string, string>();
 	const extensionPaths: string[] = [];
@@ -120,6 +128,8 @@ function parseArgs(argv: string[]): CliOptions | "help" {
 				.filter(Boolean),
 		],
 		allowLocalTools: values.has("allow-local-tools") || (process.env.ACP_ALLOW_LOCAL_TOOLS ?? "").toLowerCase() === "true",
+		...(pick("session-dir", "ACP_SESSION_DIR") ? { sessionDir: pick("session-dir", "ACP_SESSION_DIR") as string } : {}),
+		noSessions: values.has("no-sessions"),
 		quiet: values.get("quiet") === "true",
 	};
 }
@@ -144,6 +154,15 @@ async function main(): Promise<void> {
 	log(`transport=${parsed.transport.kind} permissions=${parsed.permissionMode}`);
 	if (parsed.extensionPaths.length > 0) log(`extensions=${parsed.extensionPaths.join(",")}`);
 
+	// Transcripts make `session/load` possible; `--no-sessions` keeps sessions ephemeral.
+	const store = parsed.noSessions
+		? undefined
+		: createSessionStore({
+				dir: parsed.sessionDir ?? join(process.cwd(), ".steve", "sessions"),
+				logger: warn,
+			});
+	if (store) log(`sessions dir=${store.dir}`);
+
 	await serveAcp({
 		createAgent: () =>
 			createAcpAgentApp({
@@ -151,6 +170,7 @@ async function main(): Promise<void> {
 				permissionMode: parsed.permissionMode,
 				extensionPaths: parsed.extensionPaths,
 				...(parsed.allowLocalTools ? { allowLocalTools: true } : {}),
+				...(store ? { store } : {}),
 				logger: warn,
 			}),
 		transport: parsed.transport,
