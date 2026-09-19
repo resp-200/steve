@@ -11,6 +11,7 @@ import {
 import type { AppConfig } from "../../model/config.js";
 import type { AgentRuntimeEvent, TurnStopReason, TurnUsage } from "../../features/events.js";
 import type { ExtensionHost } from "../../extensions/host.js";
+import type { AgentTool } from "../../features/contract.js";
 import { readFile } from "node:fs/promises";
 import type { SessionStore, StoredSession } from "../../features/session-store.js";
 import { isAbsolute, join } from "node:path";
@@ -54,6 +55,10 @@ export interface AcpSessionOptions {
 	store?: SessionStore;
 	/** A stored transcript to resume instead of starting empty. */
 	restore?: StoredSession;
+	/** Tools contributed by MCP servers the client asked for. */
+	mcpTools?: AgentTool<any>[];
+	/** Closes the MCP connections this session opened. */
+	closeMcp?: () => Promise<void>;
 	logger: Logger;
 }
 
@@ -107,7 +112,7 @@ export class AcpSession {
 		};
 		const fallbackTools = options.allowLocalTools ? createLocalTools(localOptions).filter((tool) => !taken.has(tool.name)) : [];
 
-		const tools = [...demoTools, ...clientTools, ...fallbackTools];
+		const tools = [...demoTools, ...clientTools, ...fallbackTools, ...(options.mcpTools ?? [])];
 
 		this.runtime = createAgentRuntime({
 			config: options.config,
@@ -116,7 +121,8 @@ export class AcpSession {
 			systemPrompt: this.systemPrompt(),
 			beforeToolCall: createPermissionGate({
 				mode: options.permissionMode,
-				requires: [...ACP_PERMISSION_TOOLS, ...LOCAL_PERMISSION_TOOLS],
+				// MCP tools can do anything their server can: always ask before calling one.
+				requires: [...ACP_PERMISSION_TOOLS, ...LOCAL_PERMISSION_TOOLS, ...(options.mcpTools ?? []).map((tool) => tool.name)],
 				describe: (request) => this.describeChange(request.toolName, request.args),
 				ask: (request) => this.askPermission(request),
 			}),
@@ -349,6 +355,9 @@ export class AcpSession {
 	dispose(): void {
 		this.unsubscribe();
 		this.runtime.abort();
+		void this.options.closeMcp?.().catch((error: unknown) => {
+			this.options.logger(`session ${this.id}: closing MCP servers failed: ${String(error)}`);
+		});
 	}
 
 	/* ------------------------------- internals ------------------------------ */

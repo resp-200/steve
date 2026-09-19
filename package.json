@@ -3,7 +3,7 @@
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
-	"description": "steve — a minimal streaming chat agent + ACP server built on @earendil-works/pi-agent-core and @earendil-works/pi-ai",
+	"description": "steve \u2014 a minimal streaming chat agent + ACP server built on @earendil-works/pi-agent-core and @earendil-works/pi-ai",
 	"engines": {
 		"node": ">=22.19.0"
 	},
@@ -18,6 +18,7 @@
 		"plugins:test": "node scripts/plugin-test.mjs",
 		"tools:test": "node scripts/local-tools-test.mjs",
 		"sessions:test": "node scripts/session-test.mjs",
+		"mcp:test": "node scripts/mcp-test.mjs",
 		"start": "node dist/entries/cli.js",
 		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
 		"build": "npm run clean && tsc -p tsconfig.json",

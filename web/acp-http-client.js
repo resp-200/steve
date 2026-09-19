@@ -158,6 +158,10 @@ export class AcpHttpClient {
 		const key = messageKey(id);
 		const routedSession = sessionId ?? params?.sessionId;
 
+		// Session-scoped responses come back on that session's SSE stream, so it has to
+		// exist before the request goes out — otherwise the reply has nowhere to land.
+		if (routedSession) await this.#ensureSessionStream(routedSession);
+
 		const pending = new Promise((resolve, reject) => {
 			const timer = timeoutMs
 				? setTimeout(() => {

@@ -142,6 +142,8 @@ function planToolCall(text) {
 	const path = (text.match(/\/[^\s"'`,;)]+/) ?? [])[0];
 	if (/\b(read|cat|open)\b/i.test(text) && path) return { name: "read_file", input: { path, limit: 20 } };
 	if (/\b(write|save|create)\b/i.test(text) && path) return { name: "write_file", input: { path, content: "hello from the mock model\n" } };
+	// Lets the MCP passthrough be exercised end to end (see scripts/mcp-test.mjs).
+	if (/\bmcp-echo\b/i.test(text)) return { name: "mcp__mock__echo", input: { text: "hello from the gateway" } };
 	// A destructive-looking command, so tool_call guards are reachable offline.
 	if (/\brm\b/i.test(text) && /-rf|--recursive/i.test(text)) {
 		return { name: "run_command", input: { command: "rm", args: ["-rf", "/tmp/steve-demo"] } };

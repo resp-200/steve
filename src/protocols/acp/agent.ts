@@ -5,11 +5,14 @@ import {
 	type AgentApp,
 	type ClientCapabilities,
 	type Implementation,
+	type McpServer,
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
 import type { Logger } from "../../types.js";
 import { loadExtensions } from "../../extensions/host.js";
+import type { AgentTool } from "../../features/contract.js";
 import type { SessionStore } from "../../features/session-store.js";
+import { connectMcpServers } from "../../features/mcp.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
 export const AGENT_NAME = "steve";
@@ -46,6 +49,18 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 		if (!session) throw RequestError.invalidParams({ sessionId }, `Unknown session "${sessionId}"`);
 		return session;
 	};
+	/**
+	 * Connects the MCP servers the client asked for. A server that fails to start is
+	 * logged and skipped, so a broken one never blocks the session.
+	 */
+	const connectMcp = async (servers: McpServer[]) => {
+		if (servers.length === 0) return { tools: [] as AgentTool[], close: undefined as undefined | (() => Promise<void>) };
+		const { connections, tools } = await connectMcpServers(servers, { logger: options.logger });
+		return {
+			tools,
+			close: connections.length > 0 ? async () => { await Promise.all(connections.map((connection) => connection.close())); } : undefined,
+		};
+	};
 
 	return (
 		createAgentApp({ name: AGENT_NAME })
@@ -69,7 +84,10 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 							audio: false,
 							embeddedContext: true,
 						},
-						sessionCapabilities: { additionalDirectories: {} },
+						sessionCapabilities: {
+							additionalDirectories: {},
+							...(options.store ? { list: {}, delete: {} } : {}),
+						},
 					},
 				};
 			})
@@ -86,6 +104,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					paths: options.extensionPaths ?? [],
 					log: options.logger,
 				});
+				const mcp = await connectMcp(ctx.params.mcpServers ?? []);
 				const session = new AcpSession({
 					id,
 					cwd: ctx.params.cwd,
@@ -97,6 +116,8 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					...(options.allowLocalTools ? { allowLocalTools: true } : {}),
 					...(options.store ? { store: options.store } : {}),
 					extensions,
+					...(mcp.tools.length > 0 ? { mcpTools: mcp.tools } : {}),
+					...(mcp.close ? { closeMcp: mcp.close } : {}),
 					logger: options.logger,
 				});
 				sessions.set(id, session);
@@ -121,6 +142,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					paths: options.extensionPaths ?? [],
 					log: options.logger,
 				});
+				const mcp = await connectMcp(ctx.params.mcpServers ?? []);
 				const session = new AcpSession({
 					id: stored.id,
 					cwd,
@@ -132,6 +154,8 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					...(options.allowLocalTools ? { allowLocalTools: true } : {}),
 					extensions,
 					...(options.store ? { store: options.store } : {}),
+					...(mcp.tools.length > 0 ? { mcpTools: mcp.tools } : {}),
+					...(mcp.close ? { closeMcp: mcp.close } : {}),
 					restore: stored,
 					logger: options.logger,
 				});
@@ -141,6 +165,21 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 				await session.replay();
 				await session.announceCommands();
 				options.logger(`session/load: ${stored.id} messages=${stored.messages.length}`);
+				return {};
+			})
+
+			.onRequest("session/list", async (ctx) => {
+				const stored = (await options.store?.list()) ?? [];
+				const filtered = ctx.params.cwd ? stored.filter((entry) => entry.cwd === ctx.params.cwd) : stored;
+				return { sessions: filtered.map((entry) => ({ sessionId: entry.id, cwd: entry.cwd, updatedAt: entry.updatedAt })) };
+			})
+
+			.onRequest("session/delete", async (ctx) => {
+				// Drop the live session first: that aborts it and closes its MCP servers.
+				sessions.get(ctx.params.sessionId)?.dispose();
+				sessions.delete(ctx.params.sessionId);
+				await options.store?.remove(ctx.params.sessionId);
+				options.logger(`session/delete: ${ctx.params.sessionId}`);
 				return {};
 			})
 

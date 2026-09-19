@@ -306,7 +306,7 @@ async function main() {
 			// 9. 未实现的方法
 			const listError = await cdp.evaluate(
 				sessionId,
-				`window.acpTest.state.client.request("session/list", {}).then(() => null, (error) => String(error.message))`,
+				`window.acpTest.state.client.request("providers/list", {}).then(() => null, (error) => String(error.message))`,
 			);
 			check("未实现的方法返回 JSON-RPC 错误", typeof listError === "string" && listError.length > 0, String(listError).slice(0, 70));
 
