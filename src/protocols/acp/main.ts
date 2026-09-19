@@ -20,6 +20,7 @@ Transport
   --ui / --no-ui             serve the browser test client on / (default on)
   --cors <origins>           allow browser origins, comma separated or * (default off)
   --extension <path>         load a plugin, repeatable (or STEVE_EXTENSIONS=a,b)
+  --allow-local-tools        let sessions use local file/exec tools when the client offers none
 
 Behaviour
   --permissions <ask|allow>  ask the editor before write/run tools (default ask)
@@ -38,10 +39,12 @@ interface CliOptions {
 	permissionMode: PermissionMode;
 	/** Plugin files/directories to load per session. */
 	extensionPaths: string[];
+	/** Fall back to local file/exec tools when the client offers none (default off). */
+	allowLocalTools: boolean;
 	quiet: boolean;
 }
 
-const BOOLEAN_FLAGS = new Set(["--quiet", "--ui", "--no-ui"]);
+const BOOLEAN_FLAGS = new Set(["--quiet", "--ui", "--no-ui", "--allow-local-tools"]);
 function parseArgs(argv: string[]): CliOptions | "help" {
 	const values = new Map<string, string>();
 	const extensionPaths: string[] = [];
@@ -116,6 +119,7 @@ function parseArgs(argv: string[]): CliOptions | "help" {
 				.map((entry) => entry.trim())
 				.filter(Boolean),
 		],
+		allowLocalTools: values.has("allow-local-tools") || (process.env.ACP_ALLOW_LOCAL_TOOLS ?? "").toLowerCase() === "true",
 		quiet: values.get("quiet") === "true",
 	};
 }
@@ -146,6 +150,7 @@ async function main(): Promise<void> {
 				config,
 				permissionMode: parsed.permissionMode,
 				extensionPaths: parsed.extensionPaths,
+				...(parsed.allowLocalTools ? { allowLocalTools: true } : {}),
 				logger: warn,
 			}),
 		transport: parsed.transport,

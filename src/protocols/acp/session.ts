@@ -13,7 +13,8 @@ import type { AgentRuntimeEvent, TurnStopReason, TurnUsage } from "../../feature
 import type { ExtensionHost } from "../../extensions/host.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest } from "../../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
-import { tools as localTools } from "../../features/tools.js";
+import { LOCAL_PERMISSION_TOOLS, createLocalTools } from "../../features/local-tools.js";
+import { tools as demoTools } from "../../features/tools.js";
 import type { Logger } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
 import { TOOL_KINDS, describeToolCall, toolCallContent } from "./tool-call.js";
@@ -41,6 +42,8 @@ export interface AcpSessionOptions {
 	client: AgentContext;
 	clientCapabilities: ClientCapabilities;
 	permissionMode: PermissionMode;
+	/** Register local read/write/exec tools when the editor does not provide them. */
+	allowLocalTools?: boolean;
 	/** Plugins loaded for this session. */
 	extensions: ExtensionHost;
 	logger: Logger;
@@ -78,15 +81,24 @@ export class AcpSession {
 		this.cwd = options.cwd;
 		this.supportsImages = options.config.model.input.includes("image");
 
-		const tools = [
-			...localTools,
-			...createAcpTools({
-				sessionId: options.id,
-				workingDirectory: options.cwd,
-				client: options.client,
-				capabilities: options.clientCapabilities,
-			}),
-		];
+		const clientTools = createAcpTools({
+			sessionId: options.id,
+			workingDirectory: options.cwd,
+			client: options.client,
+			capabilities: options.clientCapabilities,
+		});
+
+		// Local tools only fill the gaps the editor does not cover, so names never clash.
+		const taken = new Set([...demoTools, ...clientTools].map((tool) => tool.name));
+		const fallbackTools = options.allowLocalTools
+			? createLocalTools({
+					roots: [options.cwd, ...options.additionalDirectories],
+					allowWrite: true,
+					allowExec: true,
+				}).filter((tool) => !taken.has(tool.name))
+			: [];
+
+		const tools = [...demoTools, ...clientTools, ...fallbackTools];
 
 		this.runtime = createAgentRuntime({
 			config: options.config,
@@ -95,7 +107,7 @@ export class AcpSession {
 			systemPrompt: this.systemPrompt(),
 			beforeToolCall: createPermissionGate({
 				mode: options.permissionMode,
-				requires: ACP_PERMISSION_TOOLS,
+				requires: [...ACP_PERMISSION_TOOLS, ...LOCAL_PERMISSION_TOOLS],
 				ask: (request) => this.askPermission(request),
 			}),
 		});

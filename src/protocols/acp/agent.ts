@@ -20,6 +20,8 @@ export interface AcpAgentOptions {
 	permissionMode: PermissionMode;
 	/** Plugin files/directories to load for every session. */
 	extensionPaths?: string[];
+	/** Let sessions fall back to local file/exec tools when the client offers none. */
+	allowLocalTools?: boolean;
 }
 
 /**
@@ -89,6 +91,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					client: ctx.client,
 					clientCapabilities,
 					permissionMode: options.permissionMode,
+					...(options.allowLocalTools ? { allowLocalTools: true } : {}),
 					extensions,
 					logger: options.logger,
 				});

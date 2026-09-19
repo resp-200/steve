@@ -18,7 +18,7 @@
 | --- | --- | --- |
 | L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
 | L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
-| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地工具、统计 |
+| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计 |
 | L3′ 拓展 | `src/extensions/` | 插件宿主：发现 / 加载 / 隔离插件，并把它们挂到功能层的接缝上 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
 | L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
@@ -32,7 +32,8 @@ src/features/runtime.ts  L3 会话运行时：事件归一化、失败重试与�
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
 src/features/contract.ts  L3 工具契约：协议层定义工具的唯一入口（TypeBox/AgentTool）
-src/features/tools.ts     L3 3 个 AgentTool 示例
+src/features/tools.ts     L3 3 个 AgentTool 示例（计算器/时间/天气）
+src/features/local-tools.ts L3 本地工具：read_file / glob / grep / write_file / edit_file / run_command
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
@@ -67,6 +68,7 @@ npm install
 cp .env.example .env      # 填 LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL
 npm run dev               # 交互式对话
 npm run dev "现在几点？顺便算一下 128*37+15"   # 单次提问
+npm run dev -- --read-only      # 只读模式（默认写/执行前会在终端问 y/n）
 npm run build && npm start
 ```
 
@@ -159,6 +161,35 @@ runtime.subscribe((event) => {
 
 这套重试是协议无关的，因此 CLI 与编辑器行为一致：`npm run acp:ui-test` 的第 16 项断言就是让 mock 先注入两次 429，再验证客户端只看到成功那一轮。
 
+## 本地文件与命令工具
+
+`pi-agent-core` 只提供工具的**形状**（`AgentTool` + 参数校验 + 执行 + 结果回灌），**不带任何内置工具**；内置的 read/write/edit/bash 属于 `pi-coding-agent`，而本仓库刻意不依赖它。所以本地工具在 `src/features/local-tools.ts` 自己实现：
+
+| 工具 | 说明 | 需要批准 |
+| --- | --- | --- |
+| `read_file` | 读 UTF-8 文本，带行号区间与截断标记；二进制拒绝 | 否 |
+| `glob` | `src/**/*.ts` 这类模式列文件（跳过 .git/node_modules/dist 与隐藏项） | 否 |
+| `grep` | 正则搜内容，返回 `path:line: text`，可用 `glob` 过滤文件名 | 否 |
+| `write_file` | 建目录 + 覆盖写 | **是** |
+| `edit_file` | 精确替换，要求唯一匹配，否则报错让模型补充上下文 | **是** |
+| `run_command` | `sh -lc` 执行，带超时与输出上限 | **是** |
+
+安全边界（都有断言覆盖，见 `npm run tools:test`）：
+
+- **路径收敛**：所有路径解析后必须落在 workspace roots 内（CLI 是 `cwd`，ACP 是 `cwd` + `additionalDirectories`），并解析软链——macOS 的 `/var` → `/private/var` 不会被误判为越界。越界直接拒绝，模型收到可读的错误。
+- **不扫隐藏项**：`glob`/`grep` 跳过 `.` 开头的文件与目录，`.env` 不会意外进上下文（显式 `read_file .env` 仍可读，这是有意的）。
+- **截断**：读文件与命令输出都有字节上限，命令默认 30s 超时。
+
+CLI 的三种审批模式：
+
+```bash
+npm run dev                     # 默认：写/执行前在终端问 y/n（非交互运行时默认拒绝）
+npm run dev -- --yes            # 自动批准所有写/执行（危险，慎用）
+npm run dev -- --read-only      # 只注册读工具，没有审批提示
+```
+
+ACP 侧沿用编辑器的授权弹窗；只有客户端**没有**声明 `fs`/`terminal` 能力时，才可用 `--allow-local-tools` 让会话回退到本地工具（默认关闭，避免编辑器里的 agent 绕过沙箱改本机文件）。同名工具不会重复注册：客户端提供了就用客户端的。
+
 ## 拓展（插件）
 
 插件是构建之外的独立 ES module，按约定发现：
@@ -222,6 +253,7 @@ npm run build
 npm run acp                                   # stdio（编辑器默认方式）
 npm run acp -- --port 8890 --token secret     # TCP 端口：Streamable HTTP + WebSocket
 npm run acp -- --port 8890 --cors "*"          # 额外允许跨域浏览器调用（默认关闭，见下）
+npm run acp -- --port 8890 --allow-local-tools  # 客户端没有 fs/terminal 能力时回退到本地工具
 ```
 
 `--port` 模式下默认还会在 `/` 提供内置的浏览器测试页（`--no-ui` 关闭）。
@@ -286,6 +318,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），16 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 | `npm run plugins:test` | 插件层 17 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
+| `npm run tools:test` | 本地工具 25 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制拒绝、命令退出码与超时、CLI `--yes`/默认拒绝/`--read-only`、ACP 无能力时的本地回退 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
