@@ -3,3 +3,6 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Local plugins / project-scoped state (never commit these)
+.steve/
