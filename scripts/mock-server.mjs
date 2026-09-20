@@ -7,16 +7,16 @@
 //   POST /v1/chat/completions   (LLM_API=openai-completions, default)
 //   POST /v1/responses          (LLM_API=openai-responses)
 //
-// Behaviour: a user message containing "21" triggers a `calculate` tool call,
-// "boom" triggers a tool call with an invalid expression (tool error path), and
-// a tool result produces the final answer; anything else streams a fixed reply.
+// Behaviour: a message asking about the time triggers a `get_current_time` tool
+// call, "boom" plans a read outside the workspace (tool error path), and a tool result
+// produces the final answer; anything else streams a fixed reply.
 // A message containing "flaky" gets two HTTP 429s before succeeding (retry path);
 // one containing "rm -rf" plans a destructive run_command (guard-hook path).
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8899);
 const REPLY = "你好！我是一个基于 pi-agent-core 与 pi-ai 的最小对话 Agent。";
-const FINAL = "21 * 2 = 42 ✅ (computed with the calculate tool)";
+const FINAL = "（mock：这一轮没有工具结果可用，只能给个兜底回答）";
 
 // Failure injection so retry behaviour is testable offline: a turn that mentions
 // "flaky" is answered with HTTP 429 until it happened FLAKY_FAILURES times, then the
@@ -149,8 +149,9 @@ function planToolCall(text) {
 		return { name: "run_command", input: { command: "rm", args: ["-rf", "/tmp/steve-demo"] } };
 	}
 	if (/\b(run|exec|execute|ls|shell)\b/i.test(text)) return { name: "run_command", input: { command: "ls" } };
-	if (text.includes("boom")) return { name: "calculate", input: { expression: "1 +" } };
-	if (text.includes("21")) return { name: "calculate", input: { expression: "21 * 2" } };
+	// Error path: an out-of-workspace path, so the tool result comes back isError.
+	if (text.includes("boom")) return { name: "read_file", input: { path: "/nonexistent/boom.txt" } };
+	if (/\btime\b|几点|时间/i.test(text)) return { name: "get_current_time", input: {} };
 	return undefined;
 }
 

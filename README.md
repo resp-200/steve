@@ -3,7 +3,7 @@
 一个最小但完整的流式对话 Agent：直接基于 **`@earendil-works/pi-agent-core`**（Agent 循环 / 状态 / 工具 / 事件）与 **`@earendil-works/pi-ai`**（各家模型 API 的统一流式适配层）编写，**不依赖 `pi-coding-agent`**。
 
 - 终端里流式输出文本与思考过程（thinking）
-- 自带 9 个工具：6 个本地工具（读/写/改/搜/跑命令，写与执行要批准）+ 3 个演示工具（计算器 / 时间 / mock 天气），支持并行工具调用
+- 自带 7 个工具：6 个本地工具（读/写/改/搜/跑命令，写与执行要批准）+ 1 个演示工具（当前时间），支持并行工具调用
 - 支持三种线上协议，切换只改 `.env`：
   `anthropic-messages`、`openai-completions`、`openai-responses`
 - 失败自动重试，并把失败轮次从上下文里剔除后再重试
@@ -37,7 +37,7 @@ src/features/tool-annotations.ts L3 工具声明（permission / metadata / descr
 src/features/local-tools.ts L3 本地工具：read_file / glob / grep / write_file / edit_file / run_command
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
-src/extensions/builtin/*  L3′ 内置插件：会话命令 + 演示工具（calculate/time/weather）
+src/extensions/builtin/*  L3′ 内置插件：会话命令 + 演示工具（get_current_time）
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
@@ -88,7 +88,7 @@ LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic 
 LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/v1 npm run dev
 # OpenAI responses
 LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/v1 npm run dev
-# 说 "what is 21 * 2?" 触发 calculate 工具调用；"boom" 触发工具报错路径；"flaky" 触发两次 429 的重试路径；"rm -rf" 触发危险命令规划（给 guard 插件用）
+# 问"现在几点了"触发 get_current_time 工具调用；"boom" 触发工具报错路径；"flaky" 触发两次 429 的重试路径；"rm -rf" 触发危险命令规划（给 guard 插件用）
 ```
 
 ## 环境变量
@@ -140,19 +140,19 @@ Anthropic 官方 SDK 默认发 `x-api-key`，但很多 Anthropic 兼容网关只
 ### 4. 工具就是一个普通对象
 
 ```ts
-export const calculateTool: AnnotatedTool<typeof CalculateParams> = {
-  name: "calculate", label: "Calculator",
-  description: "…",
-  parameters: CalculateParams,                 // TypeBox schema（pi-ai 重新导出了 Type）
-  // 除 pi 要求的字段外，工具还可以自己声明三件事（见「约定与规范 / 工具与安全」）
+export const myTool: AnnotatedTool<typeof MyParams> = {
+  name: "my_tool", label: "My tool",
+  description: "…",                            // 给模型看
+  parameters: MyParams,                        // TypeBox schema（pi-ai 重新导出了 Type）
+  // 除 pi 要求的字段外，工具还能自己声明三件事（见「约定与规范 / 工具与安全」）
   permission: "ask",                            // 执行前是否要用户批准
-  metadata: { kind: "other", title: (args) => `Calculate ${args.expression}` },
-  describe: (args) => ({ summary: `calculate ${args.expression}` }),   // 审批预览
+  metadata: { kind: "edit", title: (args) => `Touch ${args.path}` },   // 客户端怎么呈现
+  describe: (args) => ({ summary: `touch ${args.path}` }),             // 审批预览
   execute: async (toolCallId, params) => ({ content: [{ type: "text", text: "…" }], details: {} }),
 };
 ```
 
-`execute` 抛错会被 pi 转成 `isError` 的工具结果回灌给模型，模型可自行修正参数重试（`src/extensions/builtin/demo-tools.ts` 的计算器就是这样抛错的）。
+真实例子见 `src/features/local-tools.ts`（写文件会给出 diff 预览）与 `src/extensions/builtin/demo-tools.ts`。`execute` 抛错会被 pi 转成 `isError` 的工具结果回灌给模型，模型可自行修正参数重试。
 
 ### 5. 事件订阅做 UI
 
@@ -272,7 +272,7 @@ export default function gitStatus(pi) {
 
 1. 内置命令（`/tools` `/stats` `/model` `/new` `/help`）→ `src/extensions/builtin/session-commands.ts`
 2. MCP → 插件用 `registerMcpServer()` 声明，核心负责连接（CLI 侧唯一的 MCP 入口）
-3. 演示工具（`calculate` / `get_current_time` / `get_weather`）→ `src/extensions/builtin/demo-tools.ts`，`src/features/tools.ts` 已删除
+3. 演示工具（`get_current_time`）→ `src/extensions/builtin/demo-tools.ts`，`src/features/tools.ts` 已删除
 
 **核心工具和插件工具用同一套声明**（`src/features/tool-annotations.ts`）：`read_file` / `write_file` / `run_command` 这些核心工具也是自己声明 `permission`、`metadata`、`describe`，协议层与权限闸门都改成"先问工具、再兜底"，不再维护工具名硬编码表。
 
@@ -346,7 +346,7 @@ npm run acp:client -- --cancel-after 1000 "数到 100"             # 中断本�
 npm run acp:client -- --http http://127.0.0.1:8890/acp --token secret "hi"
 npm run acp:client -- --ws ws://127.0.0.1:8890/acp --token secret "hi"
 npm run mock &                                        # 离线：不消耗真实模型额度
-LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic npm run acp:client -- "what is 21 * 2"
+LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic npm run acp:client -- "现在几点了？"
 ```
 
 ### 浏览器测试页 `test-acp-jsonrpc.html`

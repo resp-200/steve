@@ -15,9 +15,7 @@ export const TOOL_KINDS: Record<string, ToolKind> = {
 	read_file: "read",
 	write_file: "edit",
 	run_command: "execute",
-	calculate: "other",
 	get_current_time: "other",
-	get_weather: "other",
 };
 
 /** Fallback title for tools that declare no `metadata.title`. */
@@ -34,12 +32,8 @@ export function describeToolCall(name: string, args: unknown): string {
 			const extra = Array.isArray(record.args) ? (record.args as unknown[]).join(" ") : "";
 			return `Run ${text("command") ?? "command"}${extra ? ` ${extra}` : ""}`;
 		}
-		case "calculate":
-			return `Calculate ${text("expression") ?? ""}`.trim();
 		case "get_current_time":
 			return "Get current time";
-		case "get_weather":
-			return `Get weather for ${text("city") ?? "city"}`;
 		default:
 			return name;
 	}

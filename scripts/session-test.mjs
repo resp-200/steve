@@ -104,7 +104,7 @@ async function runtimeChecks() {
 			content: [
 				{ type: "thinking", thinking: "pondering" },
 				{ type: "text", text: "hi there" },
-				{ type: "toolCall", id: "call_1", name: "calculate", arguments: { expression: "1+1" } },
+				{ type: "toolCall", id: "call_1", name: "get_current_time", arguments: { timeZone: "UTC" } },
 			],
 			api: "anthropic-messages",
 			provider: "custom",
@@ -116,8 +116,8 @@ async function runtimeChecks() {
 		{
 			role: "toolResult",
 			toolCallId: "call_1",
-			toolName: "calculate",
-			content: [{ type: "text", text: "2" }],
+			toolName: "get_current_time",
+			content: [{ type: "text", text: "2024-01-01 00:00:00 (UTC)" }],
 			isError: false,
 			timestamp: 3,
 		},
@@ -133,10 +133,10 @@ async function runtimeChecks() {
 	);
 	check(
 		"assistant 条目带 thinking/text/toolCalls",
-		transcript[1].thinking === "pondering" && transcript[1].text === "hi there" && transcript[1].toolCalls[0]?.name === "calculate",
+		transcript[1].thinking === "pondering" && transcript[1].text === "hi there" && transcript[1].toolCalls[0]?.name === "get_current_time",
 		JSON.stringify(transcript[1]).slice(0, 120),
 	);
-	check("tool 条目带结果文本", transcript[2].text === "2" && transcript[2].toolCallId === "call_1");
+	check("tool 条目带结果文本", transcript[2].text.startsWith("2024-01-01") && transcript[2].toolCallId === "call_1");
 	check("restore 后统计沿用 transcript", runtime.stats().turns === 1 && runtime.stats().toolCalls === 1);
 }
 
@@ -208,7 +208,7 @@ async function acpChecks() {
 
 		// The resumed session must keep working, and keep appending to the file.
 		replay.length = 0;
-		const followUp = await reloaded.prompt(session.sessionId, [{ type: "text", text: "what is 21 * 2?" }]);
+		const followUp = await reloaded.prompt(session.sessionId, [{ type: "text", text: "现在几点了？" }]);
 		await sleep(150);
 		const afterFollowUp = JSON.parse(readFileSync(file, "utf8"));
 		check("恢复后的会话可以继续对话", followUp.stopReason === "end_turn" && afterFollowUp.messages.length > stored.messages.length, `messages=${stored.messages.length}→${afterFollowUp.messages.length}`);
