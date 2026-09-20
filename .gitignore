@@ -7,6 +7,9 @@ dist/
 # Local plugins / project-scoped state (never commit these)
 .steve/
 
+# Packed tarballs
+*.tgz
+
 # Editor / IDE state
 .idea/
 .vscode/

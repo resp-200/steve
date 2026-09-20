@@ -427,6 +427,60 @@ Zed 的 `settings.json`：
 }
 ```
 
+### 打包与分发（装到别处怎么连）
+
+没有打包器：`npm run build` 用 `tsc` 直接输出 `dist/`（27 个文件、424 KB），入口都带 shebang。要分发给别人或装到别的机器，用 tarball：
+
+```bash
+npm run build
+npm pack                      # → steve-0.1.0.tgz（109 KB，files 字段已限定内容）
+npm i -g ./steve-0.1.0.tgz     # 装上两个命令：steve（CLI）与 steve-acp（ACP server）
+# 或者只在本机试用：npm link
+```
+
+`bin` 两个入口：`steve`（终端对话）与 `steve-acp`（ACP server）。于是编辑器配置可以简单到：
+
+```jsonc
+// Zed settings.json
+{
+  "agent_servers": {
+    "steve": {
+      "command": "steve-acp",                       // 或用绝对路径：/usr/local/bin/steve-acp
+      "args": [],
+      "env": { "LLM_API_KEY": "...", "LLM_BASE_URL": "...", "LLM_MODEL_ID": "..." }  // 不写则读下面的文件
+    }
+  }
+}
+```
+
+**凭据从哪来**（按优先级，真实环境变量最优先）—— 装到别处后最常用的两种：
+
+| 放哪 | 适用 |
+| --- | --- |
+| `~/.steve/.env` | 装成全局命令后，任何项目、任何 cwd 都能用（推荐） |
+| `<会话 cwd>/.steve/.env` | 每个项目自己的网关/模型 |
+| 编辑器 `env` 块 | 只想在编辑器里用某套凭据 |
+
+ACP 的 `session/new` 会带上项目目录，所以 MCP（`.steve/mcp.json`）与插件（`.steve/extensions/`）也跟着**项目**走，不是跟着安装目录走。
+
+HTTP / WebSocket 模式（编辑器支持远程连接时用）：
+
+```bash
+steve-acp --port 8890 --token secret --cors "*"   # 端点 http://127.0.0.1:8890/acp，页面 http://127.0.0.1:8890/
+```
+
+验证连接（`acp:client` 可以从任意目录运行，agent 路径按脚本位置解析）：
+
+```bash
+node /path/to/steve/scripts/acp-client.mjs --command steve-acp --agent-args "" "现在几点？"
+node /path/to/steve/scripts/acp-http-probe.mjs --url http://127.0.0.1:8890/acp --token secret "run ls"
+```
+
+两个坑：
+
+- **别只拷 `dist/`**：产物是 ESM，需要同级的 `package.json`（`"type": "module"`）以及三个运行时依赖（pi 两个包 + ACP SDK，约 18 MB）。用 `npm pack` + `npm i -g` 就没这个问题。
+- **UI 页面随包走**：HTTP 模式的 `/` 由 `test-acp-jsonrpc.html` 提供，`files` 里已经包含它（`arch:test` 会检查，防止漏掉）。要发到 npm 得先把 `private` 改成 `false`。
+
 ### 自带的测试客户端
 
 `scripts/acp-client.mjs` 是一个完整实现的 ACP client（含 fs / terminal 回调），既能验证服务端，也能当接入参考：
@@ -476,7 +530,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
-| `npm run arch:test` | 架构契约与发布卫生 11 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
+| `npm run arch:test` | 架构契约与发布卫生 13 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
 | `npm run mcp:test` | MCP 与会话管理 38 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 

@@ -14,7 +14,7 @@
  *   node scripts/arch-test.mjs
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -153,6 +153,21 @@ check(
 	optionalDeps.join(", "),
 );
 check("不依赖 pi-coding-agent", !Object.keys(pkg.dependencies ?? {}).some((name) => name.endsWith("pi-coding-agent")));
+
+// Packaging: `bin` must point at real build outputs, and the tarball must carry
+// the browser test page (the HTTP transport serves it) and the mcp template.
+const binTargets = Object.values(pkg.bin ?? {});
+const binSources = binTargets.map((target) => target.replace(/^dist\//, "src/").replace(/\.js$/, ".ts"));
+check(
+	"bin 指向真实存在的构建产物",
+	binTargets.length === 2 && binSources.every((source) => existsSync(join(ROOT, source))),
+	binTargets.join(", "),
+);
+check(
+	"files 覆盖 dist 与测试页（打包后 UI 与 ACP 都能用）",
+	(pkg.files ?? []).includes("dist") && (pkg.files ?? []).includes("test-acp-jsonrpc.html"),
+	(pkg.files ?? []).join(", "),
+);
 
 /* ------------------------------------------------------------------ */
 /* 5. 发布卫生                                                          */

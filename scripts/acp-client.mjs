@@ -3,6 +3,8 @@
 // embedding this agent in another host).
 //
 //   node scripts/acp-client.mjs "list the files here"          # spawns the agent over stdio
+//   node scripts/acp-client.mjs --agent-cwd /path/to/project "hi"   # session cwd
+//   (works from any directory: the agent path is resolved relative to this script)
 //   node scripts/acp-client.mjs --http http://127.0.0.1:8890/acp --token secret "..."
 //   node scripts/acp-client.mjs --deny "delete everything"     # rejects permission prompts
 //   node scripts/acp-client.mjs --cancel-after 2000 "count to 100"
@@ -10,11 +12,17 @@
 // stdout is reserved for the ACP wire format in stdio mode; all logging goes to stderr.
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { client as createClientApp, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
 import { createHttpStream } from "@agentclientprotocol/sdk/experimental/http-client";
 import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
+
+// Absolute, so the client can be run from any directory (an editor spawns the
+// agent from its own cwd, and `session/new` carries the project directory).
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const dim = (text) => (process.stderr.isTTY ? `\u001b[2m${text}\u001b[0m` : text);
 const cyan = (text) => (process.stderr.isTTY ? `\u001b[36m${text}\u001b[0m` : text);
@@ -29,7 +37,7 @@ function parseArgs(argv) {
 		http: undefined,
 		token: undefined,
 		command: "node",
-		agentArgs: ["dist/protocols/acp/main.js"],
+		agentArgs: [join(ROOT, "dist", "protocols", "acp", "main.js")],
 		decision: "allow_once",
 		cancelAfter: undefined,
 	};

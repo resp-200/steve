@@ -7,6 +7,19 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
+	"bin": {
+		"steve": "dist/entries/cli.js",
+		"steve-acp": "dist/protocols/acp/main.js"
+	},
+	"files": [
+		"dist",
+		"web",
+		"test-acp-jsonrpc.html",
+		"mcp.example.json",
+		".env.example",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"dev": "tsx src/entries/cli.ts",
 		"mock": "node scripts/mock-server.mjs",
