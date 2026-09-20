@@ -1,5 +1,15 @@
-import { Type, type Static } from "@earendil-works/pi-ai";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+/**
+ * Built-in plugin: the three demo tools (calculate / time / weather).
+ *
+ * They used to live in the core as `features/tools.ts`. Moving them here is the
+ * dogfooding check for the tool half of the extension API: registering a tool,
+ * declaring its presentation metadata, and building schemas through `pi.Type`
+ * must be enough — no core access required.
+ */
+import { Type, type Static } from "../../features/contract.js";
+import type { AnnotatedTool } from "../../features/tool-annotations.js";
+import type { ExtensionAPI } from "../api.js";
+
 
 /* ------------------------------------------------------------------ */
 /* calculate                                                           */
@@ -76,10 +86,11 @@ function evaluateExpression(input: string): number {
 	return result;
 }
 
-export const calculateTool: AgentTool<typeof CalculateParams> = {
+export const calculateTool: AnnotatedTool<typeof CalculateParams> = {
 	name: "calculate",
 	label: "Calculator",
 	description: "Evaluate an arithmetic expression (+ - * / % ^ and parentheses). Use it instead of doing math in your head.",
+	metadata: { kind: "other", title: (args) => `Calculate ${(args as { expression?: string })?.expression ?? ""}`.trim() },
 	parameters: CalculateParams,
 	execute: async (_toolCallId, params) => {
 		// Throwing is the documented failure path: pi turns the error into an `isError`
@@ -104,10 +115,11 @@ const TimeParams = Type.Object({
 
 type TimeParams = Static<typeof TimeParams>;
 
-export const getCurrentTimeTool: AgentTool<typeof TimeParams> = {
+export const getCurrentTimeTool: AnnotatedTool<typeof TimeParams> = {
 	name: "get_current_time",
 	label: "Current time",
 	description: "Return the current date and time, optionally for a specific IANA time zone.",
+	metadata: { kind: "other", title: "Get current time" },
 	parameters: TimeParams,
 	execute: async (_toolCallId, params) => {
 		const timeZone = params.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -153,10 +165,11 @@ function hash(text: string): number {
 	return Math.abs(value);
 }
 
-export const getWeatherTool: AgentTool<typeof WeatherParams> = {
+export const getWeatherTool: AnnotatedTool<typeof WeatherParams> = {
 	name: "get_weather",
 	label: "Weather",
 	description: "Get the current weather for a city. This demo tool returns deterministic mock data and never hits the network.",
+	metadata: { kind: "other", title: (args) => `Get weather for ${(args as { city?: string })?.city ?? "city"}` },
 	parameters: WeatherParams,
 	execute: async (_toolCallId, params) => {
 		const seed = hash(params.city.toLowerCase());
@@ -169,4 +182,10 @@ export const getWeatherTool: AgentTool<typeof WeatherParams> = {
 	},
 };
 
-export const tools: AgentTool<any>[] = [calculateTool, getCurrentTimeTool, getWeatherTool];
+
+export function demoTools(pi: ExtensionAPI): void {
+	for (const tool of [calculateTool, getCurrentTimeTool, getWeatherTool]) {
+		// The tool already carries its annotations; hand them straight through.
+		pi.registerTool(tool as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
+	}
+}

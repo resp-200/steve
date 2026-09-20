@@ -62,6 +62,14 @@ async function mcpClientChecks() {
 		connection.tools.map((tool) => tool.name).join(","),
 	);
 
+	const { createToolRegistry } = await import("../dist/features/tool-annotations.js");
+	const mcpRegistry = createToolRegistry(connection.tools);
+	check(
+		"MCP 工具自带权限与标题声明",
+		mcpRegistry.permissionRequired().includes("mcp__mock__echo") && mcpRegistry.titleFor("mcp__mock__echo", {}) === "mock: echo",
+		`${mcpRegistry.permissionRequired().join(",")} / ${mcpRegistry.titleFor("mcp__mock__echo", {})}`,
+	);
+
 	const echo = connection.tools.find((tool) => tool.name === "mcp__mock__echo");
 	const echoed = await echo.execute("t", { text: "hi" });
 	check("MCP tools/call 返回文本", echoed.content[0]?.text === "echo: hi", JSON.stringify(echoed.content));

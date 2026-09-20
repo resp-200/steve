@@ -73,6 +73,7 @@ async function hostChecks() {
 			"\t\tparameters: { type: \"object\", properties: {} },",
 			'\t\tpermission: "ask",',
 			'\t\tmetadata: { kind: "execute", title: "Risky thing" },',
+			'\t\tdescribe: (args) => ({ summary: `risky ${args?.what ?? "?"}` }),',
 			'\t\texecute: async () => ({ content: [{ type: "text", text: "ok" }] }),',
 			"\t});",
 			`\tpi.registerMcpServer({ name: "fixture", command: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(join(ROOT, "scripts", "mock-mcp-server.mjs"))}] });`,
@@ -139,6 +140,13 @@ async function hostChecks() {
 		"插件可声明呈现元数据（协议层据此渲染）",
 		host.metadataFor("risky")?.kind === "execute" && host.metadataFor("risky")?.title === "Risky thing",
 		JSON.stringify(host.metadataFor("risky") ?? null),
+	);
+	const riskyTool = host.tools.find((tool) => tool.name === "risky");
+	const riskyPreview = await riskyTool?.describe?.({ what: "thing" });
+	check(
+		"插件可给自己的工具提供审批预览",
+		riskyPreview?.summary === "risky thing",
+		JSON.stringify(riskyPreview ?? null),
 	);
 	check(
 		"插件可注册 MCP server（由核心连接）",

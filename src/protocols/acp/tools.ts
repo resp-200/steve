@@ -1,4 +1,5 @@
 import { Type, type Static, type AgentTool } from "../../features/contract.js";
+import type { AnnotatedTool } from "../../features/tool-annotations.js";
 import type { AgentContext, ClientCapabilities } from "@agentclientprotocol/sdk";
 
 /**
@@ -35,11 +36,12 @@ const RunCommandParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory (absolute path). Defaults to the session cwd." })),
 });
 
-function readFileTool(context: AcpToolContext): AgentTool<typeof ReadFileParams> {
+function readFileTool(context: AcpToolContext): AnnotatedTool<typeof ReadFileParams> {
 	return {
 		name: "read_file",
 		label: "Read file",
 		description: "Read a UTF-8 text file through the editor. Paths must be absolute.",
+		metadata: { kind: "read", title: (args) => `Read ${(args as { path?: string })?.path ?? "file"}` },
 		parameters: ReadFileParams,
 		execute: async (_toolCallId, params: Static<typeof ReadFileParams>) => {
 			const response = await context.client.request("fs/read_text_file", {
@@ -56,11 +58,13 @@ function readFileTool(context: AcpToolContext): AgentTool<typeof ReadFileParams>
 	};
 }
 
-function writeFileTool(context: AcpToolContext): AgentTool<typeof WriteFileParams> {
+function writeFileTool(context: AcpToolContext): AnnotatedTool<typeof WriteFileParams> {
 	return {
 		name: "write_file",
 		label: "Write file",
 		description: "Create or overwrite a UTF-8 text file through the editor. Paths must be absolute.",
+		permission: "ask",
+		metadata: { kind: "edit", title: (args) => `Write ${(args as { path?: string })?.path ?? "file"}` },
 		parameters: WriteFileParams,
 		execute: async (_toolCallId, params: Static<typeof WriteFileParams>) => {
 			await context.client.request("fs/write_text_file", {
@@ -76,11 +80,13 @@ function writeFileTool(context: AcpToolContext): AgentTool<typeof WriteFileParam
 	};
 }
 
-function runCommandTool(context: AcpToolContext): AgentTool<typeof RunCommandParams> {
+function runCommandTool(context: AcpToolContext): AnnotatedTool<typeof RunCommandParams> {
 	return {
 		name: "run_command",
 		label: "Run command",
 		description: "Run a shell command in the client's terminal and return its output and exit code.",
+		permission: "ask",
+		metadata: { kind: "execute", title: (args) => `Run ${(args as { command?: string })?.command ?? "command"}` },
 		parameters: RunCommandParams,
 		execute: async (_toolCallId, params: Static<typeof RunCommandParams>) => {
 			const terminal = await context.client.request("terminal/create", {

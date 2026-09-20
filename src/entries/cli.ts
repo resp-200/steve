@@ -3,11 +3,10 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
 import type { AgentTool } from "../features/contract.js";
-import { LOCAL_PERMISSION_TOOLS, createLocalToolDescriber, createLocalTools } from "../features/local-tools.js";
+import { createLocalTools } from "../features/local-tools.js";
 import { connectMcpServers } from "../features/mcp.js";
-import { createPermissionGate, type PermissionDecision, type PermissionRequest } from "../features/permissions.js";
+import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
-import { tools as demoTools } from "../features/tools.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
 import { color, Renderer } from "./render.js";
 
@@ -137,7 +136,7 @@ function askPermission(request: PermissionRequest, options: CliOptions): Promise
 /* --------------------------------- banner --------------------------------- */
 
 function banner(context: ReplContext): void {
-	const { config, catalog, options } = context;
+	const { config, options } = context;
 	const access = options.readOnly
 		? color.dim("read-only (--read-only)")
 		: options.autoApprove
@@ -151,7 +150,7 @@ function banner(context: ReplContext): void {
 			`${color.dim("model   ")} ${config.model.id}`,
 			`${color.dim("endpoint")} ${config.model.baseUrl}`,
 			`${color.dim("cwd     ")} ${process.cwd()}`,
-			`${color.dim("tools   ")} ${catalog.map((tool) => tool.name).join(", ")}`,
+			`${color.dim("tools   ")} ${context.chat.toolNames.join(", ")}`,
 			`${color.dim("access  ")} ${access}`,
 			`${color.dim("hint    ")} /help for commands, /exit to quit`,
 			"",
@@ -321,14 +320,13 @@ async function main(): Promise<void> {
 		supportsImages: config.model.input.includes("image"),
 	};
 	const localTools = createLocalTools(localToolOptions);
-	const describeChange = createLocalToolDescriber(localToolOptions);
 
 	// Plugins can contribute MCP servers; the core connects them for the session.
 	const pluginLog = (message: string): void => {
 		process.stderr.write(`${color.dim(message)}\n`);
 	};
 	const mcp = await connectMcpServers(extensions.mcpServers, { logger: pluginLog });
-	const catalog: AgentTool<any>[] = [...demoTools, ...localTools, ...mcp.tools];
+	const catalog: AgentTool<any>[] = [...localTools, ...mcp.tools];
 	const closeMcp = async (): Promise<void> => {
 		await Promise.all(mcp.connections.map((connection) => connection.close()));
 	};
@@ -337,12 +335,11 @@ async function main(): Promise<void> {
 		config,
 		tools: catalog,
 		extensions,
-		beforeToolCall: createPermissionGate({
+		// Tools declare their own approval requirement and preview.
+		permissions: {
 			mode: parsed.autoApprove ? "allow" : "ask",
-			requires: [...LOCAL_PERMISSION_TOOLS, ...extensions.permissionRequired()],
-			describe: (request) => describeChange(request.toolName, request.args),
 			ask: (request) => askPermission(request, parsed),
-		}),
+		},
 	});
 	const renderer = new Renderer();
 	chat.subscribe((event) => renderer.handle(event));

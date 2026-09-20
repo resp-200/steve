@@ -17,6 +17,7 @@ import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentMessage } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
+import type { ToolAnnotations } from "../features/tool-annotations.js";
 import {
 	createExtensionAPI,
 	createExtensionContext,
@@ -37,6 +38,7 @@ import {
 	type ToolResultHookEvent,
 	type ToolResultPatch,
 } from "./api.js";
+import { demoTools } from "./builtin/demo-tools.js";
 import { sessionCommands } from "./builtin/session-commands.js";
 
 const EXTENSION_SUFFIXES = [".mjs", ".js"];
@@ -88,7 +90,7 @@ export interface ExtensionHost {
 	/** Tool names plugins marked as needing approval. */
 	permissionRequired(): string[];
 	/** Presentation hints a plugin declared for a tool, if any. */
-	metadataFor(toolName: string): { kind?: string; title?: string } | undefined;
+	metadataFor(toolName: string): ToolAnnotations["metadata"];
 	/** Hands the live session to every plugin (called by the runtime). */
 	attachSession(session: SessionAccessors): void;
 }
@@ -142,7 +144,12 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 
 	const inRepo: { label: string; factory: PluginFactory }[] = [
 		...(options.inline ?? []).map((entry) => ({ label: entry.name, factory: entry.factory })),
-		...(options.builtins === false ? [] : [{ label: "builtin:session-commands", factory: sessionCommands as PluginFactory }]),
+		...(options.builtins === false
+			? []
+			: [
+					{ label: "builtin:session-commands", factory: sessionCommands as PluginFactory },
+					{ label: "builtin:demo-tools", factory: demoTools as PluginFactory },
+				]),
 	];
 
 	for (const entry of inRepo) {

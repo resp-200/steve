@@ -14,10 +14,11 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Type, type AgentTool } from "./contract.js";
+import type { AnnotatedTool } from "./tool-annotations.js";
 import { editPreview, findOccurrences, writePreview } from "./change-preview.js";
 import type { ToolChangePreview } from "./permissions.js";
 
-/** Tool names that need the user's approval before they run. */
+/** Tool names that need the user's approval before they run (see the `permission` declarations below). */
 export const LOCAL_WRITE_TOOLS = ["write_file", "edit_file"] as const;
 export const LOCAL_EXEC_TOOLS = ["run_command"] as const;
 export const LOCAL_PERMISSION_TOOLS = [...LOCAL_WRITE_TOOLS, ...LOCAL_EXEC_TOOLS];
@@ -256,10 +257,11 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		}
 	};
 
-	const readFileTool: AgentTool<typeof ReadParams> = {
+	const readFileTool: AnnotatedTool<typeof ReadParams> = {
 		name: "read_file",
 		label: "Read file",
 		description: "Read a UTF-8 text file from the workspace. Paths outside the workspace roots are refused.",
+		metadata: { kind: "read", title: (args) => `Read ${(args as { path?: string })?.path ?? "file"}` },
 		parameters: ReadParams,
 		execute: async (_toolCallId, params) => {
 			const path = resolveInside(params.path);
@@ -299,10 +301,11 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		},
 	};
 
-	const globTool: AgentTool<typeof GlobParams> = {
+	const globTool: AnnotatedTool<typeof GlobParams> = {
 		name: "glob",
 		label: "Glob files",
 		description: "List files matching a glob pattern (e.g. 'src/**/*.ts'). Skips .git/node_modules/dist.",
+		metadata: { kind: "read", title: (args) => `Glob ${(args as { pattern?: string })?.pattern ?? "*"}` },
 		parameters: GlobParams,
 		execute: async (_toolCallId, params) => {
 			const start = params.path ? resolveInside(params.path) : base;
@@ -324,10 +327,11 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		},
 	};
 
-	const grepTool: AgentTool<typeof GrepParams> = {
+	const grepTool: AnnotatedTool<typeof GrepParams> = {
 		name: "grep",
 		label: "Search files",
 		description: "Search file contents with a regular expression. Returns `path:line: text` hits.",
+		metadata: { kind: "read", title: (args) => `Search ${(args as { pattern?: string })?.pattern ?? ""}`.trim() },
 		parameters: GrepParams,
 		execute: async (_toolCallId, params) => {
 			const start = params.path ? resolveInside(params.path) : base;
@@ -362,10 +366,19 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		},
 	};
 
-	const writeFileTool: AgentTool<typeof WriteParams> = {
+	const writeFileTool: AnnotatedTool<typeof WriteParams> = {
 		name: "write_file",
 		label: "Write file",
 		description: "Create or overwrite a file in the workspace. Needs the user's permission.",
+		permission: "ask",
+		metadata: { kind: "edit", title: (args) => `Write ${(args as { path?: string })?.path ?? "file"}` },
+		describe: async (args) => {
+			const input = (args ?? {}) as { path?: string; content?: string };
+			if (!input.path) return undefined;
+			const path = resolveInside(input.path);
+			const before = await readFile(path, "utf8").catch(() => undefined);
+			return writePreview({ path, shown: relativeToBase(path), ...(before === undefined ? {} : { before }), after: input.content ?? "" });
+		},
 		parameters: WriteParams,
 		execute: async (_toolCallId, params) => {
 			const path = resolveInside(params.path);
@@ -378,10 +391,28 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		},
 	};
 
-	const editFileTool: AgentTool<typeof EditParams> = {
+	const editFileTool: AnnotatedTool<typeof EditParams> = {
 		name: "edit_file",
 		label: "Edit file",
 		description: "Replace an exact snippet in a file. Needs the user's permission.",
+		permission: "ask",
+		metadata: { kind: "edit", title: (args) => `Edit ${(args as { path?: string })?.path ?? "file"}` },
+		describe: async (args) => {
+			const input = (args ?? {}) as { path?: string; old_string?: string; new_string?: string; line?: number; replace_all?: boolean };
+			if (!input.path || input.old_string === undefined) return undefined;
+			const path = resolveInside(input.path);
+			const before = await readFile(path, "utf8").catch(() => undefined);
+			if (before === undefined) return undefined;
+			return editPreview({
+				path,
+				shown: relativeToBase(path),
+				before,
+				find: input.old_string,
+				replace: input.new_string ?? "",
+				...(typeof input.line === "number" ? { line: input.line } : {}),
+				...(input.replace_all === true ? { replaceAll: true } : {}),
+			});
+		},
 		parameters: EditParams,
 		execute: async (_toolCallId, params) => {
 			const path = resolveInside(params.path);
@@ -425,10 +456,16 @@ export function createLocalTools(options: LocalToolOptions): AgentTool<any>[] {
 		},
 	};
 
-	const runCommandTool: AgentTool<typeof CommandParams> = {
+	const runCommandTool: AnnotatedTool<typeof CommandParams> = {
 		name: "run_command",
 		label: "Run command",
 		description: "Run a shell command inside the workspace and return its output. Needs the user's permission.",
+		permission: "ask",
+		metadata: { kind: "execute", title: (args) => `Run ${(args as { command?: string })?.command ?? "command"}` },
+		describe: (args) => {
+			const command = (args as { command?: string })?.command;
+			return command ? { summary: `run ${command}` } : undefined;
+		},
 		parameters: CommandParams,
 		execute: async (_toolCallId, params) => {
 			const cwd = params.cwd ? resolveInside(params.cwd) : base;

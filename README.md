@@ -32,11 +32,11 @@ src/features/runtime.ts  L3 会话运行时：事件归一化、失败重试与�
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
 src/features/contract.ts  L3 工具契约：协议层定义工具的唯一入口（TypeBox/AgentTool）
-src/features/tools.ts     L3 3 个 AgentTool 示例（计算器/时间/天气）
+src/features/tool-annotations.ts L3 工具声明（permission / metadata / describe）的注册表
 src/features/local-tools.ts L3 本地工具：read_file / glob / grep / write_file / edit_file / run_command
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
-src/extensions/builtin/*  L3′ 内置插件（会话命令 /tools /stats /model /new /help）
+src/extensions/builtin/*  L3′ 内置插件：会话命令 + 演示工具（calculate/time/weather）
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
@@ -261,7 +261,13 @@ export default function gitStatus(pi) {
 | 边界：`features/permissions.ts`、路径收敛、截断 | 插件只能**加**约束，永远不能放宽安全边界 |
 | 协议：`protocols/`、`entries/` | 插件 API 协议中立，协议层是宿主，插件不该认识 ACP |
 
-判据是 **dogfooding**：如果内置能力写不成插件，那是 API 不够用。目前已经这样搬过两轮 —— 内置命令（`/tools` `/stats` `/model` `/new` `/help`）就是 `src/extensions/builtin/session-commands.ts` 这个插件，MCP 也改成插件可注册。
+判据是 **dogfooding**：如果内置能力写不成插件，那是 API 不够用。目前已经这样搬过三轮 ——
+
+1. 内置命令（`/tools` `/stats` `/model` `/new` `/help`）→ `src/extensions/builtin/session-commands.ts`
+2. MCP → 插件用 `registerMcpServer()` 声明，核心负责连接（CLI 侧唯一的 MCP 入口）
+3. 演示工具（`calculate` / `get_current_time` / `get_weather`）→ `src/extensions/builtin/demo-tools.ts`，`src/features/tools.ts` 已删除
+
+**核心工具和插件工具用同一套声明**（`src/features/tool-annotations.ts`）：`read_file` / `write_file` / `run_command` 这些核心工具也是自己声明 `permission`、`metadata`、`describe`，协议层与权限闸门都改成"先问工具、再兜底"，不再维护工具名硬编码表。
 
 插件能贡献的东西：
 
@@ -270,7 +276,8 @@ export default function gitStatus(pi) {
 | 工具 | `registerTool({ name, description, parameters, execute, permission?, metadata? })` | 校验、执行、结果回灌；`permission: "ask"` 交给权限闸门 |
 | 斜杠命令 | `registerCommand({ name, description, run })` | CLI 斜杠命令 + ACP `available_commands_update` |
 | MCP server | `registerMcpServer({ name, command, args, env })` | 连接、工具并入工具表（`mcp__server__tool`）、会话结束关闭子进程 |
-| 呈现元数据 | `registerTool({ metadata: { kind, title } })` | ACP 工具卡片按声明渲染，不再只靠协议层的硬编码表 |
+| 呈现元数据 | `registerTool({ metadata: { kind, title } })` | ACP 工具卡片按声明渲染；协议层的名字表降级为兜底 |
+| 审批预览 | `registerTool({ describe: (args) => ToolChangePreview })` | 权限闸门优先用工具自己的预览，宿主回调只是兜底 |
 | 会话内省 | `ctx.session.{ tools, commands, model, stats(), reset() }` | 只读视图，够写 `/tools`、`/stats` 这类命令 |
 
 三条设计约束：

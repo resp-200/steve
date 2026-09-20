@@ -35,8 +35,11 @@ export interface PermissionRequest {
 export interface PermissionGateOptions {
 	/** `allow` runs everything without asking (`--permissions allow`). */
 	mode: "ask" | "allow";
-	/** Tool names that need approval; everything else runs untouched. */
-	requires: Iterable<string>;
+	/**
+	 * Tool names that need approval; everything else runs untouched. A function is
+	 * evaluated per call, which is how the runtime asks its own tool registry.
+	 */
+	requires: Iterable<string> | (() => Iterable<string>);
 	/** Asks the user, e.g. by sending `session/request_permission` to the editor. */
 	ask: (request: PermissionRequest) => Promise<PermissionDecision>;
 	/**
@@ -55,12 +58,13 @@ export type PermissionHook = (context: BeforeToolCallContext, signal?: AbortSign
  * One gate belongs to one session, so "always allow" never leaks across sessions.
  */
 export function createPermissionGate(options: PermissionGateOptions): PermissionHook {
-	const required = new Set(options.requires);
 	const alwaysAllowed = new Set<string>();
+	const requiredNames = (): Set<string> =>
+		new Set(typeof options.requires === "function" ? options.requires() : options.requires);
 
 	return async ({ toolCall, args }) => {
 		if (options.mode === "allow") return undefined;
-		if (!required.has(toolCall.name) || alwaysAllowed.has(toolCall.name)) return undefined;
+		if (!requiredNames().has(toolCall.name) || alwaysAllowed.has(toolCall.name)) return undefined;
 
 		const request: PermissionRequest = { toolName: toolCall.name, toolCallId: toolCall.id, args };
 		if (options.describe) {

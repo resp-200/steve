@@ -11,6 +11,7 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Type, type AgentTool } from "./contract.js";
+import type { AnnotatedTool } from "./tool-annotations.js";
 import type { Logger } from "../types.js";
 
 /** What an ACP client sends for a local MCP server. */
@@ -175,7 +176,7 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 		notify("notifications/initialized", {});
 
 		const listed = (await request("tools/list", {})) as { tools?: unknown[] };
-		const tools = (Array.isArray(listed?.tools) ? listed.tools : []).map((entry): AgentTool<any> => {
+		const tools = (Array.isArray(listed?.tools) ? listed.tools : []).map((entry): AnnotatedTool => {
 			const tool = entry as { name?: string; description?: string; inputSchema?: unknown };
 			const remoteName = tool.name ?? "unnamed";
 			const name = `mcp__${server.name}__${remoteName}`;
@@ -184,6 +185,9 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 				name,
 				label: `${server.name}: ${remoteName}`,
 				description: tool.description ?? `MCP tool ${remoteName} from ${server.name}.`,
+				// MCP tools can do whatever their server can: always ask first.
+				permission: "ask",
+				metadata: { kind: "other", title: `${server.name}: ${remoteName}` },
 				// MCP ships plain JSON Schema, which is what pi validates against.
 				parameters: (tool.inputSchema ?? Type.Object({})) as AgentTool<any>["parameters"],
 				execute: async (_toolCallId, params: unknown) => {

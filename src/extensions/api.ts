@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { Type } from "../features/contract.js";
 import type { AgentMessage, AgentTool } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
+import type { ToolAnnotations } from "../features/tool-annotations.js";
 
 const run = promisify(execFile);
 
@@ -84,20 +85,20 @@ export type ContextHandler = (messages: AgentMessage[], ctx: ExtensionContext) =
 export type HeadersHandler = (headers: Record<string, string>, info: { model: string; api: string }, ctx: ExtensionContext) => void;
 export type EventHandler = (event: AgentRuntimeEvent, ctx: ExtensionContext) => void;
 
-export interface PluginTool {
+/**
+ * A tool a plugin contributes.
+ *
+ * Annotations are shared with the core tools (see `features/tool-annotations.ts`):
+ * `permission: "ask"` makes the core gate ask the user, `metadata` tells clients
+ * how to present the call, and `describe` explains what it will change. Plugins
+ * can only *add* requirements — the gate itself stays in the core.
+ */
+export interface PluginTool extends ToolAnnotations {
 	name: string;
 	label?: string;
 	description: string;
 	/** A TypeBox schema (or plain JSON schema object). */
 	parameters: unknown;
-	/**
-	 * Declarative policy: `ask` makes the core permission gate ask the user
-	 * before this tool runs. Plugins can only *add* requirements — the gate
-	 * itself stays in the core and cannot be switched off from here.
-	 */
-	permission?: "ask" | "auto";
-	/** Presentation hints for protocol layers (ACP tool cards). */
-	metadata?: { kind?: string; title?: string };
 	execute: AgentTool<any>["execute"];
 }
 

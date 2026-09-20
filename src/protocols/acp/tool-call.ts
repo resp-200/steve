@@ -10,7 +10,7 @@ import type { PromptImage } from "../../features/events.js";
 import type { ToolChangePreview } from "../../features/permissions.js";
 import { truncate } from "./content.js";
 
-/** Tool name -> the kind of tool call ACP clients render. */
+/** Fallback table for tools that declare no `metadata` of their own. */
 export const TOOL_KINDS: Record<string, ToolKind> = {
 	read_file: "read",
 	write_file: "edit",
@@ -20,6 +20,7 @@ export const TOOL_KINDS: Record<string, ToolKind> = {
 	get_weather: "other",
 };
 
+/** Fallback title for tools that declare no `metadata.title`. */
 export function describeToolCall(name: string, args: unknown): string {
 	const record = (args ?? {}) as Record<string, unknown>;
 	const text = (key: string): string | undefined => (typeof record[key] === "string" ? (record[key] as string) : undefined);

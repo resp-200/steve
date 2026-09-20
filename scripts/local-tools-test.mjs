@@ -75,6 +75,27 @@ async function toolChecks() {
 	);
 	check("只读模式只给读工具", createLocalTools({ roots: [workspace] }).map((tool) => tool.name).join(",") === "read_file,glob,grep");
 
+	// --- tool annotations (declared by the tools themselves) -------------------
+	const { createToolRegistry } = await import("../dist/features/tool-annotations.js");
+	const registry = createToolRegistry(tools);
+	check(
+		"工具自己声明权限要求",
+		registry.permissionRequired().sort().join(",") === "edit_file,run_command,write_file",
+		registry.permissionRequired().join(","),
+	);
+	check(
+		"工具自己声明呈现元数据",
+		registry.kindFor("read_file") === "read" && (registry.titleFor("read_file", { path: "/tmp/a.txt" }) ?? "").includes("/tmp/a.txt"),
+		`${registry.kindFor("read_file")} / ${registry.titleFor("read_file", { path: "/tmp/a.txt" })}`,
+	);
+	const ownPreview = await registry.describeFor("write_file")({ path: "notes.md", content: "# notes\nDONE\n" });
+	check(
+		"工具自己声明审批预览（无需宿主帮忙）",
+		ownPreview?.summary.startsWith("overwrite notes.md") === true && (ownPreview?.text ?? "").includes("+DONE"),
+		ownPreview?.summary ?? "undefined",
+	);
+	check("未声明的工具没有元数据（协议层兜底）", registry.kindFor("mcp__nope__x") === undefined && registry.titleFor("mcp__nope__x", {}) === undefined);
+
 	// --- platform behaviour ---------------------------------------------------
 	const { isInside, resolveShell } = await import("../dist/features/local-tools.js");
 	const posix = { caseInsensitive: false, separator: "/" };

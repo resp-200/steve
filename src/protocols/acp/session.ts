@@ -17,14 +17,13 @@ import { readFile } from "node:fs/promises";
 import type { SessionStore, StoredSession } from "../../features/session-store.js";
 import { isAbsolute, join } from "node:path";
 import { editPreview, writePreview } from "../../features/change-preview.js";
-import { createPermissionGate, type PermissionDecision, type PermissionRequest, type ToolChangePreview } from "../../features/permissions.js";
+import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "../../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
-import { LOCAL_PERMISSION_TOOLS, createLocalTools } from "../../features/local-tools.js";
-import { tools as demoTools } from "../../features/tools.js";
+import { createLocalTools } from "../../features/local-tools.js";
 import type { Logger } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
 import { TOOL_KINDS, describeToolCall, diffContent, toolCallContent } from "./tool-call.js";
-import { ACP_PERMISSION_TOOLS, createAcpTools } from "./tools.js";
+import { createAcpTools } from "./tools.js";
 
 export type PermissionMode = "ask" | "allow";
 
@@ -104,7 +103,7 @@ export class AcpSession {
 		});
 
 		// Local tools only fill the gaps the editor does not cover, so names never clash.
-		const taken = new Set([...demoTools, ...clientTools].map((tool) => tool.name));
+		const taken = new Set(clientTools.map((tool) => tool.name));
 		const localOptions = {
 			roots: [options.cwd, ...options.additionalDirectories],
 			allowWrite: true,
@@ -113,25 +112,19 @@ export class AcpSession {
 		};
 		const fallbackTools = options.allowLocalTools ? createLocalTools(localOptions).filter((tool) => !taken.has(tool.name)) : [];
 
-		const tools = [...demoTools, ...clientTools, ...fallbackTools, ...(options.mcpTools ?? [])];
+		const tools = [...clientTools, ...fallbackTools, ...(options.mcpTools ?? [])];
 
 		this.runtime = createAgentRuntime({
 			config: options.config,
 			tools,
 			extensions: options.extensions,
 			systemPrompt: this.systemPrompt(),
-			beforeToolCall: createPermissionGate({
+			// The runtime asks before any tool that declared `permission: "ask"`.
+			permissions: {
 				mode: options.permissionMode,
-				// MCP tools can do anything their server can: always ask before calling one.
-				requires: [
-					...ACP_PERMISSION_TOOLS,
-					...LOCAL_PERMISSION_TOOLS,
-					...(options.mcpTools ?? []).map((tool) => tool.name),
-					...options.extensions.permissionRequired(),
-				],
-				describe: (request) => this.describeChange(request.toolName, request.args),
 				ask: (request) => this.askPermission(request),
-			}),
+				describe: (request) => this.describeChange(request.toolName, request.args),
+			},
 		});
 		this.toolNames = this.runtime.toolNames;
 		this.createdAt = options.restore?.createdAt ?? new Date().toISOString();
@@ -392,14 +385,14 @@ export class AcpSession {
 		}
 	}
 
-	/** Plugins may declare how their tools are presented; fall back to the built-in table. */
+	/** Tools declare their own presentation; the protocol table is a fallback. */
 	private kindFor(toolName: string): ToolKind {
-		const declared = this.options.extensions.metadataFor(toolName)?.kind;
+		const declared = this.runtime.toolRegistry().kindFor(toolName);
 		return (declared as ToolKind | undefined) ?? TOOL_KINDS[toolName] ?? "other";
 	}
 
 	private titleFor(toolName: string, args: unknown): string {
-		return this.options.extensions.metadataFor(toolName)?.title ?? describeToolCall(toolName, args);
+		return this.runtime.toolRegistry().titleFor(toolName, args) ?? describeToolCall(toolName, args);
 	}
 
 	private send(update: SessionUpdate): Promise<void> {
