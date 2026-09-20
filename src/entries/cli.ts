@@ -332,7 +332,7 @@ async function main(): Promise<void> {
 	const pluginLog = (message: string): void => {
 		process.stderr.write(`${color.dim(message)}\n`);
 	};
-	const mcp = await connectMcpServers(extensions.mcpServers, { logger: pluginLog });
+	const mcp = await connectMcpServers(extensions.mcpServers, { logger: pluginLog, cwd });
 	const catalog: AgentTool<any>[] = [...localTools, ...mcp.tools];
 	const closeMcp = async (): Promise<void> => {
 		await Promise.all(mcp.connections.map((connection) => connection.close()));

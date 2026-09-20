@@ -42,6 +42,7 @@ examples/extensions/*     三个示例插件（guard / git-status / turn-logger�
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
+mcp.example.json         MCP 配置模板（复制到 .steve/mcp.json，见「MCP 接入」）
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
 test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
 scripts/*                离线 mock 网关 + ACP 测试客户端 / probe / headless 浏览器测试
@@ -313,7 +314,13 @@ export default function gitStatus(pi) {
 
 只实现了 **stdio** 传输（`http`/`sse`/`acp` 明确报「不支持」，不静默忽略）。接入方式两种：
 
-**1. `.steve/mcp.json`（内置插件，无需写代码）** —— 格式和 Claude Desktop / Cursor 一样，可以直接抄过来：
+**1. `.steve/mcp.json`（内置插件，无需写代码）** —— 仓库根目录有模板 `mcp.example.json`，直接复制：
+
+```bash
+mkdir -p .steve && cp mcp.example.json .steve/mcp.json
+```
+
+格式和 Claude Desktop / Cursor 一样，可以直接抄过来（`"//"` 字段是注释，会被忽略）：
 
 ```jsonc
 // .steve/mcp.json（项目级）或 ~/.steve/mcp.json（全局）
@@ -330,6 +337,8 @@ export default function gitStatus(pi) {
 ```
 
 三条规则：**同名时插件/编辑器声明优先**（配置里那条在 `/mcp` 里显示为 `skipped` 并说明原因）；**项目级优先于全局**；**坏文件、坏条目只记日志跳过**，不影响会话。
+
+server 进程**在会话的 cwd 里启动**，所以 `args: ["."]`、相对脚本路径都指向你当前的项目（编辑器从别处启动 ACP server 时也一样）。
 
 **2. 插件里声明** —— 终端与编辑器都生效，需要读环境变量或用条件逻辑时用它（完整示例：`examples/extensions/mcp-server.mjs`）：
 
@@ -469,7 +478,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 11 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
-| `npm run mcp:test` | MCP 与会话管理 36 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
+| `npm run mcp:test` | MCP 与会话管理 38 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"

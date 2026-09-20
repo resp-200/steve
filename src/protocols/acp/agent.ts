@@ -56,11 +56,11 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 	 * logged and skipped, so a broken one never blocks the session.
 	 */
 	/** Client-declared servers are tagged so `/mcp` can tell them from plugin ones. */
-	const connectMcp = async (servers: McpServerLike[]) => {
+	const connectMcp = async (servers: McpServerLike[], cwd: string) => {
 		if (servers.length === 0) {
 			return { tools: [] as AgentTool[], servers: [] as McpServerStatus[], close: undefined as undefined | (() => Promise<void>) };
 		}
-		const { connections, tools, servers: statuses } = await connectMcpServers(servers, { logger: options.logger });
+		const { connections, tools, servers: statuses } = await connectMcpServers(servers, { logger: options.logger, cwd });
 		return {
 			tools,
 			servers: statuses,
@@ -112,7 +112,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
-				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers]);
+				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers], ctx.params.cwd);
 				const session = new AcpSession({
 					id,
 					cwd: ctx.params.cwd,
@@ -153,7 +153,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
-				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers]);
+				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers], cwd);
 				const session = new AcpSession({
 					id: stored.id,
 					cwd,

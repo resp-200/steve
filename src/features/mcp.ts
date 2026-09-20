@@ -48,6 +48,12 @@ export interface McpConnectOptions {
 	/** Per-request timeout. Default: 20s. */
 	timeoutMs?: number;
 	logger?: Logger;
+	/**
+	 * Working directory for the server process. Without it a server inherits the
+	 * directory steve was launched from — wrong for editors, which spawn the ACP
+	 * server elsewhere while the session belongs to a project.
+	 */
+	cwd?: string;
 }
 
 interface PendingRequest {
@@ -82,6 +88,7 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 	const child: ChildProcessWithoutNullStreams = spawn(server.command, server.args, {
 		stdio: ["pipe", "pipe", "pipe"],
 		env: { ...process.env, ...Object.fromEntries((server.env ?? []).map((entry) => [entry.name, entry.value])) },
+		...(options.cwd ? { cwd: options.cwd } : {}),
 	});
 
 	const pending = new Map<number, PendingRequest>();

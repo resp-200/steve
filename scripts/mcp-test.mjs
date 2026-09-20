@@ -10,8 +10,8 @@
 //   D. .steve/mcp.json (built-in plugin): parsing, validation, source priority
 //
 //   npm run build && node scripts/mcp-test.mjs
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -112,6 +112,20 @@ async function mcpClientChecks() {
 		broken.servers.map((server) => `${server.name}:${server.status}`).join(",") === "nope:failed,http-only:unsupported,second:connected",
 		broken.servers.map((server) => `${server.name}:${server.status}`).join(","),
 	);
+	// Servers must start in the session's cwd: editors launch the ACP server from
+	// somewhere else, and `args: ["."]` has to mean "the project".
+	const cwdProbeDir = mkdtempSync(join(tmpdir(), "steve-mcp-cwd-"));
+	const cwdProbe = await connectMcpServers(
+		[{ name: "cwd-probe", command: process.execPath, args: ["-e", "process.stderr.write(process.cwd()); process.exit(1)"], env: [] }],
+		{ logger: () => {}, timeoutMs: 5_000, cwd: cwdProbeDir },
+	);
+	check(
+		"MCP 子进程在会话 cwd 里启动",
+		(cwdProbe.servers[0].error ?? "").includes(realpathSync(cwdProbeDir)),
+		cwdProbe.servers[0].error ?? "no error",
+	);
+	rmSync(cwdProbeDir, { recursive: true, force: true });
+
 	// A server that dies during the handshake must say *why* (its stderr).
 	const dying = await connectMcpServers(
 		[
@@ -362,7 +376,7 @@ async function configChecks() {
 	const logs = [];
 
 	const write = (json) => writeFileSync(join(dir, ".steve", "mcp.json"), typeof json === "string" ? json : JSON.stringify(json, null, 2));
-	execFileSync("mkdir", ["-p", join(dir, ".steve")]);
+	mkdirSync(join(dir, ".steve"), { recursive: true });
 
 	write({
 		mcpServers: {
@@ -434,6 +448,21 @@ async function configChecks() {
 		literal?.env?.[0]?.value === "${SECRET}" && logs.some((line) => line.includes("interpolation is not supported")),
 		`${literal?.env?.[0]?.value ?? "none"}`,
 	);
+
+	// The shipped template must stay valid and loadable — otherwise it rots silently.
+	const templateDir = mkdtempSync(join(tmpdir(), "steve-mcp-template-"));
+	mkdirSync(join(templateDir, ".steve"), { recursive: true });
+	writeFileSync(join(templateDir, ".steve", "mcp.json"), readFileSync(join(ROOT, "mcp.example.json"), "utf8"));
+	const templateHost = await loadExtensions({ cwd: templateDir, mode: "cli", paths: [], discover: false, builtins: true, log: (message) => logs.push(message) });
+	check(
+		"仓库里的 mcp.example.json 可直接用",
+		templateHost.mcpServers.length === 1 &&
+			templateHost.mcpServers[0].name === "filesystem" &&
+			templateHost.mcpServers[0].source === "project" &&
+			templateHost.mcpServers[0].args?.includes("-y") === true,
+		JSON.stringify(templateHost.mcpServers).slice(0, 120),
+	);
+	rmSync(templateDir, { recursive: true, force: true });
 
 	// Malformed file: the rest of the session still runs.
 	write("{ not json");

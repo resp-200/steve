@@ -1,0 +1,21 @@
+{
+  "//": [
+    "steve MCP 配置模板 —— 复制到下面任一处即可生效：",
+    "  .steve/mcp.json        项目级（推荐；.steve/ 已在 .gitignore 里，密钥不会进仓库）",
+    "  ~/.steve/mcp.json      全局，对所有项目生效",
+    "同名时项目级优先；插件或编辑器声明的同名 server 优先于本文件（/mcp 里会显示 skipped）。",
+    "字段：command（stdio 必填）、args、env、timeoutMs、type（只实现了 stdio）。",
+    "不支持 ${ENV} 插值：值一律按字面量传给 server，要读环境变量请写插件。",
+    "改完在 CLI 或编辑器里执行 /mcp，能看到每个 server 的连接状态、工具列表与失败原因。",
+    "注意：本文件是模板，不会被读取；插件只读 .steve/mcp.json（以及全局那份）。"
+  ],
+  "mcpServers": {
+    "filesystem": {
+      "//": "官方文件系统 server：14 个工具（读/写/搜索/目录树），限定在最后一个参数指定的目录内。",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "//timeoutMs": "npx 首次要下载包，默认 20s 握手超时往往不够，所以这里放宽到 120s。",
+      "timeoutMs": 120000
+    }
+  }
+}
