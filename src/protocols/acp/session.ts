@@ -20,7 +20,7 @@ import { editPreview, writePreview } from "../../features/change-preview.js";
 import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "../../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
 import { createLocalTools } from "../../features/local-tools.js";
-import type { Logger } from "../../types.js";
+import type { Logger, McpServerStatus } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
 import { TOOL_KINDS, describeToolCall, diffContent, toolCallContent } from "./tool-call.js";
 import { createAcpTools } from "./tools.js";
@@ -57,6 +57,8 @@ export interface AcpSessionOptions {
 	restore?: StoredSession;
 	/** Tools contributed by MCP servers the client asked for. */
 	mcpTools?: AgentTool<any>[];
+	/** Configured MCP servers with their status, for the `/mcp` command. */
+	mcpServers?: McpServerStatus[];
 	/** Closes the MCP connections this session opened. */
 	closeMcp?: () => Promise<void>;
 	logger: Logger;
@@ -117,6 +119,7 @@ export class AcpSession {
 		this.runtime = createAgentRuntime({
 			config: options.config,
 			tools,
+			mcpServers: options.mcpServers ?? [],
 			extensions: options.extensions,
 			systemPrompt: this.systemPrompt(),
 			// The runtime asks before any tool that declared `permission: "ask"`.

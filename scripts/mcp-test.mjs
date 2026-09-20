@@ -106,6 +106,19 @@ async function mcpClientChecks() {
 		broken.errors.join(" | ").slice(0, 120),
 	);
 	check("非 stdio 传输被明确报告为不支持", broken.errors.some((line) => line.includes("not supported yet")), broken.errors.join(" | ").slice(0, 90));
+	check(
+		"每个声明的 server 都有状态（含失败与不支持的传输）",
+		broken.servers.map((server) => `${server.name}:${server.status}`).join(",") === "nope:failed,http-only:unsupported,second:connected",
+		broken.servers.map((server) => `${server.name}:${server.status}`).join(","),
+	);
+	check(
+		"状态里带来源、命令行与远端工具名",
+		broken.servers[0].source === "plugin" &&
+			broken.servers[2].transport === "stdio" &&
+			broken.servers[2].tools.join(",") === "echo,sum,fail,image" &&
+			(broken.servers[0].error ?? "").includes("ENOENT"),
+		JSON.stringify(broken.servers[2]).slice(0, 110),
+	);
 	await Promise.all(broken.connections.map((entry) => entry.close()));
 
 	// A plugin-contributed MCP server: the host collects it, the core connects it.
@@ -126,6 +139,11 @@ async function mcpClientChecks() {
 		"插件注册的 MCP server 被核心连上",
 		pluginMcp.tools.some((tool) => tool.name === "mcp__fromplugin__echo"),
 		pluginMcp.tools.map((tool) => tool.name).join(","),
+	);
+	check(
+		"插件声明的 server 在状态里标为 plugin",
+		pluginMcp.servers.length === 1 && pluginMcp.servers[0].source === "plugin" && pluginMcp.servers[0].status === "connected",
+		JSON.stringify(pluginMcp.servers[0] ?? null).slice(0, 110),
 	);
 	await Promise.all(pluginMcp.connections.map((entry) => entry.close()));
 	rmSync(pluginDir, { recursive: true, force: true });
@@ -158,11 +176,16 @@ async function acpChecks() {
 		await waitForPort(ACP_PORT);
 
 		const updates = [];
+		const announced = [];
 		const permissions = [];
 		const client = new AcpHttpClient(`http://127.0.0.1:${ACP_PORT}/acp`, {});
 		client
 			.onMessage((event) => {
-				if (event.message?.method === "session/update") updates.push(event.message.params.update);
+				if (event.message?.method === "session/update") {
+					const update = event.message.params.update;
+					updates.push(update);
+					if (update.sessionUpdate === "available_commands_update") announced.push(...(update.availableCommands ?? []).map((command) => command.name));
+				}
 			})
 			.on("session/request_permission", (params) => {
 				permissions.push(params.toolCall?.title ?? "");
@@ -194,6 +217,21 @@ async function acpChecks() {
 			.join("\n");
 		check("模型调用 MCP 工具并拿到结果", toolText.includes("echo: hello from the gateway"), toolText.replace(/\n/g, " ").slice(0, 100));
 		check("MCP 工具走权限确认", permissions.some((title) => title.includes("mcp__mock__echo")), permissions.join(" | ").slice(0, 90));
+
+		// `/mcp` is a plugin command, so it also has to work through the editor.
+		const mcpText = () =>
+			updates
+				.filter((update) => update.sessionUpdate === "agent_message_chunk")
+				.map((update) => update.content?.text ?? "")
+				.join("");
+		updates.length = 0;
+		await client.prompt(session.sessionId, [{ type: "text", text: "/mcp" }]);
+		check(
+			"ACP 里 /mcp 列出客户端声明的 server",
+			mcpText().includes("mock [client] stdio") && mcpText().includes("4 tool(s): echo, sum, fail, image"),
+			mcpText().replace(/\n/g, " | ").slice(0, 140),
+		);
+		check("命令列表里播报了 /mcp", announced.includes("mcp"), announced.join(","));
 
 		// C. session/list + session/delete
 		const listed = await client.request("session/list", { cwd: ROOT });
@@ -263,10 +301,16 @@ async function cliChecks() {
 			});
 			let stdout = "";
 			child.stdout.on("data", (chunk) => (stdout += chunk));
-			setTimeout(() => child.stdin.write("/exit\n"), 1_200);
+			setTimeout(() => child.stdin.write("/mcp\n"), 900);
+			setTimeout(() => child.stdin.write("/exit\n"), 1_400);
 			child.on("exit", () => resolve(stdout));
 		});
 		check("CLI 也能用插件里的 MCP 工具", /tools\s+.*mcp__climcp__echo/.test(output), output.split("\n").find((line) => line.includes("tools")) ?? "");
+		check(
+			"CLI 的 /mcp 列出插件声明的 server 与工具",
+			output.includes("climcp [plugin] stdio") && output.includes("4 tool(s): echo, sum, fail, image"),
+			output.split("\n").find((line) => line.includes("climcp")) ?? "",
+		);
 	} finally {
 		mock.kill("SIGTERM");
 		await sleep(200);

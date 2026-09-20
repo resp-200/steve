@@ -43,6 +43,27 @@ export function sessionCommands(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand({
+		name: "mcp",
+		description: "List the MCP servers configured for this session.",
+		run: () => {
+			const servers = pi.ctx.session.mcp;
+			if (servers.length === 0) {
+				return "No MCP servers configured. A plugin can declare one with registerMcpServer(); an editor can send mcpServers in session/new.";
+			}
+			return servers
+				.map((server) => {
+					const head = `${server.name} [${server.source}] ${server.transport}${server.command ? ` — ${server.command}` : ""}`;
+					const detail =
+						server.status === "connected"
+							? `${server.tools.length} tool(s): ${server.tools.join(", ") || "none"}`
+							: `${server.status} — ${server.error ?? "unknown error"}`;
+					return `${head}\n  ${detail}`;
+				})
+				.join("\n");
+		},
+	});
+
+	pi.registerCommand({
 		name: "new",
 		description: "Start a fresh conversation.",
 		run: () => {

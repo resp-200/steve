@@ -12,7 +12,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Type, type AgentTool } from "./contract.js";
 import type { AnnotatedTool } from "./tool-annotations.js";
-import type { Logger } from "../types.js";
+import type { Logger, McpServerStatus } from "../types.js";
 
 /** What an ACP client sends for a local MCP server. */
 export interface McpServerSpec {
@@ -25,6 +25,8 @@ export interface McpServerSpec {
 export interface McpServerLike {
 	name: string;
 	type?: string;
+	/** Who declared it. Defaults to `plugin`: untagged specs come from the host. */
+	source?: "plugin" | "client";
 	command?: string;
 	args?: string[];
 	env?: { name: string; value: string }[];
@@ -35,6 +37,8 @@ export interface McpConnection {
 	readonly name: string;
 	/** Tools, named `mcp__<server>__<tool>` to keep provenance obvious. */
 	readonly tools: AgentTool<any>[];
+	/** The server's own tool names, without our prefix (for `/mcp`). */
+	readonly toolNames: string[];
 	close(): Promise<void>;
 }
 
@@ -176,10 +180,12 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 		notify("notifications/initialized", {});
 
 		const listed = (await request("tools/list", {})) as { tools?: unknown[] };
+		const toolNames: string[] = [];
 		const tools = (Array.isArray(listed?.tools) ? listed.tools : []).map((entry): AnnotatedTool => {
 			const tool = entry as { name?: string; description?: string; inputSchema?: unknown };
 			const remoteName = tool.name ?? "unnamed";
 			const name = `mcp__${server.name}__${remoteName}`;
+			toolNames.push(remoteName);
 
 			return {
 				name,
@@ -204,7 +210,7 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 		});
 
 		logger(`[mcp ${server.name}] connected, ${tools.length} tool(s)`);
-		return { name: server.name, tools, close };
+		return { name: server.name, tools, toolNames, close };
 	} catch (error) {
 		await close();
 		throw error;
@@ -218,15 +224,26 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 export async function connectMcpServers(
 	servers: McpServerLike[],
 	options: McpConnectOptions = {},
-): Promise<{ connections: McpConnection[]; tools: AgentTool<any>[]; errors: string[] }> {
+): Promise<{ connections: McpConnection[]; tools: AgentTool<any>[]; errors: string[]; servers: McpServerStatus[] }> {
 	const logger = options.logger ?? ((): void => {});
 	const connections: McpConnection[] = [];
 	const errors: string[] = [];
+	/** One entry per declared server, in declaration order, failures included. */
+	const statuses: McpServerStatus[] = [];
+
+	/** Everything `/mcp` shows about a server except its outcome. */
+	const describe = (server: McpServerLike): Omit<McpServerStatus, "status" | "tools"> => ({
+		name: server.name,
+		source: server.source ?? "plugin",
+		transport: server.type ?? "stdio",
+		...(server.command ? { command: [server.command, ...(server.args ?? [])].join(" ") } : {}),
+	});
 
 	for (const server of servers) {
 		if (server.type && server.type !== "stdio") {
 			const message = `MCP server "${server.name}": transport "${server.type}" is not supported yet (only stdio)`;
 			errors.push(message);
+			statuses.push({ ...describe(server), status: "unsupported", tools: [], error: message });
 			logger(`[mcp] ${message}`);
 			continue;
 		}
@@ -234,23 +251,25 @@ export async function connectMcpServers(
 		if (!server.command) {
 			const message = `MCP server "${server.name}": missing command`;
 			errors.push(message);
+			statuses.push({ ...describe(server), status: "failed", tools: [], error: message });
 			logger(`[mcp] ${message}`);
 			continue;
 		}
 
 		try {
-			connections.push(
-				await connectMcpServer(
-					{ name: server.name, command: server.command, args: server.args ?? [], env: server.env ?? [] },
-					options,
-				),
+			const connection = await connectMcpServer(
+				{ name: server.name, command: server.command, args: server.args ?? [], env: server.env ?? [] },
+				options,
 			);
+			connections.push(connection);
+			statuses.push({ ...describe(server), status: "connected", tools: connection.toolNames });
 		} catch (error) {
 			const message = `MCP server "${server.name}": ${error instanceof Error ? error.message : String(error)}`;
 			errors.push(message);
+			statuses.push({ ...describe(server), status: "failed", tools: [], error: message });
 			logger(`[mcp] ${message}`);
 		}
 	}
 
-	return { connections, tools: connections.flatMap((connection) => connection.tools), errors };
+	return { connections, tools: connections.flatMap((connection) => connection.tools), errors, servers: statuses };
 }

@@ -335,6 +335,7 @@ async function main(): Promise<void> {
 		config,
 		tools: catalog,
 		extensions,
+		mcpServers: mcp.servers,
 		// Tools declare their own approval requirement and preview.
 		permissions: {
 			mode: parsed.autoApprove ? "allow" : "ask",

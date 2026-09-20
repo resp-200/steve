@@ -12,6 +12,7 @@ import { loadExtensions } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
 import type { SessionStore } from "../../features/session-store.js";
 import { connectMcpServers, type McpServerLike } from "../../features/mcp.js";
+import type { McpServerStatus } from "../../types.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
 export const AGENT_NAME = "steve";
@@ -52,11 +53,15 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 	 * Connects the MCP servers the client asked for. A server that fails to start is
 	 * logged and skipped, so a broken one never blocks the session.
 	 */
+	/** Client-declared servers are tagged so `/mcp` can tell them from plugin ones. */
 	const connectMcp = async (servers: McpServerLike[]) => {
-		if (servers.length === 0) return { tools: [] as AgentTool[], close: undefined as undefined | (() => Promise<void>) };
-		const { connections, tools } = await connectMcpServers(servers, { logger: options.logger });
+		if (servers.length === 0) {
+			return { tools: [] as AgentTool[], servers: [] as McpServerStatus[], close: undefined as undefined | (() => Promise<void>) };
+		}
+		const { connections, tools, servers: statuses } = await connectMcpServers(servers, { logger: options.logger });
 		return {
 			tools,
+			servers: statuses,
 			close: connections.length > 0 ? async () => { await Promise.all(connections.map((connection) => connection.close())); } : undefined,
 		};
 	};
@@ -103,7 +108,8 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					paths: options.extensionPaths ?? [],
 					log: options.logger,
 				});
-				const mcp = await connectMcp([...(ctx.params.mcpServers ?? []), ...extensions.mcpServers]);
+				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
+				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers]);
 				const session = new AcpSession({
 					id,
 					cwd: ctx.params.cwd,
@@ -116,6 +122,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					...(options.store ? { store: options.store } : {}),
 					extensions,
 					...(mcp.tools.length > 0 ? { mcpTools: mcp.tools } : {}),
+					mcpServers: mcp.servers,
 					...(mcp.close ? { closeMcp: mcp.close } : {}),
 					logger: options.logger,
 				});
@@ -141,7 +148,8 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					paths: options.extensionPaths ?? [],
 					log: options.logger,
 				});
-				const mcp = await connectMcp([...(ctx.params.mcpServers ?? []), ...extensions.mcpServers]);
+				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
+				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers]);
 				const session = new AcpSession({
 					id: stored.id,
 					cwd,
@@ -154,6 +162,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					extensions,
 					...(options.store ? { store: options.store } : {}),
 					...(mcp.tools.length > 0 ? { mcpTools: mcp.tools } : {}),
+					mcpServers: mcp.servers,
 					...(mcp.close ? { closeMcp: mcp.close } : {}),
 					restore: stored,
 					logger: options.logger,

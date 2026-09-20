@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { Type } from "../features/contract.js";
 import type { AgentMessage, AgentTool } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
+import type { McpServerStatus } from "../types.js";
 import type { ToolAnnotations } from "../features/tool-annotations.js";
 
 const run = promisify(execFile);
@@ -46,6 +47,8 @@ export interface SessionAccessors {
 	readonly commands: { name: string; description: string }[];
 	/** Which model and endpoint this session talks to. */
 	readonly model: { id: string; api: string; baseUrl: string };
+	/** MCP servers configured for this session, with their connection status. */
+	readonly mcp: McpServerStatus[];
 	stats(): { turns: number; userMessages: number; toolCalls: number; inputTokens: number; outputTokens: number };
 	/** Forgets the transcript (used by a `/new`-style command). */
 	reset(): void;
@@ -199,7 +202,7 @@ export function createExtensionAPI(ctx: ExtensionContext): { api: ExtensionAPI; 
 		},
 		registerMcpServer: (server) => {
 			if (!server?.name || !server?.command) {
-				throw new Error("registerMcpServer needs a name and a command");
+				throw new Error("registerMcpServer needs a name and a command (only the stdio transport is supported)");
 			}
 			records.mcpServers.push(server);
 		},
@@ -220,6 +223,7 @@ export function createExtensionContext(options: { cwd: string; mode: "cli" | "ac
 			tools: [],
 			commands: [],
 			model: { id: "unknown", api: "unknown", baseUrl: "" },
+			mcp: [],
 			stats: () => ({ turns: 0, userMessages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0 }),
 			reset: () => {},
 		},

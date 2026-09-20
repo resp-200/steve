@@ -13,6 +13,7 @@ import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest, type ToolChangePreview } from "./permissions.js";
 import type { AgentRuntimeEvent, PromptImage, TranscriptEntry, TurnStopReason, TurnUsage } from "./events.js";
+import type { Logger, McpServerStatus } from "../types.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -71,6 +72,8 @@ export interface AgentRuntimeOptions {
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 	/** Plugins loaded for this session (their tools, hooks, commands and events). */
 	extensions?: ExtensionHost;
+	/** MCP servers configured for this session (connected or not), for `/mcp`. */
+	mcpServers?: McpServerStatus[];
 	/**
 	 * Permission policy: the runtime asks before any tool that declared
 	 * `permission: "ask"` (core tools and plugins alike).
@@ -366,6 +369,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 			tools: agentTools.map((tool) => ({ name: tool.name, description: tool.description })),
 			commands: (extensions?.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
 			model: { id: config.model.id, api: String(config.model.api), baseUrl: config.model.baseUrl },
+			mcp: options.mcpServers ?? [],
 			stats: () => runtime.stats(),
 			reset: () => runtime.reset(),
 		}),

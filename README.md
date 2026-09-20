@@ -37,7 +37,7 @@ src/features/tool-annotations.ts L3 工具声明（permission / metadata / descr
 src/features/local-tools.ts L3 本地工具：read_file / glob / grep / write_file / edit_file / run_command
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
-src/extensions/builtin/*  L3′ 内置插件：会话命令 + 演示工具（get_current_time）
+src/extensions/builtin/*  L3′ 内置插件：会话命令（含 /mcp）+ 演示工具（get_current_time）
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
@@ -107,7 +107,16 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 ## REPL 命令
 
-`/help` `/new` `/tools` `/model` `/stats` `/exit`；流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
+`/help` `/new` `/tools` `/model` `/stats` `/mcp` `/exit`；流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
+
+`/mcp` 列出当前配置的 MCP server（来源、传输、命令行、连上的工具，或失败原因）：
+
+```
+mockmcp [plugin] stdio — /usr/bin/node scripts/mock-mcp-server.mjs
+  4 tool(s): echo, sum, fail, image
+broken [plugin] stdio — /definitely/not/a/binary
+  failed — MCP server "broken": spawn /definitely/not/a/binary ENOENT
+```
 
 ## 关键实现说明
 
@@ -270,7 +279,7 @@ export default function gitStatus(pi) {
 
 判据是 **dogfooding**：如果内置能力写不成插件，那是 API 不够用。目前已经这样搬过三轮 ——
 
-1. 内置命令（`/tools` `/stats` `/model` `/new` `/help`）→ `src/extensions/builtin/session-commands.ts`
+1. 内置命令（`/tools` `/stats` `/model` `/new` `/mcp` `/help`）→ `src/extensions/builtin/session-commands.ts`
 2. MCP → 插件用 `registerMcpServer()` 声明，核心负责连接（CLI 侧唯一的 MCP 入口）
 3. 演示工具（`get_current_time`）→ `src/extensions/builtin/demo-tools.ts`，`src/features/tools.ts` 已删除
 
@@ -285,7 +294,7 @@ export default function gitStatus(pi) {
 | MCP server | `registerMcpServer({ name, command, args, env })` | 连接、工具并入工具表（`mcp__server__tool`）、会话结束关闭子进程 |
 | 呈现元数据 | `registerTool({ metadata: { kind, title } })` | ACP 工具卡片按声明渲染；协议层的名字表降级为兜底 |
 | 审批预览 | `registerTool({ describe: (args) => ToolChangePreview })` | 权限闸门优先用工具自己的预览，宿主回调只是兜底 |
-| 会话内省 | `ctx.session.{ tools, commands, model, stats(), reset() }` | 只读视图，够写 `/tools`、`/stats` 这类命令 |
+| 会话内省 | `ctx.session.{ tools, commands, model, mcp, stats(), reset() }` | 只读视图，够写 `/tools`、`/stats`、`/mcp` 这类命令 |
 
 三条设计约束：
 
@@ -385,7 +394,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
 | `npm run arch:test` | 架构契约与发布卫生 9 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`.env`/内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
-| `npm run mcp:test` | MCP 与会话管理 20 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
+| `npm run mcp:test` | MCP 与会话管理 26 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
@@ -415,10 +424,10 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **重试与协议无关**：429/5xx 的回滚重试在功能层，所以编辑器里也能吃到（客户端看不到失败轮）；取消不会被重试。
 - **每条连接独立**：HTTP/WS 传输下每个连接有自己的 `AgentApp` 和 session 表，session 之间不串上下文。
 - **stdout 只走协议**：stdio 模式下所有日志都写到 stderr，`--quiet` 可只留错误。
-- **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
+- **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/mcp` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
 - **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，编辑器重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
 - **会话管理**：`session/list`（可按 `cwd` 过滤，返回 `sessionId`/`cwd`/`updatedAt`）与 `session/delete`（先 dispose 活会话——顺带 abort 并关掉它的 MCP 子进程——再删文件）。两者都在 initialize 的 `sessionCapabilities` 里声明。
-- **MCP 透传**：来源有两个 —— ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`，以及插件用 `registerMcpServer()` 声明的（**这是 CLI 侧唯一入口**，终端里没有客户端可传）。两者都连（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
+- **MCP 透传**：来源有两个 —— ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`，以及插件用 `registerMcpServer()` 声明的（**这是 CLI 侧唯一入口**，终端里没有客户端可传）。两者都连（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表；`/mcp` 会列出每个 server 的来源（`plugin` / `client`）、传输、命令行与工具，连不上的把原因也列出来，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
 
 ## 约定与规范
 
