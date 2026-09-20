@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
 import type { AgentTool } from "../features/contract.js";
 import { LOCAL_PERMISSION_TOOLS, createLocalToolDescriber, createLocalTools } from "../features/local-tools.js";
+import { connectMcpServers } from "../features/mcp.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
 import { tools as demoTools } from "../features/tools.js";
@@ -184,23 +185,7 @@ async function runCommand(context: ReplContext, input: string): Promise<boolean>
 			process.stdout.write(color.dim("Started a new conversation.\n"));
 			return true;
 
-		case "/tools": {
-			for (const tool of catalog) {
-				const needsApproval = (LOCAL_PERMISSION_TOOLS as readonly string[]).includes(tool.name);
-				process.stdout.write(`  ${color.bold(tool.name)} ${color.dim(`— ${tool.description}`)}${needsApproval ? ` ${color.yellow("(asks first)")}` : ""}\n`);
-			}
-			for (const tool of extensions.tools) {
-				process.stdout.write(`  ${color.bold(tool.name)} ${color.dim(`— ${tool.description}`)} ${color.yellow("(plugin)")}\n`);
-			}
-			return true;
-		}
-
 		case "/plugins": {
-			if (extensions.files.length === 0) {
-				process.stdout.write(color.dim("No plugins loaded. Put .mjs files in .steve/extensions or set STEVE_EXTENSIONS.\n"));
-				return true;
-			}
-
 			for (const file of extensions.files) process.stdout.write(`  ${color.bold(file)}\n`);
 			const { toolCall, toolResult, context: contextHooks, headers, events } = extensions.counts;
 			process.stdout.write(
@@ -209,26 +194,12 @@ async function runCommand(context: ReplContext, input: string): Promise<boolean>
 			for (const pluginCommand of chat.commands) {
 				process.stdout.write(`  ${color.bold(`/${pluginCommand.name}`)} ${color.dim(`— ${pluginCommand.description}`)}\n`);
 			}
+			for (const server of extensions.mcpServers) {
+				process.stdout.write(`  ${color.bold(`mcp ${server.name}`)} ${color.dim(server.command)}\n`);
+			}
 			for (const error of extensions.errors) {
 				process.stdout.write(`  ${color.red("failed")} ${error.file}${color.dim(`: ${error.message}`)}\n`);
 			}
-			return true;
-		}
-
-		case "/model":
-			process.stdout.write(
-				`  ${config.model.id} ${color.dim(`via ${config.model.baseUrl} (api: ${config.model.api}, auth: ${config.authStyle}, reasoning ${config.model.reasoning})`)}\n`,
-			);
-			return true;
-
-		case "/stats": {
-			const stats = chat.stats();
-			process.stdout.write(
-				`  ${color.dim("assistant turns")} ${stats.turns}` +
-					`  ${color.dim("user messages")} ${stats.userMessages}` +
-					`  ${color.dim("tool calls")} ${stats.toolCalls}` +
-					`  ${color.dim("tokens in/out")} ${stats.inputTokens}/${stats.outputTokens}\n`,
-			);
 			return true;
 		}
 
@@ -351,7 +322,16 @@ async function main(): Promise<void> {
 	};
 	const localTools = createLocalTools(localToolOptions);
 	const describeChange = createLocalToolDescriber(localToolOptions);
-	const catalog: AgentTool<any>[] = [...demoTools, ...localTools];
+
+	// Plugins can contribute MCP servers; the core connects them for the session.
+	const pluginLog = (message: string): void => {
+		process.stderr.write(`${color.dim(message)}\n`);
+	};
+	const mcp = await connectMcpServers(extensions.mcpServers, { logger: pluginLog });
+	const catalog: AgentTool<any>[] = [...demoTools, ...localTools, ...mcp.tools];
+	const closeMcp = async (): Promise<void> => {
+		await Promise.all(mcp.connections.map((connection) => connection.close()));
+	};
 
 	const chat = createAgentRuntime({
 		config,
@@ -359,7 +339,7 @@ async function main(): Promise<void> {
 		extensions,
 		beforeToolCall: createPermissionGate({
 			mode: parsed.autoApprove ? "allow" : "ask",
-			requires: LOCAL_PERMISSION_TOOLS,
+			requires: [...LOCAL_PERMISSION_TOOLS, ...extensions.permissionRequired()],
 			describe: (request) => describeChange(request.toolName, request.args),
 			ask: (request) => askPermission(request, parsed),
 		}),
@@ -369,10 +349,12 @@ async function main(): Promise<void> {
 
 	if (parsed.prompt) {
 		await runOneShot(chat, parsed.prompt);
+		await closeMcp();
 		return;
 	}
 
 	await runRepl({ chat, config, extensions, catalog, options: parsed });
+	await closeMcp();
 }
 
 main().catch((error: unknown) => {

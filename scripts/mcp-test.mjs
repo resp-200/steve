@@ -10,7 +10,7 @@
 //
 //   npm run build && node scripts/mcp-test.mjs
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -99,6 +99,28 @@ async function mcpClientChecks() {
 	);
 	check("非 stdio 传输被明确报告为不支持", broken.errors.some((line) => line.includes("not supported yet")), broken.errors.join(" | ").slice(0, 90));
 	await Promise.all(broken.connections.map((entry) => entry.close()));
+
+	// A plugin-contributed MCP server: the host collects it, the core connects it.
+	const { loadExtensions } = await import("../dist/extensions/host.js");
+	const pluginDir = mkdtempSync(join(tmpdir(), "steve-mcp-plugin-"));
+	const pluginFile = join(pluginDir, "with-mcp.mjs");
+	writeFileSync(
+		pluginFile,
+		[
+			"export default function (pi) {",
+			`\tpi.registerMcpServer({ name: "fromplugin", command: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(MCP_SCRIPT)}] });`,
+			"}",
+		].join("\n"),
+	);
+	const host = await loadExtensions({ cwd: ROOT, mode: "cli", paths: [pluginFile], builtins: false, log: () => {} });
+	const pluginMcp = await connectMcpServers(host.mcpServers, { logger: () => {} });
+	check(
+		"插件注册的 MCP server 被核心连上",
+		pluginMcp.tools.some((tool) => tool.name === "mcp__fromplugin__echo"),
+		pluginMcp.tools.map((tool) => tool.name).join(","),
+	);
+	await Promise.all(pluginMcp.connections.map((entry) => entry.close()));
+	rmSync(pluginDir, { recursive: true, force: true });
 }
 
 /* ------------------------------ B. ACP + MCP ----------------------------- */
@@ -198,9 +220,58 @@ async function acpChecks() {
 	}
 }
 
+/** The CLI has no ACP client to hand it servers, so plugin-contributed MCP is its only path. */
+async function cliChecks() {
+	const mock = spawn(process.execPath, ["scripts/mock-server.mjs"], {
+		cwd: ROOT,
+		env: { ...process.env, MOCK_PORT: String(MOCK_PORT) },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const dir = mkdtempSync(join(tmpdir(), "steve-mcp-cli-"));
+	const pluginFile = join(dir, "with-mcp.mjs");
+	writeFileSync(
+		pluginFile,
+		[
+			"export default function (pi) {",
+			`\tpi.registerMcpServer({ name: "climcp", command: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(MCP_SCRIPT)}] });`,
+			"}",
+		].join("\n"),
+	);
+
+	try {
+		await waitForPort(MOCK_PORT);
+		const output = await new Promise((resolve) => {
+			const child = spawn(process.execPath, [join(ROOT, "dist/entries/cli.js"), "--read-only"], {
+				cwd: ROOT,
+				env: {
+					...process.env,
+					NO_COLOR: "1",
+					LLM_API_KEY: "mock",
+					LLM_MODEL_ID: "mock",
+					LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,
+					STEVE_EXTENSIONS: pluginFile,
+				},
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+			let stdout = "";
+			child.stdout.on("data", (chunk) => (stdout += chunk));
+			setTimeout(() => child.stdin.write("/exit\n"), 1_200);
+			child.on("exit", () => resolve(stdout));
+		});
+		check("CLI 也能用插件里的 MCP 工具", /tools\s+.*mcp__climcp__echo/.test(output), output.split("\n").find((line) => line.includes("tools")) ?? "");
+	} finally {
+		mock.kill("SIGTERM");
+		await sleep(200);
+		mock.kill("SIGKILL");
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 async function main() {
 	process.stderr.write("mcp · client\n");
 	await mcpClientChecks();
+	process.stderr.write("\nmcp · CLI\n");
+	await cliChecks();
 	process.stderr.write("\nmcp · ACP end to end\n");
 	await acpChecks();
 

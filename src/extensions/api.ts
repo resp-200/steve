@@ -29,6 +29,25 @@ export interface ExtensionContext {
 	log(message: string): void;
 	/** Runs a command locally (not in an editor's terminal). */
 	exec(command: string, args?: string[], options?: { cwd?: string; timeoutMs?: number }): Promise<{ stdout: string; stderr: string; code: number }>;
+	/**
+	 * Read-only session introspection plus `reset()`. Filled in by the runtime
+	 * right after it is created, so plugins can build commands like `/tools`.
+	 */
+	session: SessionAccessors;
+}
+
+/** What plugins may see about the live session. */
+export interface SessionAccessors {
+	readonly id?: string;
+	/** Tools registered for this session (name + description). */
+	readonly tools: { name: string; description: string }[];
+	/** Commands available in this session (built-ins + plugins). */
+	readonly commands: { name: string; description: string }[];
+	/** Which model and endpoint this session talks to. */
+	readonly model: { id: string; api: string; baseUrl: string };
+	stats(): { turns: number; userMessages: number; toolCalls: number; inputTokens: number; outputTokens: number };
+	/** Forgets the transcript (used by a `/new`-style command). */
+	reset(): void;
 }
 
 export interface ToolCallHookEvent {
@@ -71,7 +90,23 @@ export interface PluginTool {
 	description: string;
 	/** A TypeBox schema (or plain JSON schema object). */
 	parameters: unknown;
+	/**
+	 * Declarative policy: `ask` makes the core permission gate ask the user
+	 * before this tool runs. Plugins can only *add* requirements — the gate
+	 * itself stays in the core and cannot be switched off from here.
+	 */
+	permission?: "ask" | "auto";
+	/** Presentation hints for protocol layers (ACP tool cards). */
+	metadata?: { kind?: string; title?: string };
 	execute: AgentTool<any>["execute"];
+}
+
+/** An MCP server a plugin wants connected for the session. */
+export interface PluginMcpServer {
+	name: string;
+	command: string;
+	args?: string[];
+	env?: { name: string; value: string }[];
 }
 
 export interface PluginCommand {
@@ -92,6 +127,8 @@ export interface ExtensionAPI {
 	on(event: AgentRuntimeEvent["type"], handler: EventHandler): void;
 	registerTool(tool: PluginTool): void;
 	registerCommand(command: PluginCommand): void;
+	/** Contributes an MCP server; the core connects it and merges its tools. */
+	registerMcpServer(server: PluginMcpServer): void;
 }
 
 /** What the API recorded, in the order plugins registered it. */
@@ -102,6 +139,7 @@ export interface ExtensionRecords {
 	headerHandlers: HeadersHandler[];
 	eventHandlers: Map<AgentRuntimeEvent["type"], EventHandler[]>;
 	tools: PluginTool[];
+	mcpServers: PluginMcpServer[];
 	commands: PluginCommand[];
 }
 
@@ -116,6 +154,7 @@ export function createExtensionAPI(ctx: ExtensionContext): { api: ExtensionAPI; 
 		eventHandlers: new Map(),
 		tools: [],
 		commands: [],
+		mcpServers: [],
 	};
 
 	const on = (event: string, handler: (...args: never[]) => unknown): void => {
@@ -157,6 +196,12 @@ export function createExtensionAPI(ctx: ExtensionContext): { api: ExtensionAPI; 
 			}
 			records.commands.push(command);
 		},
+		registerMcpServer: (server) => {
+			if (!server?.name || !server?.command) {
+				throw new Error("registerMcpServer needs a name and a command");
+			}
+			records.mcpServers.push(server);
+		},
 	};
 
 	return { api, records };
@@ -169,6 +214,14 @@ export function createExtensionContext(options: { cwd: string; mode: "cli" | "ac
 		mode: options.mode,
 		...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
 		hasUI: false,
+		// Replaced by the runtime through `attachSession` once it exists.
+		session: {
+			tools: [],
+			commands: [],
+			model: { id: "unknown", api: "unknown", baseUrl: "" },
+			stats: () => ({ turns: 0, userMessages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0 }),
+			reset: () => {},
+		},
 		log: options.log,
 		async exec(command, args = [], execOptions = {}) {
 			try {

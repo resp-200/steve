@@ -5,14 +5,13 @@ import {
 	type AgentApp,
 	type ClientCapabilities,
 	type Implementation,
-	type McpServer,
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
 import type { Logger } from "../../types.js";
 import { loadExtensions } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
 import type { SessionStore } from "../../features/session-store.js";
-import { connectMcpServers } from "../../features/mcp.js";
+import { connectMcpServers, type McpServerLike } from "../../features/mcp.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
 export const AGENT_NAME = "steve";
@@ -53,7 +52,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 	 * Connects the MCP servers the client asked for. A server that fails to start is
 	 * logged and skipped, so a broken one never blocks the session.
 	 */
-	const connectMcp = async (servers: McpServer[]) => {
+	const connectMcp = async (servers: McpServerLike[]) => {
 		if (servers.length === 0) return { tools: [] as AgentTool[], close: undefined as undefined | (() => Promise<void>) };
 		const { connections, tools } = await connectMcpServers(servers, { logger: options.logger });
 		return {
@@ -104,7 +103,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					paths: options.extensionPaths ?? [],
 					log: options.logger,
 				});
-				const mcp = await connectMcp(ctx.params.mcpServers ?? []);
+				const mcp = await connectMcp([...(ctx.params.mcpServers ?? []), ...extensions.mcpServers]);
 				const session = new AcpSession({
 					id,
 					cwd: ctx.params.cwd,
@@ -142,7 +141,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					paths: options.extensionPaths ?? [],
 					log: options.logger,
 				});
-				const mcp = await connectMcp(ctx.params.mcpServers ?? []);
+				const mcp = await connectMcp([...(ctx.params.mcpServers ?? []), ...extensions.mcpServers]);
 				const session = new AcpSession({
 					id: stored.id,
 					cwd,

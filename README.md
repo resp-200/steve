@@ -19,7 +19,7 @@
 | L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
 | L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
 | L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计 |
-| L3′ 拓展 | `src/extensions/` | 插件宿主：发现 / 加载 / 隔离插件，并把它们挂到功能层的接缝上 |
+| L3′ 拓展 | `src/extensions/` | 插件宿主 + **内置插件**（会话命令就住在这里）；一切能力都通过插件贡献 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
 | L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
 
@@ -36,6 +36,7 @@ src/features/tools.ts     L3 3 个 AgentTool 示例（计算器/时间/天气）
 src/features/local-tools.ts L3 本地工具：read_file / glob / grep / write_file / edit_file / run_command
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
+src/extensions/builtin/*  L3′ 内置插件（会话命令 /tools /stats /model /new /help）
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
@@ -252,6 +253,26 @@ export default function gitStatus(pi) {
 | `on("text_delta" … "turn_end")` | 观察归一化事件（`src/features/events.ts` 那套词表） | 功能层事件派发 |
 | `registerTool` / `registerCommand` | 加工具、加斜杠命令 | 工具表；CLI 斜杠命令 + ACP `available_commands_update` |
 
+**原则：插件优先（plugin-first），而不是插件唯一。** 一切**能力**都由插件贡献；核心只保留三件不可插件化的东西：
+
+| 核心保留 | 为什么 |
+| --- | --- |
+| 引导：`kernel/`、`model/`、`extensions/host.ts` | 插件宿主不能加载自己；没有模型就没有 agent |
+| 边界：`features/permissions.ts`、路径收敛、截断 | 插件只能**加**约束，永远不能放宽安全边界 |
+| 协议：`protocols/`、`entries/` | 插件 API 协议中立，协议层是宿主，插件不该认识 ACP |
+
+判据是 **dogfooding**：如果内置能力写不成插件，那是 API 不够用。目前已经这样搬过两轮 —— 内置命令（`/tools` `/stats` `/model` `/new` `/help`）就是 `src/extensions/builtin/session-commands.ts` 这个插件，MCP 也改成插件可注册。
+
+插件能贡献的东西：
+
+| 能力 | API | 核心做什么 |
+| --- | --- | --- |
+| 工具 | `registerTool({ name, description, parameters, execute, permission?, metadata? })` | 校验、执行、结果回灌；`permission: "ask"` 交给权限闸门 |
+| 斜杠命令 | `registerCommand({ name, description, run })` | CLI 斜杠命令 + ACP `available_commands_update` |
+| MCP server | `registerMcpServer({ name, command, args, env })` | 连接、工具并入工具表（`mcp__server__tool`）、会话结束关闭子进程 |
+| 呈现元数据 | `registerTool({ metadata: { kind, title } })` | ACP 工具卡片按声明渲染，不再只靠协议层的硬编码表 |
+| 会话内省 | `ctx.session.{ tools, commands, model, stats(), reset() }` | 只读视图，够写 `/tools`、`/stats` 这类命令 |
+
 三条设计约束：
 
 - **插件只说功能层的词汇**，不吐协议专属事件，所以同一个插件在两端行为一致：`/git-status` 在终端是斜杠命令，在编辑器里由 `available_commands_update` 播报、由 ACP 本地执行。
@@ -381,7 +402,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
 - **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，编辑器重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
 - **会话管理**：`session/list`（可按 `cwd` 过滤，返回 `sessionId`/`cwd`/`updatedAt`）与 `session/delete`（先 dispose 活会话——顺带 abort 并关掉它的 MCP 子进程——再删文件）。两者都在 initialize 的 `sessionCapabilities` 里声明。
-- **MCP 透传**：`session/new` / `session/load` 里的 `mcpServers` 会被连上（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
+- **MCP 透传**：来源有两个 —— ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`，以及插件用 `registerMcpServer()` 声明的（**这是 CLI 侧唯一入口**，终端里没有客户端可传）。两者都连（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
 
 ## 换个模型 / 加个工具
 

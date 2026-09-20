@@ -6,6 +6,7 @@ import {
 	type PromptResponse,
 	type SessionUpdate,
 	type StopReason,
+	type ToolKind,
 	type Usage,
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
@@ -122,7 +123,12 @@ export class AcpSession {
 			beforeToolCall: createPermissionGate({
 				mode: options.permissionMode,
 				// MCP tools can do anything their server can: always ask before calling one.
-				requires: [...ACP_PERMISSION_TOOLS, ...LOCAL_PERMISSION_TOOLS, ...(options.mcpTools ?? []).map((tool) => tool.name)],
+				requires: [
+					...ACP_PERMISSION_TOOLS,
+					...LOCAL_PERMISSION_TOOLS,
+					...(options.mcpTools ?? []).map((tool) => tool.name),
+					...options.extensions.permissionRequired(),
+				],
 				describe: (request) => this.describeChange(request.toolName, request.args),
 				ask: (request) => this.askPermission(request),
 			}),
@@ -157,11 +163,8 @@ export class AcpSession {
 		if (command) {
 			const name = command[1] ?? "";
 			const args = command[2]?.trim() ?? "";
-			const builtin = this.builtinCommands().find((entry) => entry.name === name);
-			const isPluginCommand = this.runtime.commands.some((entry) => entry.name === name);
-
-			if (builtin || isPluginCommand) {
-				const output = builtin ? builtin.run(args) : await this.runtime.runCommand(name, args);
+			if (this.runtime.commands.some((entry) => entry.name === name)) {
+				const output = await this.runtime.runCommand(name, args);
 				if (output) {
 					await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
 				}
@@ -233,9 +236,9 @@ export class AcpSession {
 					await this.send({
 						sessionUpdate: "tool_call",
 						toolCallId: call.id,
-						title: describeToolCall(call.name, call.args),
+						title: this.titleFor(call.name, call.args),
 						name: call.name,
-						kind: TOOL_KINDS[call.name] ?? "other",
+						kind: this.kindFor(call.name),
 						status: "in_progress",
 						rawInput: call.args,
 						locations: locationsFromArgs(call.args),
@@ -253,30 +256,6 @@ export class AcpSession {
 		}
 	}
 
-	private builtinCommands(): { name: string; description: string; run: (args: string) => string }[] {
-		const { config } = this.options;
-		return [
-			{ name: "help", description: "List the commands this session understands.", run: () => this.builtinCommands().map((entry) => `/${entry.name} — ${entry.description}`).join("\n") },
-			{ name: "tools", description: "List the tools the agent can call.", run: () => this.toolNames.join(", ") },
-			{ name: "model", description: "Show the model and endpoint in use.", run: () => `${config.model.id} via ${config.model.baseUrl} (api: ${config.model.api})` },
-			{
-				name: "stats",
-				description: "Show turn and token counters.",
-				run: () => {
-					const stats = this.runtime.stats();
-					return `turns ${stats.turns} · user messages ${stats.userMessages} · tool calls ${stats.toolCalls} · tokens in/out ${stats.inputTokens}/${stats.outputTokens}`;
-				},
-			},
-			{
-				name: "new",
-				description: "Start a fresh conversation in this session.",
-				run: () => {
-					this.runtime.reset();
-					return "Started a new conversation.";
-				},
-			},
-		];
-	}
 
 	/**
 	 * Previews what a write/edit is about to do. The previous content comes from the
@@ -337,10 +316,8 @@ export class AcpSession {
 	}
 
 	async announceCommands(): Promise<void> {
-		const commands = [
-			...this.builtinCommands().map(({ name, description }) => ({ name, description })),
-			...this.runtime.commands.map((command) => ({ name: command.name, description: command.description })),
-		];
+		// Built-in commands are plugins too, so this is just the command registry.
+		const commands = this.runtime.commands.map((command) => ({ name: command.name, description: command.description }));
 
 		await this.send({
 			sessionUpdate: "available_commands_update",
@@ -415,6 +392,16 @@ export class AcpSession {
 		}
 	}
 
+	/** Plugins may declare how their tools are presented; fall back to the built-in table. */
+	private kindFor(toolName: string): ToolKind {
+		const declared = this.options.extensions.metadataFor(toolName)?.kind;
+		return (declared as ToolKind | undefined) ?? TOOL_KINDS[toolName] ?? "other";
+	}
+
+	private titleFor(toolName: string, args: unknown): string {
+		return this.options.extensions.metadataFor(toolName)?.title ?? describeToolCall(toolName, args);
+	}
+
 	private send(update: SessionUpdate): Promise<void> {
 		return this.options.client.notify("session/update", { sessionId: this.id, update });
 	}
@@ -439,9 +426,9 @@ export class AcpSession {
 				await this.send({
 					sessionUpdate: "tool_call",
 					toolCallId: event.id,
-					title: describeToolCall(event.name, event.args),
+					title: this.titleFor(event.name, event.args),
 					name: event.name,
-					kind: TOOL_KINDS[event.name] ?? "other",
+					kind: this.kindFor(event.name),
 					status: "in_progress",
 					rawInput: event.args,
 					locations: locationsFromArgs(event.args),

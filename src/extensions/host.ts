@@ -27,7 +27,9 @@ import {
 	type HeadersHandler,
 	type PluginCommand,
 	type PluginFactory,
+	type PluginMcpServer,
 	type PluginTool,
+	type SessionAccessors,
 	type ToolCallDecision,
 	type ToolCallHandler,
 	type ToolCallHookEvent,
@@ -35,6 +37,7 @@ import {
 	type ToolResultHookEvent,
 	type ToolResultPatch,
 } from "./api.js";
+import { sessionCommands } from "./builtin/session-commands.js";
 
 const EXTENSION_SUFFIXES = [".mjs", ".js"];
 
@@ -51,6 +54,10 @@ export interface ExtensionHostOptions {
 	paths?: string[];
 	/** Set false to skip the `.steve/extensions` directories. Default: true. */
 	discover?: boolean;
+	/** Load the in-repo plugins (session commands). Default: true. */
+	builtins?: boolean;
+	/** Extra in-repo plugins, loaded before files. */
+	inline?: { name: string; factory: PluginFactory }[];
 	log: (message: string) => void;
 }
 
@@ -76,6 +83,14 @@ export interface ExtensionHost {
 	runCommand(name: string, args: string): Promise<string | undefined>;
 	/** True when a plugin registered that command name. */
 	hasCommand(name: string): boolean;
+	/** MCP servers the plugins asked for (the core connects them). */
+	readonly mcpServers: PluginMcpServer[];
+	/** Tool names plugins marked as needing approval. */
+	permissionRequired(): string[];
+	/** Presentation hints a plugin declared for a tool, if any. */
+	metadataFor(toolName: string): { kind?: string; title?: string } | undefined;
+	/** Hands the live session to every plugin (called by the runtime). */
+	attachSession(session: SessionAccessors): void;
 }
 
 function listDirectory(directory: string): string[] {
@@ -125,6 +140,31 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 	const errors: ExtensionLoadError[] = [];
 	const loaded: LoadedPlugin[] = [];
 
+	const inRepo: { label: string; factory: PluginFactory }[] = [
+		...(options.inline ?? []).map((entry) => ({ label: entry.name, factory: entry.factory })),
+		...(options.builtins === false ? [] : [{ label: "builtin:session-commands", factory: sessionCommands as PluginFactory }]),
+	];
+
+	for (const entry of inRepo) {
+		const ctx = createExtensionContext({
+			cwd: options.cwd,
+			mode: options.mode,
+			...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+			log: (message) => options.log(`[plugin ${entry.label}] ${message}`),
+		});
+
+		try {
+			const { api, records } = createExtensionAPI(ctx);
+			await entry.factory(api);
+			loaded.push({ file: entry.label, records, ctx });
+			options.log(`[extensions] loaded ${entry.label}`);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			errors.push({ file: entry.label, message });
+			options.log(`[extensions] failed to load ${entry.label}: ${message}`);
+		}
+	}
+
 	for (const file of files) {
 		const label = basename(file);
 		const ctx = createExtensionContext({
@@ -167,6 +207,7 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 
 	const tools = loaded.flatMap((plugin) => plugin.records.tools);
 	const commands = loaded.flatMap((plugin) => plugin.records.commands);
+	const mcpServers = loaded.flatMap((plugin) => plugin.records.mcpServers);
 	const counts = {
 		toolCall: loaded.reduce((total, plugin) => total + plugin.records.toolCallHandlers.length, 0),
 		toolResult: loaded.reduce((total, plugin) => total + plugin.records.toolResultHandlers.length, 0),
@@ -183,7 +224,16 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 		errors,
 		tools,
 		commands,
+		mcpServers,
 		counts,
+
+		permissionRequired: () => tools.filter((tool) => tool.permission === "ask").map((tool) => tool.name),
+
+		metadataFor: (toolName) => tools.find((tool) => tool.name === toolName)?.metadata,
+
+		attachSession: (session) => {
+			for (const plugin of loaded) plugin.ctx.session = session;
+		},
 
 		async runToolCall(event) {
 			for (const plugin of loaded) {

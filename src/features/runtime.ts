@@ -6,7 +6,7 @@
  * consume {@link AgentRuntimeEvent} and {@link TurnResult}.
  */
 import type { AfterToolCallContext, AfterToolCallResult, AgentMessage, AgentTool, BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
-import type { PluginCommand } from "../extensions/api.js";
+import type { PluginCommand, SessionAccessors } from "../extensions/api.js";
 import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
@@ -93,6 +93,8 @@ export interface AgentRuntime {
 	reset(): void;
 	/** Runs a plugin command; `undefined` when no plugin owns that name. */
 	runCommand(name: string, args: string): Promise<string | undefined>;
+	/** What plugins may see about this session (tools, counters, reset). */
+	accessors(): SessionAccessors;
 	stats(): AgentStats;
 }
 
@@ -320,9 +322,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 		};
 	};
 
-	return {
+	const runtime: AgentRuntime = {
 		toolNames: agentTools.map((tool) => tool.name),
 		commands: extensions?.commands ?? [],
+
+		accessors: () => ({
+			tools: agentTools.map((tool) => ({ name: tool.name, description: tool.description })),
+			commands: (extensions?.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
+			model: { id: config.model.id, api: String(config.model.api), baseUrl: config.model.baseUrl },
+			stats: () => runtime.stats(),
+			reset: () => runtime.reset(),
+		}),
 
 		snapshot: () => [...agent.state.messages],
 		restore: (snapshot) => {
@@ -408,4 +418,9 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 			return { turns, userMessages, toolCalls, inputTokens, outputTokens };
 		},
 	};
+
+	// Plugins get a read-only view of the session once it exists.
+	extensions?.attachSession(runtime.accessors());
+
+	return runtime;
 }

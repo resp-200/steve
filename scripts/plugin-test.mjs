@@ -64,6 +64,22 @@ async function hostChecks() {
 		].join("\n"),
 	);
 	writeFileSync(
+		join(temp, "declares-everything.mjs"),
+		[
+			"export default function (pi) {",
+			"\tpi.registerTool({",
+			'\t\tname: "risky",',
+			'\t\tdescription: "A tool that needs approval and custom presentation.",',
+			"\t\tparameters: { type: \"object\", properties: {} },",
+			'\t\tpermission: "ask",',
+			'\t\tmetadata: { kind: "execute", title: "Risky thing" },',
+			'\t\texecute: async () => ({ content: [{ type: "text", text: "ok" }] }),',
+			"\t});",
+			`\tpi.registerMcpServer({ name: "fixture", command: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(join(ROOT, "scripts", "mock-mcp-server.mjs"))}] });`,
+			"}",
+		].join("\n"),
+	);
+	writeFileSync(
 		join(temp, "filter-context.mjs"),
 		[
 			"export default function (pi) {",
@@ -113,6 +129,22 @@ async function hostChecks() {
 	const headers = {};
 	host.runHeaders(headers, { model: "mock", api: "anthropic-messages" });
 	check("before_provider_headers 能改请求头", headers["x-steve-plugin"] === "turn-logger", JSON.stringify(headers));
+
+	check(
+		"插件可声明 permission=ask（核心闸门据此询问）",
+		host.permissionRequired().includes("risky"),
+		host.permissionRequired().join(","),
+	);
+	check(
+		"插件可声明呈现元数据（协议层据此渲染）",
+		host.metadataFor("risky")?.kind === "execute" && host.metadataFor("risky")?.title === "Risky thing",
+		JSON.stringify(host.metadataFor("risky") ?? null),
+	);
+	check(
+		"插件可注册 MCP server（由核心连接）",
+		host.mcpServers.some((server) => server.name === "fixture" && server.args?.length === 1),
+		JSON.stringify(host.mcpServers),
+	);
 
 	check("插件命令可执行", (await host.runCommand("ping", "")) === "pong");
 	check("未注册的命令返回 undefined", (await host.runCommand("nope", "")) === undefined);
