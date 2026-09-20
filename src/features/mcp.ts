@@ -26,7 +26,7 @@ export interface McpServerLike {
 	name: string;
 	type?: string;
 	/** Who declared it. Defaults to `plugin`: untagged specs come from the host. */
-	source?: "plugin" | "client";
+	source?: "plugin" | "client" | "project" | "global";
 	/** Per-server override of `McpConnectOptions.timeoutMs` (npx cold starts are slow). */
 	timeoutMs?: number;
 	command?: string;
@@ -230,6 +230,18 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 }
 
 /**
+ * Explicit declarations (plugin code, the editor) beat config files, and a
+ * project config file beats the global one. Names must be unique after this:
+ * two servers with one name would produce colliding `mcp__<server>__<tool>` tools.
+ */
+const SOURCE_PRIORITY: Record<NonNullable<McpServerLike["source"]>, number> = {
+	plugin: 3,
+	client: 3,
+	project: 2,
+	global: 1,
+};
+
+/**
  * Connects every server the client asked for. A server that fails to start is
  * logged and skipped: one broken MCP server must not sink the whole session.
  */
@@ -243,6 +255,12 @@ export async function connectMcpServers(
 	/** One entry per declared server, in declaration order, failures included. */
 	const statuses: McpServerStatus[] = [];
 
+	// One winner per name: highest source priority first, ties to the earlier one.
+	const winners = new Map<string, McpServerLike>();
+	for (const server of [...servers].sort((a, b) => SOURCE_PRIORITY[b.source ?? "plugin"] - SOURCE_PRIORITY[a.source ?? "plugin"])) {
+		if (!winners.has(server.name)) winners.set(server.name, server);
+	}
+
 	/** Everything `/mcp` shows about a server except its outcome. */
 	const describe = (server: McpServerLike): Omit<McpServerStatus, "status" | "tools"> => ({
 		name: server.name,
@@ -252,6 +270,15 @@ export async function connectMcpServers(
 	});
 
 	for (const server of servers) {
+		const winner = winners.get(server.name);
+		if (winner !== server) {
+			const message = `MCP server "${server.name}" (${server.source ?? "plugin"}) ignored: the ${winner?.source ?? "plugin"} declaration wins`;
+			errors.push(message);
+			statuses.push({ ...describe(server), status: "skipped", tools: [], error: message });
+			logger(`[mcp] ${message}`);
+			continue;
+		}
+
 		if (server.type && server.type !== "stdio") {
 			const message = `MCP server "${server.name}": transport "${server.type}" is not supported yet (only stdio)`;
 			errors.push(message);

@@ -7,9 +7,10 @@
 //      (`mcp__mock__echo`), a model-driven call reaches the MCP server, and the
 //      tools go through the permission dialog
 //   C. session/list + session/delete over ACP
+//   D. .steve/mcp.json (built-in plugin): parsing, validation, source priority
 //
 //   npm run build && node scripts/mcp-test.mjs
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -352,6 +353,96 @@ async function cliChecks() {
 	}
 }
 
+/* ------------------------- D. .steve/mcp.json ---------------------------- */
+
+async function configChecks() {
+	const { loadExtensions } = await import("../dist/extensions/host.js");
+	const { connectMcpServers } = await import("../dist/features/mcp.js");
+	const dir = mkdtempSync(join(tmpdir(), "steve-mcp-json-"));
+	const logs = [];
+
+	const write = (json) => writeFileSync(join(dir, ".steve", "mcp.json"), typeof json === "string" ? json : JSON.stringify(json, null, 2));
+	execFileSync("mkdir", ["-p", join(dir, ".steve")]);
+
+	write({
+		mcpServers: {
+			fromjson: { command: process.execPath, args: [MCP_SCRIPT], env: { NOTE: 42 } },
+			configonly: { command: process.execPath, args: [MCP_SCRIPT] },
+			remote: { type: "http", url: "http://127.0.0.1:1/mcp" },
+			"no-command": { args: ["nope"] },
+			"bad-args": { command: "node", args: [1, 2] },
+		},
+	});
+	// A plugin declaring the same name: plugin code must win over the config file.
+	const pluginFile = join(dir, "override.mjs");
+	writeFileSync(
+		pluginFile,
+		[
+			"export default function (pi) {",
+			`\tpi.registerMcpServer({ name: "fromjson", command: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(MCP_SCRIPT)}] });`,
+			"}",
+		].join("\n"),
+	);
+
+	const host = await loadExtensions({
+		cwd: dir,
+		mode: "cli",
+		paths: [pluginFile],
+		discover: false,
+		builtins: true,
+		log: (message) => logs.push(message),
+	});
+	const mcp = await connectMcpServers(host.mcpServers, { logger: () => {} });
+	// A name can appear twice (a skipped loser + the winner): take the winner.
+	const status = (name) => mcp.servers.find((server) => server.name === name && server.status !== "skipped");
+
+	check(
+		"mcp.json 里的 server 被注册并连上",
+		status("fromjson")?.status === "connected" && status("fromjson")?.tools.join(",") === "echo,sum,fail,image",
+		JSON.stringify(status("fromjson") ?? null).slice(0, 120),
+	);
+	check(
+		"mcp.json 来源标为 project（只出现在配置里的 server）",
+		status("configonly")?.source === "project" && status("configonly")?.status === "connected",
+		`${status("configonly")?.source ?? "none"}:${status("configonly")?.status ?? ""}`,
+	);
+	check(
+		"非 stdio 传输声明进得来并被报为 unsupported",
+		status("remote")?.status === "unsupported" && (status("remote")?.error ?? "").includes("not supported yet"),
+		status("remote")?.error ?? "",
+	);
+	check(
+		"缺 command / args 类型不对的条目被跳过并记日志",
+		!status("no-command") && !status("bad-args") && logs.some((line) => line.includes('"no-command": missing "command"')) && logs.some((line) => line.includes('"bad-args"')),
+		logs.filter((line) => line.includes("mcp.json")).join(" | ").slice(0, 160),
+	);
+	check(
+		"插件声明优先于 mcp.json（同名时 config 那条被标 skipped）",
+		host.mcpServers.filter((server) => server.name === "fromjson").length === 2 &&
+			mcp.servers.filter((server) => server.name === "fromjson" && server.status === "skipped").length === 1 &&
+			(status("fromjson")?.source === "plugin"),
+		mcp.servers.filter((server) => server.name === "fromjson").map((server) => `${server.source}:${server.status}`).join(","),
+	);
+	await Promise.all(mcp.connections.map((connection) => connection.close()));
+
+	// No ${ENV} interpolation: the literal text is what the server receives.
+	write({ mcpServers: { literal: { command: "node", env: { KEY: "${SECRET}" } } } });
+	const literalHost = await loadExtensions({ cwd: dir, mode: "cli", paths: [], discover: false, builtins: true, log: (message) => logs.push(message) });
+	const literal = literalHost.mcpServers.find((server) => server.name === "literal");
+	check(
+		"不插值：${...} 原样传给 server，并明确提示",
+		literal?.env?.[0]?.value === "${SECRET}" && logs.some((line) => line.includes("interpolation is not supported")),
+		`${literal?.env?.[0]?.value ?? "none"}`,
+	);
+
+	// Malformed file: the rest of the session still runs.
+	write("{ not json");
+	const broken = await loadExtensions({ cwd: dir, mode: "cli", paths: [], discover: false, builtins: true, log: (message) => logs.push(message) });
+	check("坏 JSON 只记日志，不影响会话", broken.errors.length === 0 && logs.some((line) => line.includes("mcp.json") && line.includes("mcp.json")), broken.errors.map((error) => error.message).join(","));
+
+	rmSync(dir, { recursive: true, force: true });
+}
+
 async function main() {
 	process.stderr.write("mcp · client\n");
 	await mcpClientChecks();
@@ -359,6 +450,8 @@ async function main() {
 	await cliChecks();
 	process.stderr.write("\nmcp · ACP end to end\n");
 	await acpChecks();
+	process.stderr.write("\nmcp · .steve/mcp.json\n");
+	await configChecks();
 
 	const failed = checks.filter((entry) => !entry.passed);
 	process.stderr.write(`\n${checks.length - failed.length}/${checks.length} checks passed\n`);

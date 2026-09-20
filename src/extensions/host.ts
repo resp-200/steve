@@ -39,6 +39,7 @@ import {
 	type ToolResultPatch,
 } from "./api.js";
 import { demoTools } from "./builtin/demo-tools.js";
+import { mcpConfig } from "./builtin/mcp-config.js";
 import { sessionCommands } from "./builtin/session-commands.js";
 
 const EXTENSION_SUFFIXES = [".mjs", ".js"];
@@ -149,6 +150,7 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 			: [
 					{ label: "builtin:session-commands", factory: sessionCommands as PluginFactory },
 					{ label: "builtin:demo-tools", factory: demoTools as PluginFactory },
+					{ label: "builtin:mcp-config", factory: mcpConfig as PluginFactory },
 				]),
 	];
 

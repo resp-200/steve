@@ -199,7 +199,8 @@ async function runCommand(context: ReplContext, input: string): Promise<boolean>
 				process.stdout.write(`  ${color.bold(`/${pluginCommand.name}`)} ${color.dim(`— ${pluginCommand.description}`)}\n`);
 			}
 			for (const server of extensions.mcpServers) {
-				process.stdout.write(`  ${color.bold(`mcp ${server.name}`)} ${color.dim(server.command)}\n`);
+				const detail = server.command ?? `${server.type ?? "stdio"} (unsupported)`;
+				process.stdout.write(`  ${color.bold(`mcp ${server.name}`)} ${color.dim(detail)}\n`);
 			}
 			for (const error of extensions.errors) {
 				process.stdout.write(`  ${color.red("failed")} ${error.file}${color.dim(`: ${error.message}`)}\n`);

@@ -17,13 +17,16 @@ export type Logger = (message: string) => void;
  */
 export interface McpServerStatus {
 	name: string;
-	/** Where the declaration came from: a plugin, or the ACP client's `session/new`. */
-	source: "plugin" | "client";
+	/**
+	 * Where the declaration came from: a plugin, the ACP client's `session/new`,
+	 * or one of the `.steve/mcp.json` config files (project beats global).
+	 */
+	source: "plugin" | "client" | "project" | "global";
 	/** Transport as declared; `stdio` when the spec did not say. */
 	transport: string;
 	/** Command line of a stdio server, for display. */
 	command?: string;
-	status: "connected" | "failed" | "unsupported";
+	status: "connected" | "failed" | "unsupported" | "skipped";
 	/** Remote tool names, without the `mcp__<server>__` prefix. */
 	tools: string[];
 	error?: string;

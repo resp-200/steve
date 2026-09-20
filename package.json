@@ -18,6 +18,7 @@
 		"plugins:test": "node scripts/plugin-test.mjs",
 		"tools:test": "node scripts/local-tools-test.mjs",
 		"sessions:test": "node scripts/session-test.mjs",
+		"config:test": "node scripts/config-test.mjs",
 		"mcp:test": "node scripts/mcp-test.mjs",
 		"arch:test": "node scripts/arch-test.mjs",
 		"verify": "node scripts/verify.mjs",

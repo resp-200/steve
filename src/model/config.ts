@@ -1,15 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Model, ProviderId } from "@earendil-works/pi-ai";
 
-/**
- * Tiny .env loader so this project has zero runtime dependencies beyond pi.
- * Existing process.env values always win over the file.
- */
-export function loadEnvFile(file = resolve(process.cwd(), ".env")): void {
-	if (!existsSync(file)) return;
-
+/** Parses one .env file into key/value pairs (no expansion, no interpolation). */
+function parseEnvFile(file: string): [string, string][] {
+	const entries: [string, string][] = [];
 	for (const rawLine of readFileSync(file, "utf8").split(/\r?\n/)) {
 		const line = rawLine.trim();
 		if (!line || line.startsWith("#")) continue;
@@ -25,8 +22,44 @@ export function loadEnvFile(file = resolve(process.cwd(), ".env")): void {
 		) {
 			value = value.slice(1, -1);
 		}
-		if (key && !(key in process.env)) process.env[key] = value;
+		if (key) entries.push([key, value]);
 	}
+	return entries;
+}
+
+/**
+ * Tiny .env loader so this project has zero runtime dependencies beyond pi.
+ *
+ * `files` is ordered lowest priority first: later files override earlier ones,
+ * but a real environment variable always wins over every file.
+ */
+export function loadEnvFiles(files: string[]): void {
+	const fromFiles = new Set<string>();
+	for (const file of files) {
+		if (!existsSync(file)) continue;
+		for (const [key, value] of parseEnvFile(file)) {
+			// `fromFiles` distinguishes "set by an earlier file" (overridable) from
+			// "set by the real environment" (never touched).
+			if (key in process.env && !fromFiles.has(key)) continue;
+			process.env[key] = value;
+			fromFiles.add(key);
+		}
+	}
+}
+
+/**
+ * Where credentials are looked for, lowest priority first. The project's
+ * `.steve/.env` is the preferred place (the whole `.steve/` directory is
+ * gitignored); the plain `.env` files stay supported for compatibility.
+ */
+export function envFileCandidates(cwd = process.cwd()): string[] {
+	return [
+		resolve(packageRoot(), ".env"),
+		resolve(packageRoot(), ".steve", ".env"),
+		resolve(homedir(), ".steve", ".env"),
+		resolve(cwd, ".env"),
+		resolve(cwd, ".steve", ".env"),
+	];
 }
 
 /** Wire protocols this demo can talk to. */
@@ -51,7 +84,7 @@ export interface AppConfig {
 function requireEnv(name: string): string {
 	const value = process.env[name]?.trim();
 	if (!value) {
-		throw new Error(`Missing required environment variable ${name}. Copy .env.example to .env and fill it in.`);
+		throw new Error(`Missing required environment variable ${name}. Copy .env.example to .steve/.env and fill it in.`);
 	}
 	return value;
 }
@@ -138,16 +171,16 @@ function resolveAuthStyle(): AuthStyle {
 	return "auto";
 }
 
-/** Directory of the installed project (dist/ or src/ -> project root). */
+/** Directory of the installed project (`dist/model/` or `src/model/` -> root). */
 function packageRoot(): string {
-	return resolve(dirname(fileURLToPath(import.meta.url)), "..");
+	return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
 export function loadConfig(): AppConfig {
-	// cwd first (normal CLI use), then the project's own .env so editors that
-	// spawn the ACP server from another working directory still find credentials.
-	loadEnvFile();
-	loadEnvFile(resolve(packageRoot(), ".env"));
+	// Several places, lowest priority first: the install directory (so editors that
+	// spawn the ACP server from another cwd still find credentials), the global
+	// ~/.steve/.env, then the working directory.
+	loadEnvFiles(envFileCandidates());
 	return {
 		apiKey: requireEnv("LLM_API_KEY"),
 		model: buildModel(),

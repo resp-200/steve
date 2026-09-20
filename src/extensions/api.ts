@@ -108,11 +108,16 @@ export interface PluginTool extends ToolAnnotations {
 /** An MCP server a plugin wants connected for the session. */
 export interface PluginMcpServer {
 	name: string;
-	command: string;
+	/** Required for stdio servers; omit it when declaring a non-stdio transport. */
+	command?: string;
 	args?: string[];
 	env?: { name: string; value: string }[];
 	/** Handshake timeout in ms; raise it for `npx -y <server>` (first run downloads). */
 	timeoutMs?: number;
+	/** Transport; only `stdio` is implemented, anything else is reported as unsupported. */
+	type?: string;
+	/** Where the declaration came from — set by the host or the mcp.json plugin. */
+	source?: "plugin" | "client" | "project" | "global";
 }
 
 export interface PluginCommand {
@@ -203,8 +208,11 @@ export function createExtensionAPI(ctx: ExtensionContext): { api: ExtensionAPI; 
 			records.commands.push(command);
 		},
 		registerMcpServer: (server) => {
-			if (!server?.name || !server?.command) {
-				throw new Error("registerMcpServer needs a name and a command (only the stdio transport is supported)");
+			if (!server?.name) throw new Error("registerMcpServer needs a name");
+			// A non-stdio declaration is allowed through so `/mcp` can report it as
+			// unsupported; stdio (the default) needs a command to spawn.
+			if (!server.command && (!server.type || server.type === "stdio")) {
+				throw new Error(`registerMcpServer("${server.name}") needs a command (only the stdio transport is supported)`);
 			}
 			records.mcpServers.push(server);
 		},

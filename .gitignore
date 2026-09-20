@@ -6,3 +6,7 @@ dist/
 
 # Local plugins / project-scoped state (never commit these)
 .steve/
+
+# Editor / IDE state
+.idea/
+.vscode/

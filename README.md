@@ -37,7 +37,7 @@ src/features/tool-annotations.ts L3 工具声明（permission / metadata / descr
 src/features/local-tools.ts L3 本地工具：read_file / glob / grep / write_file / edit_file / run_command
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
-src/extensions/builtin/*  L3′ 内置插件：会话命令（含 /mcp）+ 演示工具（get_current_time）
+src/extensions/builtin/*  L3′ 内置插件：会话命令（含 /mcp）+ 演示工具 + .steve/mcp.json 读取
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
@@ -69,14 +69,14 @@ CLI 与 ACP 走的是同一个内核装配点，所以「接 pi 的位置」只�
 
 ```bash
 npm install
-cp .env.example .env      # 填 LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL
+mkdir -p .steve && cp .env.example .steve/.env   # 填 LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL
 npm run dev               # 交互式对话
 npm run dev "现在几点？顺便算一下 128*37+15"   # 单次提问
 npm run dev -- --read-only      # 只读模式（默认写/执行前会在终端问 y/n）
 npm run build && npm start
 ```
 
-当前 `.env` 指向 Anthropic Messages 格式的网关（`https://your-gateway.example.com/anthropic`），`LLM_API` 未设置时会根据 `LLM_BASE_URL` 自动判定为 `anthropic-messages`。
+当前 `.steve/.env` 指向 Anthropic Messages 格式的网关（`https://your-gateway.example.com/anthropic`），`LLM_API` 未设置时会根据 `LLM_BASE_URL` 自动判定为 `anthropic-messages`。
 
 `npm run mock` 会用自带的离线 mock server（`scripts/mock-server.mjs`）替代真实网关，三种协议都支持，无需 key、不联网：
 
@@ -92,6 +92,18 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 ```
 
 ## 环境变量
+
+凭据从 `.env` 文件读，按**优先级从低到高**依次尝试（后面的覆盖前面的，但**真实环境变量永远最优先**）：
+
+| 位置 | 用途 |
+| --- | --- |
+| `<安装目录>/.env` | 兼容旧写法；也是编辑器从别的 cwd 启动 ACP server 时的兜底 |
+| `<安装目录>/.steve/.env` | 同上，新位置 |
+| `~/.steve/.env` | 全局，对所有项目生效 |
+| `$PWD/.env` | 兼容旧写法 |
+| `$PWD/.steve/.env` | **推荐** |
+
+`.steve/` 整个目录都在 `.gitignore` 里 —— 本地配置与密钥只放这里，永远不进仓库（`npm run arch:test` 会机检这一点）。
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
@@ -301,7 +313,25 @@ export default function gitStatus(pi) {
 
 只实现了 **stdio** 传输（`http`/`sse`/`acp` 明确报「不支持」，不静默忽略）。接入方式两种：
 
-**1. 插件里声明** —— 终端与编辑器都生效，也是 CLI 侧的唯一入口（完整示例：`examples/extensions/mcp-server.mjs`）：
+**1. `.steve/mcp.json`（内置插件，无需写代码）** —— 格式和 Claude Desktop / Cursor 一样，可以直接抄过来：
+
+```jsonc
+// .steve/mcp.json（项目级）或 ~/.steve/mcp.json（全局）
+{
+  "mcpServers": {
+    "amap-maps": {
+      "command": "npx",
+      "args": ["-y", "@amap/amap-maps-mcp-server"],
+      "env": { "AMAP_MAPS_API_KEY": "..." },   // 不支持 ${VAR} 插值，这里就是字面量
+      "timeoutMs": 120000
+    }
+  }
+}
+```
+
+三条规则：**同名时插件/编辑器声明优先**（配置里那条在 `/mcp` 里显示为 `skipped` 并说明原因）；**项目级优先于全局**；**坏文件、坏条目只记日志跳过**，不影响会话。
+
+**2. 插件里声明** —— 终端与编辑器都生效，需要读环境变量或用条件逻辑时用它（完整示例：`examples/extensions/mcp-server.mjs`）：
 
 ```js
 // .steve/extensions/mcp-server.mjs
@@ -316,7 +346,7 @@ export default function (pi) {
 }
 ```
 
-**2. 客户端在 `session/new` 里传（ACP）** —— 编辑器把它自己的 MCP 配置随会话送进来，`/mcp` 里来源标成 `client`。终端里没有客户端，所以 CLI 只有上面那条路。
+**3. 客户端在 `session/new` 里传（ACP）** —— 编辑器把它自己的 MCP 配置随会话送进来，`/mcp` 里来源标成 `client`。终端里没有客户端，所以 CLI 只有前两条路。
 
 接入后核心负责这些事：
 
@@ -334,7 +364,9 @@ export default function (pi) {
 | `failed — ... exited (code 1): <原因>` | server 自己启动失败，多半缺 env（API key） |
 | `failed — MCP initialize timed out` | `npx -y` 首次下载太慢 → 加 `timeoutMs`，或先 `npm i -g` |
 | `unsupported — transport "http"` | 只实现了 stdio |
+| `skipped — the plugin declaration wins` | 同名 server 在插件/mcp.json 里各声明了一次，按优先级只连一个 |
 | `[extensions] failed to load ...` | `registerMcpServer` 校验失败（缺 name/command）会让整个插件加载报错 |
+| `[mcp.json] ...: missing "command"` | mcp.json 的条目缺 command（stdio 必需），该条被跳过 |
 
 实测（走真实 npx）：`@amap/amap-maps-mcp-server` 12 个工具、`@modelcontextprotocol/server-filesystem` 14 个工具，都能被模型调用并拿到结果。
 
@@ -434,9 +466,10 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run plugins:test` | 插件层 22 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
-| `npm run arch:test` | 架构契约与发布卫生 9 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`.env`/内网信息不泄露 |
+| `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
+| `npm run arch:test` | 架构契约与发布卫生 11 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
-| `npm run mcp:test` | MCP 与会话管理 29 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
+| `npm run mcp:test` | MCP 与会话管理 36 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
@@ -571,7 +604,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - 提交要跳过用户全局的 lefthook：`LEFTHOOK=0 git commit ...`。
 - push 必须绕开全局代理（对 `github.com:443` 会 `SSL_ERROR_SYSCALL`）：`git -c http.proxy= -c https.proxy= push origin main`。
 - **历史改写只在明确 lease 下**：`--force-with-lease=main:<sha>`，绝不 blind force。
-- **发布卫生**（`arch:test` 会查）：`.env` 永不入库（只提交 `.env.example`）；公开文件里不出现内网域名、key 片段、真实模型 id——文档里的网关一律写成 `https://your-gateway.example.com`。
+- **发布卫生**（`arch:test` 会查）：`.env` 与整个 `.steve/`（本地配置、`mcp.json`、插件、会话记录）永不入库，只提交 `.env.example`；公开文件里不出现内网域名、key 片段、真实模型 id——文档里的网关一律写成 `https://your-gateway.example.com`。
 
 ### 8. 文档
 

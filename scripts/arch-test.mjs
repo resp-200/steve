@@ -163,6 +163,23 @@ const tracked = execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" 
 	.filter(Boolean);
 check("`.env` 不入库（只提交 .env.example）", !tracked.includes(".env") && tracked.includes(".env.example"));
 
+// `.steve/` holds local config and secrets (`.env`, `mcp.json`, plugins, sessions).
+const ignored = (path) => {
+	try {
+		execFileSync("git", ["check-ignore", "-q", path], { cwd: ROOT });
+		return true;
+	} catch {
+		return false;
+	}
+};
+const steveTracked = tracked.filter((file) => file.startsWith(".steve/"));
+check(
+	"`.steve/` 被 gitignore（本地配置与密钥永不提交）",
+	ignored(".steve/.env") && ignored(".steve/mcp.json") && ignored(".steve/extensions/x.mjs"),
+	".gitignore 缺少 .steve/",
+);
+check("没有 `.steve/` 下的文件被跟踪", steveTracked.length === 0, steveTracked.join(", "));
+
 const FORBIDDEN = [
 	["zhuan", "spirit"].join(""), // 内网网关域名
 	["token", "hub"].join(""), // 内网网关名
