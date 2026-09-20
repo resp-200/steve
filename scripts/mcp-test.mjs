@@ -111,6 +111,37 @@ async function mcpClientChecks() {
 		broken.servers.map((server) => `${server.name}:${server.status}`).join(",") === "nope:failed,http-only:unsupported,second:connected",
 		broken.servers.map((server) => `${server.name}:${server.status}`).join(","),
 	);
+	// A server that dies during the handshake must say *why* (its stderr).
+	const dying = await connectMcpServers(
+		[
+			{
+				name: "no-key",
+				command: process.execPath,
+				args: ["-e", "console.error('MISSING_API_KEY is not set'); process.exit(1)"],
+				env: [],
+			},
+		],
+		{ logger: () => {}, timeoutMs: 5_000 },
+	);
+	check(
+		"握手失败时把 server 的 stderr 带进错误",
+		(dying.servers[0].error ?? "").includes("MISSING_API_KEY is not set") && dying.servers[0].status === "failed",
+		dying.servers[0].error ?? "no error",
+	);
+
+	// Slow starters (npx -y downloads on first run) need a per-server timeout.
+	const slow = (timeoutMs) =>
+		connectMcpServers(
+			[{ name: "slow", command: process.execPath, args: [MCP_SCRIPT], env: [{ name: "SLOW_INIT_MS", value: "700" }], timeoutMs }],
+			{ logger: () => {}, timeoutMs: 200 },
+		);
+	const timedOut = await slow(200);
+	check("超时会报错而不是挂死", timedOut.servers[0].status === "failed" && /timed out/.test(timedOut.servers[0].error ?? ""), timedOut.servers[0].error ?? "");
+	await Promise.all(timedOut.connections.map((entry) => entry.close()));
+	const patient = await slow(3_000);
+	check("每个 server 可以单独放宽超时", patient.servers[0].status === "connected", patient.servers[0].error ?? patient.servers[0].tools.join(","));
+	await Promise.all(patient.connections.map((entry) => entry.close()));
+
 	check(
 		"状态里带来源、命令行与远端工具名",
 		broken.servers[0].source === "plugin" &&
@@ -133,7 +164,7 @@ async function mcpClientChecks() {
 			"}",
 		].join("\n"),
 	);
-	const host = await loadExtensions({ cwd: ROOT, mode: "cli", paths: [pluginFile], builtins: false, log: () => {} });
+	const host = await loadExtensions({ cwd: ROOT, mode: "cli", paths: [pluginFile], builtins: false, discover: false, log: () => {} });
 	const pluginMcp = await connectMcpServers(host.mcpServers, { logger: () => {} });
 	check(
 		"插件注册的 MCP server 被核心连上",
@@ -143,7 +174,7 @@ async function mcpClientChecks() {
 	check(
 		"插件声明的 server 在状态里标为 plugin",
 		pluginMcp.servers.length === 1 && pluginMcp.servers[0].source === "plugin" && pluginMcp.servers[0].status === "connected",
-		JSON.stringify(pluginMcp.servers[0] ?? null).slice(0, 110),
+		JSON.stringify(pluginMcp.servers ?? null),
 	);
 	await Promise.all(pluginMcp.connections.map((entry) => entry.close()));
 	rmSync(pluginDir, { recursive: true, force: true });
@@ -165,7 +196,8 @@ async function acpChecks() {
 		["dist/protocols/acp/main.js", "--port", String(ACP_PORT), "--cors", "*", "--session-dir", sessionDir],
 		{
 			cwd: ROOT,
-			env: { ...process.env, LLM_API_KEY: "mock", LLM_MODEL_ID: "mock", LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic` },
+			env: { ...process.env, STEVE_DISCOVERY: "off",
+					LLM_API_KEY: "mock", LLM_MODEL_ID: "mock", LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic` },
 			stdio: ["ignore", "pipe", "pipe"],
 		},
 	);
@@ -292,6 +324,7 @@ async function cliChecks() {
 				env: {
 					...process.env,
 					NO_COLOR: "1",
+					STEVE_DISCOVERY: "off",
 					LLM_API_KEY: "mock",
 					LLM_MODEL_ID: "mock",
 					LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,

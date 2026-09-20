@@ -111,6 +111,8 @@ export interface PluginMcpServer {
 	command: string;
 	args?: string[];
 	env?: { name: string; value: string }[];
+	/** Handshake timeout in ms; raise it for `npx -y <server>` (first run downloads). */
+	timeoutMs?: number;
 }
 
 export interface PluginCommand {

@@ -22,6 +22,7 @@ Transport
   --ui / --no-ui             serve the browser test client on / (default on)
   --cors <origins>           allow browser origins, comma separated or * (default off)
   --extension <path>         load a plugin, repeatable (or STEVE_EXTENSIONS=a,b)
+  --no-discovery             skip .steve/extensions discovery (or STEVE_DISCOVERY=off)
   --allow-local-tools        let sessions use local file/exec tools when the client offers none
   --session-dir <path>       where transcripts live (default <cwd>/.steve/sessions)
   --no-sessions              keep sessions ephemeral (no persistence, no session/load)
@@ -49,10 +50,12 @@ interface CliOptions {
 	noSessions: boolean;
 	/** Fall back to local file/exec tools when the client offers none (default off). */
 	allowLocalTools: boolean;
+	/** `--no-discovery` skips `.steve/extensions` discovery (explicit plugins only). */
+	discover: boolean;
 	quiet: boolean;
 }
 
-const BOOLEAN_FLAGS = new Set(["--quiet", "--ui", "--no-ui", "--allow-local-tools", "--no-sessions"]);
+const BOOLEAN_FLAGS = new Set(["--quiet", "--ui", "--no-ui", "--allow-local-tools", "--no-sessions", "--no-discovery"]);
 function parseArgs(argv: string[]): CliOptions | "help" {
 	const values = new Map<string, string>();
 	const extensionPaths: string[] = [];
@@ -127,6 +130,7 @@ function parseArgs(argv: string[]): CliOptions | "help" {
 				.map((entry) => entry.trim())
 				.filter(Boolean),
 		],
+		discover: !values.has("no-discovery") && (process.env.STEVE_DISCOVERY ?? "").toLowerCase() !== "off",
 		allowLocalTools: values.has("allow-local-tools") || (process.env.ACP_ALLOW_LOCAL_TOOLS ?? "").toLowerCase() === "true",
 		...(pick("session-dir", "ACP_SESSION_DIR") ? { sessionDir: pick("session-dir", "ACP_SESSION_DIR") as string } : {}),
 		noSessions: values.has("no-sessions"),

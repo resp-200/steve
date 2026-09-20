@@ -91,16 +91,18 @@ async function hostChecks() {
 	);
 
 	check("项目本地 .steve/extensions 会被发现", discoverExtensionFiles({ cwd: temp }).length === 1);
+	check("discover: false 时跳过目录发现", discoverExtensionFiles({ cwd: temp, discover: false }).length === 0);
 
 	const logs = [];
 	const host = await loadExtensions({
 		cwd: ROOT,
 		mode: "cli",
 		paths: ["examples/extensions", temp],
+		discover: false, // the repo's own .steve/extensions must not affect this run
 		log: (message) => logs.push(message),
 	});
 
-	const examples = ["guard-destructive.mjs", "git-status.mjs", "turn-logger.mjs"];
+	const examples = ["guard-destructive.mjs", "git-status.mjs", "turn-logger.mjs", "mcp-server.mjs"];
 	check(
 		"示例插件全部加载",
 		examples.every((name) => host.files.some((file) => file.endsWith(name))) && host.errors.length === 1,
@@ -199,7 +201,8 @@ async function acpChecks() {
 			cwd: ROOT,
 			env: {
 				...process.env,
-				LLM_API_KEY: "mock",
+					STEVE_DISCOVERY: "off",
+					LLM_API_KEY: "mock",
 				LLM_MODEL_ID: "mock",
 				LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,
 			},

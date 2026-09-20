@@ -27,6 +27,8 @@ export interface McpServerLike {
 	type?: string;
 	/** Who declared it. Defaults to `plugin`: untagged specs come from the host. */
 	source?: "plugin" | "client";
+	/** Per-server override of `McpConnectOptions.timeoutMs` (npx cold starts are slow). */
+	timeoutMs?: number;
 	command?: string;
 	args?: string[];
 	env?: { name: string; value: string }[];
@@ -79,13 +81,15 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 	const logger = options.logger ?? ((): void => {});
 	const child: ChildProcessWithoutNullStreams = spawn(server.command, server.args, {
 		stdio: ["pipe", "pipe", "pipe"],
-		env: { ...process.env, ...Object.fromEntries(server.env.map((entry) => [entry.name, entry.value])) },
+		env: { ...process.env, ...Object.fromEntries((server.env ?? []).map((entry) => [entry.name, entry.value])) },
 	});
 
 	const pending = new Map<number, PendingRequest>();
 	let nextId = 1;
 	let buffer = "";
 	let closed = false;
+	/** Last few stderr lines: when a server dies, this is usually the reason. */
+	const stderrTail: string[] = [];
 
 	const fail = (error: Error): void => {
 		for (const [id, request] of pending) {
@@ -132,12 +136,20 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 
 	child.on("exit", (code, signal) => {
 		closed = true;
-		fail(new Error(`MCP server "${server.name}" exited (code ${code ?? "null"}, signal ${signal ?? "none"})`));
+		// Server stderr is the only explanation we get for a failed handshake
+		// (a missing API key, a bad command line, ...), so carry it into the error.
+		const reason = stderrTail.length > 0 ? `: ${stderrTail[stderrTail.length - 1]}` : "";
+		fail(new Error(`MCP server "${server.name}" exited (code ${code ?? "null"}, signal ${signal ?? "none"})${reason}`));
 	});
 	child.stderr.setEncoding("utf8");
 	child.stderr.on("data", (chunk: string) => {
 		const text = chunk.trim();
-		if (text) logger(`[mcp ${server.name}] ${text.split("\n")[0]?.slice(0, 200)}`);
+		if (!text) return;
+		for (const line of text.split("\n")) {
+			stderrTail.push(line.slice(0, 200));
+			if (stderrTail.length > 3) stderrTail.shift();
+		}
+		logger(`[mcp ${server.name}] ${text.split("\n")[0]?.slice(0, 200)}`);
 	});
 
 	const request = (method: string, params: unknown): Promise<unknown> => {
@@ -259,7 +271,7 @@ export async function connectMcpServers(
 		try {
 			const connection = await connectMcpServer(
 				{ name: server.name, command: server.command, args: server.args ?? [], env: server.env ?? [] },
-				options,
+				{ ...options, ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}) },
 			);
 			connections.push(connection);
 			statuses.push({ ...describe(server), status: "connected", tools: connection.toolNames });

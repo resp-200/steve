@@ -230,7 +230,8 @@ async function cliChecks() {
 	const env = {
 		...process.env,
 		NO_COLOR: "1",
-		LLM_API_KEY: "mock",
+					STEVE_DISCOVERY: "off",
+					LLM_API_KEY: "mock",
 		LLM_MODEL_ID: "mock",
 		LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,
 	};
@@ -328,7 +329,8 @@ async function acpFallbackChecks() {
 		["dist/protocols/acp/main.js", "--port", String(acpPort), "--cors", "*", "--allow-local-tools"],
 		{
 			cwd: ROOT,
-			env: { ...process.env, LLM_API_KEY: "mock", LLM_MODEL_ID: "mock", LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic` },
+			env: { ...process.env, STEVE_DISCOVERY: "off",
+					LLM_API_KEY: "mock", LLM_MODEL_ID: "mock", LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic` },
 			stdio: ["ignore", "pipe", "pipe"],
 		},
 	);

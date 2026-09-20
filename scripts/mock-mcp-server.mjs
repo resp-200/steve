@@ -4,6 +4,10 @@
 // It speaks just enough of the protocol to be useful as a fixture:
 //   initialize -> tools/list -> tools/call
 // Tools: `echo` (text), `sum` (schema with two numbers), `fail` (isError), `image`.
+//
+// Fixture knobs (env):
+//   SLOW_INIT_MS=500   delay the initialize reply, to exercise connect timeouts
+//   STDERR_ON_START=1  print a diagnostic line, to exercise failure reporting
 const TOOLS = [
 	{
 		name: "echo",
@@ -48,6 +52,10 @@ function callTool(name, args) {
 	}
 }
 
+/** Fixture: pretend to be a slow server (npx cold start) for timeout tests. */
+const SLOW_INIT_MS = Number(process.env.SLOW_INIT_MS ?? 0);
+if (process.env.STDERR_ON_START) process.stderr.write("mock-mcp: starting up\n");
+
 let buffer = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -68,6 +76,14 @@ process.stdin.on("data", (chunk) => {
 			process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code, message: text } })}\n`);
 
 		if (message.method === "initialize") {
+			if (SLOW_INIT_MS > 0) {
+				setTimeout(() => reply({
+					protocolVersion: message.params?.protocolVersion ?? "2024-11-05",
+					capabilities: { tools: {} },
+					serverInfo: { name: "mock-mcp", version: "1.0.0" },
+				}), SLOW_INIT_MS);
+				continue;
+			}
 			reply({
 				protocolVersion: message.params?.protocolVersion ?? "2024-11-05",
 				capabilities: { tools: {} },

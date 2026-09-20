@@ -68,6 +68,11 @@ function parseArgv(argv: string[]): CliOptions | "help" {
 	return options;
 }
 
+/** `STEVE_DISCOVERY=off` runs with only the plugins named explicitly. */
+function discoveryEnabled(): boolean {
+	return (process.env.STEVE_DISCOVERY ?? "").toLowerCase() !== "off";
+}
+
 /** Plugin paths from `STEVE_EXTENSIONS` (comma separated files or directories). */
 function extensionPaths(): string[] {
 	return (process.env.STEVE_EXTENSIONS ?? "")
@@ -310,6 +315,7 @@ async function main(): Promise<void> {
 		cwd,
 		mode: "cli",
 		paths: extensionPaths(),
+		discover: discoveryEnabled(),
 		log: (message) => process.stderr.write(`${color.dim(message)}\n`),
 	});
 

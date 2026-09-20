@@ -24,6 +24,8 @@ export interface AcpAgentOptions {
 	permissionMode: PermissionMode;
 	/** Plugin files/directories to load for every session. */
 	extensionPaths?: string[];
+	/** Set false (`--no-discovery`) to skip the `.steve/extensions` directories. */
+	discover?: boolean;
 	/** Let sessions fall back to local file/exec tools when the client offers none. */
 	allowLocalTools?: boolean;
 	/** Session store; without it sessions are ephemeral and `session/load` is not offered. */
@@ -106,6 +108,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					mode: "acp",
 					sessionId: id,
 					paths: options.extensionPaths ?? [],
+					discover: options.discover !== false,
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
@@ -146,6 +149,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					mode: "acp",
 					sessionId: stored.id,
 					paths: options.extensionPaths ?? [],
+					discover: options.discover !== false,
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));

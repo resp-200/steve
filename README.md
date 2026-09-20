@@ -244,6 +244,7 @@ ACP 侧沿用编辑器的授权弹窗；只有客户端**没有**声明 `fs`/`te
 | `<cwd>/.steve/extensions/*.mjs` | 项目级 |
 | `~/.steve/extensions/*.mjs` | 全局 |
 | `--extension <path>`（ACP）/ `STEVE_EXTENSIONS=a,b`（两端） | 显式指定 |
+| `STEVE_DISCOVERY=off` / `--no-discovery`（ACP） | 只加载显式指定的插件，跳过上面两个目录（CI、排查插件冲突时用） |
 
 ```js
 // examples/extensions/git-status.mjs
@@ -295,6 +296,47 @@ export default function gitStatus(pi) {
 | 呈现元数据 | `registerTool({ metadata: { kind, title } })` | ACP 工具卡片按声明渲染；协议层的名字表降级为兜底 |
 | 审批预览 | `registerTool({ describe: (args) => ToolChangePreview })` | 权限闸门优先用工具自己的预览，宿主回调只是兜底 |
 | 会话内省 | `ctx.session.{ tools, commands, model, mcp, stats(), reset() }` | 只读视图，够写 `/tools`、`/stats`、`/mcp` 这类命令 |
+
+### MCP 接入
+
+只实现了 **stdio** 传输（`http`/`sse`/`acp` 明确报「不支持」，不静默忽略）。接入方式两种：
+
+**1. 插件里声明** —— 终端与编辑器都生效，也是 CLI 侧的唯一入口（完整示例：`examples/extensions/mcp-server.mjs`）：
+
+```js
+// .steve/extensions/mcp-server.mjs
+export default function (pi) {
+  pi.registerMcpServer({
+    name: "amap-maps",
+    command: "npx",
+    args: ["-y", "@amap/amap-maps-mcp-server"],
+    env: [{ name: "AMAP_MAPS_API_KEY", value: process.env.AMAP_MAPS_API_KEY ?? "" }],
+    timeoutMs: 120_000,          // npx 首次要下载包，默认 20s 握手超时可能不够
+  });
+}
+```
+
+**2. 客户端在 `session/new` 里传（ACP）** —— 编辑器把它自己的 MCP 配置随会话送进来，`/mcp` 里来源标成 `client`。终端里没有客户端，所以 CLI 只有上面那条路。
+
+接入后核心负责这些事：
+
+| 行为 | 说明 |
+| --- | --- |
+| 命名 | 工具叫 `mcp__<server>__<tool>`（`/tools` 能看到），MCP 的 `inputSchema` 直接当参数 schema 用 |
+| 权限 | **一律先问**（MCP server 能做的事和它自己一样多），拒绝就是一次 `isError` 工具结果 |
+| 失败隔离 | 连不上只记日志并跳过，不影响会话；`/mcp` 会写出原因（含 server 的 stderr 末行） |
+| 生命周期 | 会话结束 / `session/delete` 时关掉子进程 |
+
+排查顺序：`/mcp` 看状态 → 看 `[mcp <name>] ...` 日志里 server 自己的输出 → 手动跑一遍 `command + args` 确认它能起来。
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| `failed — ... exited (code 1): <原因>` | server 自己启动失败，多半缺 env（API key） |
+| `failed — MCP initialize timed out` | `npx -y` 首次下载太慢 → 加 `timeoutMs`，或先 `npm i -g` |
+| `unsupported — transport "http"` | 只实现了 stdio |
+| `[extensions] failed to load ...` | `registerMcpServer` 校验失败（缺 name/command）会让整个插件加载报错 |
+
+实测（走真实 npx）：`@amap/amap-maps-mcp-server` 12 个工具、`@modelcontextprotocol/server-filesystem` 14 个工具，都能被模型调用并拿到结果。
 
 三条设计约束：
 
@@ -389,12 +431,12 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:probe` | Node 版 HTTP client（import 浏览器同一份 `web/acp-http-client.js`），带真实的 fs/terminal 回调 |
 | `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），17 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
-| `npm run plugins:test` | 插件层 21 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
+| `npm run plugins:test` | 插件层 22 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
 | `npm run arch:test` | 架构契约与发布卫生 9 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`.env`/内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
-| `npm run mcp:test` | MCP 与会话管理 26 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
+| `npm run mcp:test` | MCP 与会话管理 29 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
