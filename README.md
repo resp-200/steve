@@ -3,12 +3,13 @@
 一个最小但完整的流式对话 Agent：直接基于 **`@earendil-works/pi-agent-core`**（Agent 循环 / 状态 / 工具 / 事件）与 **`@earendil-works/pi-ai`**（各家模型 API 的统一流式适配层）编写，**不依赖 `pi-coding-agent`**。
 
 - 终端里流式输出文本与思考过程（thinking）
-- 内置 3 个可被模型调用的工具（计算器 / 时间 / mock 天气），支持并行工具调用
+- 自带 9 个工具：6 个本地工具（读/写/改/搜/跑命令，写与执行要批准）+ 3 个演示工具（计算器 / 时间 / mock 天气），支持并行工具调用
 - 支持三种线上协议，切换只改 `.env`：
   `anthropic-messages`、`openai-completions`、`openai-responses`
 - 失败自动重试，并把失败轮次从上下文里剔除后再重试
 - 通过 **ACP（Agent Client Protocol）** 把同一个 Agent 暴露给编辑器客户端（Zed 等）：stdio + Streamable HTTP/WebSocket 两种传输
 - 零运行时依赖（pi 两个包 + ACP SDK），另带一个离线 mock server 和 ACP 客户端脚本方便本地验证
+- 工程约定可机检：`npm run arch:test` 查架构契约与发布卫生，`npm run verify` 一键跑全套回归（见文末「约定与规范」）
 
 ## 分层
 
@@ -44,6 +45,8 @@ src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器�
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
 test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
 scripts/*                离线 mock 网关 + ACP 测试客户端 / probe / headless 浏览器测试
+scripts/arch-test.mjs    架构契约 + 发布卫生检查（约定与规范的可执行版本）
+scripts/verify.mjs       一键回归：类型 → 构建 → 架构 → 各能力测试 → 浏览器端到端
 ```
 
 CLI 与 ACP 走的是同一个内核装配点，所以「接 pi 的位置」只有一处；协议层不碰 pi 的类型，只把功能层的事件翻译成 ACP 的 `session/update`。
@@ -137,15 +140,19 @@ Anthropic 官方 SDK 默认发 `x-api-key`，但很多 Anthropic 兼容网关只
 ### 4. 工具就是一个普通对象
 
 ```ts
-export const calculateTool: AgentTool<typeof CalculateParams> = {
+export const calculateTool: AnnotatedTool<typeof CalculateParams> = {
   name: "calculate", label: "Calculator",
   description: "…",
   parameters: CalculateParams,                 // TypeBox schema（pi-ai 重新导出了 Type）
+  // 除 pi 要求的字段外，工具还可以自己声明三件事（见「约定与规范 / 工具与安全」）
+  permission: "ask",                            // 执行前是否要用户批准
+  metadata: { kind: "other", title: (args) => `Calculate ${args.expression}` },
+  describe: (args) => ({ summary: `calculate ${args.expression}` }),   // 审批预览
   execute: async (toolCallId, params) => ({ content: [{ type: "text", text: "…" }], details: {} }),
 };
 ```
 
-`execute` 抛错会被 pi 转成 `isError` 的工具结果回灌给模型，模型可自行修正参数重试（`src/features/tools.ts` 的计算器就是这样抛错的）。
+`execute` 抛错会被 pi 转成 `isError` 的工具结果回灌给模型，模型可自行修正参数重试（`src/extensions/builtin/demo-tools.ts` 的计算器就是这样抛错的）。
 
 ### 5. 事件订阅做 UI
 
@@ -373,10 +380,12 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:probe` | Node 版 HTTP client（import 浏览器同一份 `web/acp-http-client.js`），带真实的 fs/terminal 回调 |
 | `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），17 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
-| `npm run plugins:test` | 插件层 17 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
-| `npm run tools:test` | 本地工具 39 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
+| `npm run plugins:test` | 插件层 21 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
+| `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
-| `npm run mcp:test` | MCP 与会话管理 17 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
+| `npm run arch:test` | 架构契约与发布卫生 9 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`.env`/内网信息不泄露 |
+| `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
+| `npm run mcp:test` | MCP 与会话管理 20 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
@@ -411,9 +420,130 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **会话管理**：`session/list`（可按 `cwd` 过滤，返回 `sessionId`/`cwd`/`updatedAt`）与 `session/delete`（先 dispose 活会话——顺带 abort 并关掉它的 MCP 子进程——再删文件）。两者都在 initialize 的 `sessionCapabilities` 里声明。
 - **MCP 透传**：来源有两个 —— ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`，以及插件用 `registerMcpServer()` 声明的（**这是 CLI 侧唯一入口**，终端里没有客户端可传）。两者都连（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
 
+## 约定与规范
+
+> 下面这些不是口头承诺：**架构契约与发布卫生由 `npm run arch:test` 机检，全套回归由 `npm run verify` 一键跑**（改坏了必须变红——检查脚本本身也反向验证过：故意在协议层 import 一次 pi、或让功能层反向依赖入口层，都会报错）。
+> 新增能力时，本节与 README 里对应的表格要跟着一起改。
+
+### 1. 分层契约
+
+五层依赖**只向下**（`model` → `kernel` → `features` → `protocols` → `entries`，层号见上文「分层」），同层内可以互相引用。
+
+| 规则 | 为什么 | 检查 |
+| --- | --- | --- |
+| 只允许上层 import 下层，禁止反向 | 反向依赖意味着内核/功能层知道协议，换个协议就得改内核 | `arch:test` |
+| 横向边只有两条：`features/runtime.ts → extensions/*`（必须 `import type`）、`extensions/* → features/{contract,events,tool-annotations}.ts` | 插件宿主必须能被功能层调用；插件只能用「契约文件」里的词汇，不能碰运行时实现 | `arch:test` |
+| `protocols/` 与 `entries/` 零 `@earendil-works/*` | 协议层与入口层不认识 pi；换掉 pi 时这两层不用动 | `arch:test` |
+| `@agentclientprotocol/sdk` 只出现在 `protocols/` | ACP 只是「一种」协议实现，不能渗进功能层 | `arch:test` |
+| `new Agent({ ... })` 只允许出现在 `kernel/agent.ts` | 「接 pi 的位置」只有一处，CLI 与编辑器行为天然一致 | `arch:test` |
+| `src/types.ts` 零依赖 | 它是跨层共享类型，不能变成隐性依赖源 | `arch:test` |
+| 协议层拿工具/类型只走 `features/contract.ts` | 类型也走契约，别各自 `import` pi | 约定 |
+
+四条对应的「实现约定」：
+
+- **契约文件**：`features/contract.ts`（TypeBox / `AgentTool`）、`features/events.ts`（事件词表）、`features/tool-annotations.ts`（工具声明）、`extensions/api.ts`（插件契约）——它们是层与层之间唯一的词汇表。
+- **事件词表是唯一的对外语言**：协议层与入口层只说 `features/events.ts` 里那套事件，不吐 pi 的原始事件，也不吐 ACP 专属事件。
+- **内核是唯一的装配点**：`createKernelAgent()` 负责 systemPrompt、工具表、hooks 组合（含内置失败轮过滤 + 插件 `transformContext` 的顺序）。
+- **错误编码进流**：`StreamFn` 不 throw，见下文第 4 节。
+
+动手前的自检（新增东西时先问这三个问题）：
+
+1. **这属于哪一层？** 能力 → 功能层或插件；协议 → `protocols/`；模型接入 → `model/`。
+2. **能不能做成插件？** 只有引导（`kernel/`、`model/`、`extensions/host.ts`）、边界（权限闸门、路径收敛、截断）、协议（`protocols/`、`entries/`）三件事进核心，其余都走插件。
+3. **加协议要不要动内核？** 不用：新协议在 `protocols/` 下加目录，新模型协议在 `model/` 里加分支（`streamFn` 按 `model.api` 路由）。
+
+### 2. 命名与目录
+
+| 类别 | 约定 | 例子 |
+| --- | --- | --- |
+| 目录 | 固定六层 + `web/` `scripts/` `examples/` | `src/features/` |
+| 文件名 | kebab-case | `local-tools.ts`、`change-preview.ts` |
+| 函数 / 变量 | camelCase；工厂用 `createXxx` | `createToolRegistry()` |
+| 类型 / 接口 | PascalCase | `AgentRuntimeOptions` |
+| 常量 | UPPER_SNAKE | `LOCAL_PERMISSION_TOOLS` |
+| 工具变量 | `xxxTool`；工具**名**用 snake_case | `readFileTool` / `"read_file"` |
+| MCP 工具名 | `mcp__<server>__<tool>` | `mcp__mock__echo` |
+| 内置插件 | `extensions/builtin/<name>.ts`，导出 `<name>(pi)` 工厂 | `demoTools(pi)` |
+| 测试脚本 | `scripts/<能力>-test.mjs` + 同名 npm script | `scripts/mcp-test.mjs` |
+
+代码风格（仓库没有 lint/format 配置，全靠约定）：**tab 缩进、双引号、语句带分号、`import type` 优先**、ESM 相对导入带 `.js` 后缀（NodeNext）、注释与标识符**英文**、README 与提交信息**中文**。
+
+单文件超过约 300 行就考虑拆（`features/local-tools.ts` 541 行是当前上限；再往里加能力先拆文件）。
+
+### 3. 依赖纪律
+
+- 运行时依赖白名单：`@earendil-works/pi-agent-core`、`@earendil-works/pi-ai`、`@agentclientprotocol/sdk`（`arch:test` 会查）。
+- `ws` 只能出现在 `optionalDependencies`，且**缺失时必须降级**（WebSocket 传输不可用，HTTP 照常）。
+- **不依赖 `pi-coding-agent`**：它会把依赖树从 10.5M 拉到 434M，而且内置工具与扩展宿主都在里面——本项目要自己写这两块。
+- 新增运行时依赖要先回答「标准库为什么不够」；`devDependencies` 只放 `tsx` / `typescript` / `@types/node`。
+
+### 4. 错误处理
+
+| 场景 | 约定 |
+| --- | --- |
+| `StreamFn` | **永不 throw**：错误编码进流（`errorStream()`），否则 Agent 循环会炸 |
+| 插件加载失败 | 记录并跳过，不影响其它插件；钩子抛错只写日志，**不中断本轮** |
+| 会话持久化失败 | 吞掉 + 日志：丢历史不能影响对话本身 |
+| MCP server 起不来 | 记日志跳过，工具不进表；非 stdio 传输明确报「不支持」而不是静默忽略 |
+| 权限被拒 | 闸门返回 `{ block: true }` → 变成 `isError` 的工具结果回灌给模型，让模型自己换招 |
+| 取消（aborted） | 不是错误：不重试、不报错，`stopReason = cancelled` |
+| 日志 | stdio 模式下只写 stderr，**stdout 只走协议**；`--quiet` 只留错误 |
+
+### 5. 工具与安全
+
+- 每个工具自己声明 `permission` / `metadata` / `describe`（`features/tool-annotations.ts`），**核心工具与插件工具共用同一套**；协议层与权限闸门「先问工具，再兜底」，不再维护工具名硬编码表。
+- 工具 `execute` 返回 `content`（回灌给模型）+ `details`（给 UI / 日志）。
+- **安全边界在核心，插件只能加约束**：路径收敛（软链解析 + 大小写按平台）、隐藏项跳过、读文件与命令输出截断、命令超时——这些不可被插件放宽。
+- 审批要给出**将要发生什么**：`describe` 返回 diff 预览，CLI 打彩色 diff，ACP 塞进 `session/request_permission` 的 `toolCall.content`。
+- MCP 工具一律先问权限（它们能做的事和 server 一样多）。
+
+### 6. 测试
+
+- **一个能力 = 一个测试脚本**：`scripts/<能力>-test.mjs` + npm script，用 `check(name, ok, detail)` 输出 `✓/✗` 与结尾的 `N/N checks passed`（`npm run verify` 就靠这一行汇总）。
+- **离线优先**：所有测试都打到 `scripts/mock-server.mjs`，不联网、不烧真实额度（`verify` 启动 ACP server 时会用 mock 环境变量覆盖 `.env`）。
+- **端到端优先**：真浏览器（headless Chrome + CDP）、真子进程、真 HTTP/SSE、真 ACP 客户端；尽量不做「纯 mock 的单测」。
+- **自起自停**：脚本自己 spawn mock / ACP server，收尾 `SIGTERM`；端口从环境变量取（见下表），不抢端口。
+- **断言要能失败**：写完后故意改坏一次，确认变红（`arch:test` 就是这么验的）。
+
+| 脚本 | mock 端口 | ACP 端口 |
+| --- | --- | --- |
+| `npm run mock`（默认） | 8899 | — |
+| `npm run verify`（起服务给浏览器测试用） | 8899 | 8890 |
+| `npm run tools:test` | 8897 | 8894 |
+| `npm run plugins:test` | 8898 | 8893 |
+| `npm run mcp:test` | 8894 | 8892 |
+| `npm run sessions:test` | 8896 | 8895 |
+
+### 7. 提交与发布
+
+- 提交信息**中文**、结构化（标题 + 新增 / 改动 / 测试 / 回归分段），**一个提交一个主题**。
+- 提交要跳过用户全局的 lefthook：`LEFTHOOK=0 git commit ...`。
+- push 必须绕开全局代理（对 `github.com:443` 会 `SSL_ERROR_SYSCALL`）：`git -c http.proxy= -c https.proxy= push origin main`。
+- **历史改写只在明确 lease 下**：`--force-with-lease=main:<sha>`，绝不 blind force。
+- **发布卫生**（`arch:test` 会查）：`.env` 永不入库（只提交 `.env.example`）；公开文件里不出现内网域名、key 片段、真实模型 id——文档里的网关一律写成 `https://your-gateway.example.com`。
+
+### 8. 文档
+
+- **新能力 = 代码 + README 对应表格 + 测试脚本**，三件套缺一不算完成。
+- README 中文、代码注释英文；涉及环境变量的命令同时给 POSIX 与 PowerShell 写法。
+
+### 决策记录（为什么是这样）
+
+| 决策 | 原因 | 代价 |
+| --- | --- | --- |
+| 不依赖 `pi-coding-agent` | 依赖树 10.5M → 434M，且内置工具 / 扩展宿主都在里面 | 本地工具、插件宿主都得自己写 |
+| 自己写插件宿主（pi 风格，**不是** pi 扩展兼容层） | pi 的扩展由 `pi-coding-agent` 的 runner 加载；`pi-agent-core` 只暴露 `transformContext` / `beforeToolCall` / `afterToolCall` / `streamFn` 等接缝 | 现成的 pi 扩展文件不能直接用 |
+| 插件优先，而非插件唯一 | 一切**能力**走插件；引导、边界、协议三件事留在核心 | 需要不断用 dogfooding 检验 API 是否够用 |
+| MCP 实现留在核心、由插件声明 | 子进程生命周期必须被保证（会话结束要关干净） | 插件只能声明，不能自己实现传输 |
+| 会话持久化留在核心 | 「存哪里 / 存不存」是引导决策，丢历史不可接受 | 插件无法替换存储实现 |
+| 工具声明化（permission / metadata / describe） | 协议层不该认识具体工具名；MCP 与插件工具也需要审批预览 | 多一层注册表与兜底逻辑 |
+| 重试放功能层 | 协议无关，编辑器与终端行为一致；取消不重试 | 功能层要处理回滚与上下文净化 |
+| 路径收敛放核心 | 这是安全边界，插件只能加约束不能放宽 | 工具无法自行定义「越界」 |
+| `--allow-local-tools` 默认关 | 编辑器里的 agent 不该悄悄绕过编辑器沙箱改本机文件 | 客户端没有 fs/terminal 能力时需要显式开启 |
+
 ## 换个模型 / 加个工具
 
 - 换模型：改 `.env` 即可。换协议时只需要 `LLM_API`（或让 baseUrl 自动判定），`Agent` 侧代码一行都不用动。
-- 加工具：在 `src/features/tools.ts` 写好 `AgentTool`，加进 `tools` 数组，并在 `execute` 里返回 `content`（回灌给模型）+ `details`（给 UI/日志）。只给 ACP 用的工具放 `src/protocols/acp/tools.ts`（比如依赖客户端能力的那些）。
+- 加工具：**推荐写插件**（`registerTool`，见上文「拓展」），这样两端同时生效、还能声明权限与呈现。核心内的工具分两处：本地工具在 `src/features/local-tools.ts`，依赖客户端能力的在 `src/protocols/acp/tools.ts`；`execute` 里返回 `content`（回灌给模型）+ `details`（给 UI/日志）。演示工具就是内置插件（`src/extensions/builtin/demo-tools.ts`）。
 - 改内核装配（streamFn / 上下文净化 / thinking 等级 / hooks）：只动 `src/kernel/agent.ts` 一处，CLI 与 ACP 同时生效。
 - 加能力而不改代码：写个插件（见上文「拓展」），`STEVE_EXTENSIONS=...` 或 `--extension` 加载即可，两端同时生效。
