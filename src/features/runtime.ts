@@ -14,7 +14,7 @@ import type {
 	BeforeToolCallResult,
 } from "./contract.js";
 import type { PluginCommand, SessionAccessors } from "../extensions/api.js";
-import { createToolRegistry, type ToolRegistry } from "./tool-annotations.js";
+import { createToolRegistry, type AnnotatedTool, type ToolRegistry } from "./tool-annotations.js";
 import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
@@ -81,6 +81,8 @@ export interface AgentRuntimeOptions {
 	extensions?: ExtensionHost;
 	/** MCP servers configured for this session (connected or not), for `/mcp`. */
 	mcpServers?: McpServerStatus[];
+	/** Where policy notices go (e.g. a plugin tool shadowed by a front-end tool). */
+	logger?: Logger;
 	/**
 	 * Permission policy: the runtime asks before any tool that declared
 	 * `permission: "ask"` (core tools and plugins alike).
@@ -220,16 +222,37 @@ function toUsage(usage: AssistantTurn["usage"]): TurnUsage {
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 	const config = options.config;
 	const extensions = options.extensions;
+	// Spread, don't rebuild: a plugin tool carries its own annotations
+	// (`permission` / `metadata` / `describe`), and rebuilding the object silently
+	// dropped them — which meant plugin tools were never gated and never previewed.
 	const pluginTools = (extensions?.tools ?? []).map(
-		(tool): AgentTool<any> => ({
-			name: tool.name,
+		(tool): AnnotatedTool => ({
+			...tool,
 			label: tool.label ?? tool.name,
-			description: tool.description,
 			parameters: tool.parameters as AgentTool<any>["parameters"],
 			execute: tool.execute,
 		}),
 	);
-	const agentTools = [...(options.tools ?? []), ...pluginTools];
+	/**
+	 * Front-end tools come first and win: a plugin may not silently replace what the
+	 * host already provides (ACP client tools vs a local-tools plugin, for instance).
+	 * Replacing on purpose will need an explicit `override` flag.
+	 */
+	const agentTools: AgentTool<any>[] = [];
+	const toolSource = new Map<string, string>();
+	for (const tool of options.tools ?? []) {
+		agentTools.push(tool);
+		toolSource.set(tool.name, "the front end");
+	}
+	for (const tool of pluginTools) {
+		const existing = toolSource.get(tool.name);
+		if (existing) {
+			options.logger?.(`tool "${tool.name}" from a plugin ignored: already provided by ${existing}`);
+			continue;
+		}
+		agentTools.push(tool);
+		toolSource.set(tool.name, "a plugin");
+	}
 	const defaultRetries = options.retries ?? 2;
 	const listeners = new Set<(event: AgentRuntimeEvent) => void>();
 	/** Same array identity for the session lifetime: `/mcp` sees background updates. */
@@ -395,7 +418,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 		accessors: () => ({
 			tools: agentTools.map((tool) => ({ name: tool.name, description: tool.description })),
 			commands: (extensions?.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
-			model: { id: config.model.id, api: String(config.model.api), baseUrl: config.model.baseUrl },
+			model: {
+				id: config.model.id,
+				api: String(config.model.api),
+				baseUrl: config.model.baseUrl,
+				supportsImages: config.model.input.includes("image"),
+			},
 			mcp: mcpServers,
 			stats: () => runtime.stats(),
 			reset: () => runtime.reset(),

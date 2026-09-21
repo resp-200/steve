@@ -31,3 +31,9 @@ export interface McpServerStatus {
 	tools: string[];
 	error?: string;
 }
+
+/** How a command tool launches a shell (`sh -lc` on POSIX, `cmd.exe /d /s /c` on Windows). */
+export interface ShellCommand {
+	file: string;
+	args: string[];
+}

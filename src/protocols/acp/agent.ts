@@ -15,6 +15,16 @@ import { connectMcpServers, type McpConnectOptions, type McpServerLike } from ".
 import type { McpServerStatus } from "../../types.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
+/** What plugins may know about the model before the session exists. */
+function modelInfo(config: AppConfig): { id: string; api: string; baseUrl: string; supportsImages: boolean } {
+	return {
+		id: config.model.id,
+		api: String(config.model.api),
+		baseUrl: config.model.baseUrl,
+		supportsImages: config.model.input.includes("image"),
+	};
+}
+
 export const AGENT_NAME = "steve";
 export const AGENT_VERSION = "0.1.0";
 
@@ -120,6 +130,12 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					sessionId: id,
 					paths: options.extensionPaths ?? [],
 					discover: options.discover !== false,
+					// Policy only: the local-tools plugin decides what to register.
+					workspace: {
+						roots: [ctx.params.cwd, ...(ctx.params.additionalDirectories ?? [])],
+						access: options.allowLocalTools ? "exec" : "none",
+					},
+					model: modelInfo(options.config),
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
@@ -163,6 +179,11 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					sessionId: stored.id,
 					paths: options.extensionPaths ?? [],
 					discover: options.discover !== false,
+					workspace: {
+						roots: [cwd, ...(ctx.params.additionalDirectories ?? [])],
+						access: options.allowLocalTools ? "exec" : "none",
+					},
+					model: modelInfo(options.config),
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));

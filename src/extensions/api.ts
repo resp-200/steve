@@ -14,17 +14,37 @@ import { promisify } from "node:util";
 import { Type } from "../features/contract.js";
 import type { AgentMessage, AgentTool } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
-import type { McpServerStatus } from "../types.js";
+import type { McpServerStatus, ShellCommand } from "../types.js";
 import type { ToolAnnotations } from "../features/tool-annotations.js";
 
 const run = promisify(execFile);
 
 /** What a plugin gets to see about the session it was loaded for. */
+/**
+ * How far a session may reach into the local machine. A ladder: every level adds
+ * tools on top of the previous one.
+ *
+ * The front end publishes this; plugins only *read* it. Core keeps the enforcement
+ * (path confinement, the permission gate) — a plugin can never widen it.
+ */
+export type WorkspaceAccess = "none" | "read" | "write" | "exec";
+
+/** What this session is allowed to do locally, published before plugins load. */
+export interface WorkspacePolicy {
+	/** Path confinement boundary: every path a tool touches must resolve inside one of these. */
+	roots: string[];
+	access: WorkspaceAccess;
+	/** Shell command tools should use; defaults to the platform shell. */
+	shell?: ShellCommand;
+}
+
 export interface ExtensionContext {
 	/** Working directory of the session. */
 	readonly cwd: string;
 	/** Front end that loaded the plugin. */
 	readonly mode: "cli" | "acp";
+	/** Static session policy (workspace roots, access level, shell). */
+	readonly workspace: WorkspacePolicy;
 	readonly sessionId?: string;
 	/** No front end hands interactive UI to plugins yet (pi's `hasUI: false` in print mode). */
 	readonly hasUI: false;
@@ -46,7 +66,7 @@ export interface SessionAccessors {
 	/** Commands available in this session (built-ins + plugins). */
 	readonly commands: { name: string; description: string }[];
 	/** Which model and endpoint this session talks to. */
-	readonly model: { id: string; api: string; baseUrl: string };
+	readonly model: { id: string; api: string; baseUrl: string; supportsImages: boolean };
 	/** MCP servers configured for this session, with their connection status. */
 	readonly mcp: McpServerStatus[];
 	stats(): { turns: number; userMessages: number; toolCalls: number; inputTokens: number; outputTokens: number };
@@ -221,18 +241,32 @@ export function createExtensionAPI(ctx: ExtensionContext): { api: ExtensionAPI; 
 	return { api, records };
 }
 
-/** Builds the default context (plugin authors never construct this themselves). */
-export function createExtensionContext(options: { cwd: string; mode: "cli" | "acp"; sessionId?: string; log: (message: string) => void }): ExtensionContext {
+/**
+ * Builds the context plugins see (plugin authors never construct this themselves).
+ *
+ * The static part — workspace policy and which model is in use — is known before
+ * plugins load, so a factory can already decide what to register. The dynamic part
+ * (`session.*`) is attached by the runtime afterwards, through `attachSession`.
+ */
+export function createExtensionContext(options: {
+	cwd: string;
+	mode: "cli" | "acp";
+	sessionId?: string;
+	workspace: WorkspacePolicy;
+	model: { id: string; api: string; baseUrl: string; supportsImages: boolean };
+	log: (message: string) => void;
+}): ExtensionContext {
 	return {
 		cwd: options.cwd,
 		mode: options.mode,
+		workspace: options.workspace,
 		...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
 		hasUI: false,
 		// Replaced by the runtime through `attachSession` once it exists.
 		session: {
 			tools: [],
 			commands: [],
-			model: { id: "unknown", api: "unknown", baseUrl: "" },
+			model: options.model,
 			mcp: [],
 			stats: () => ({ turns: 0, userMessages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0 }),
 			reset: () => {},

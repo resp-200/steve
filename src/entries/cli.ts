@@ -3,7 +3,6 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
 import type { AgentTool } from "../features/contract.js";
-import { createLocalTools } from "../features/local-tools.js";
 import { connectMcpServers } from "../features/mcp.js";
 import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
@@ -317,23 +316,25 @@ async function main(): Promise<void> {
 		mode: "cli",
 		paths: extensionPaths(),
 		discover: discoveryEnabled(),
+		// The front end publishes policy; the local-tools plugin reads it.
+		workspace: { roots: [cwd], access: parsed.readOnly ? "read" : "exec" },
+		model: {
+			id: config.model.id,
+			api: String(config.model.api),
+			baseUrl: config.model.baseUrl,
+			supportsImages: config.model.input.includes("image"),
+		},
 		log: (message) => process.stderr.write(`${color.dim(message)}\n`),
 	});
 
-	const localToolOptions = {
-		roots: [cwd],
-		allowWrite: !parsed.readOnly,
-		allowExec: !parsed.readOnly,
-		supportsImages: config.model.input.includes("image"),
-	};
-	const localTools = createLocalTools(localToolOptions);
 
 	// Plugins can contribute MCP servers; the core connects them for the session.
 	const pluginLog = (message: string): void => {
 		process.stderr.write(`${color.dim(message)}\n`);
 	};
 	const mcp = await connectMcpServers(extensions.mcpServers, { logger: pluginLog, cwd });
-	const catalog: AgentTool<any>[] = [...localTools, ...mcp.tools];
+	// Local tools arrive through the built-in plugin; the CLI only publishes policy.
+	const catalog: AgentTool<any>[] = [...mcp.tools];
 	const closeMcp = async (): Promise<void> => {
 		await Promise.all(mcp.connections.map((connection) => connection.close()));
 	};
@@ -343,6 +344,7 @@ async function main(): Promise<void> {
 		tools: catalog,
 		extensions,
 		mcpServers: mcp.servers,
+		logger: pluginLog,
 		// Tools declare their own approval requirement and preview.
 		permissions: {
 			mode: parsed.autoApprove ? "allow" : "ask",

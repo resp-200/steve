@@ -93,6 +93,40 @@ async function hostChecks() {
 
 	// Discovery also looks at ~/.steve/extensions, so pin HOME to a scratch dir:
 	// the developer's own global plugins must not change the result.
+	// Local tools are a Tier 1 plugin now: with builtins off they must disappear,
+	// which is what makes them a plugin rather than a capability hidden in the core.
+	const withoutBuiltins = await loadExtensions({ cwd: ROOT, mode: "cli", paths: [], discover: false, builtins: false, log: () => {} });
+	// Without a published policy there is no local capability at all — the front end
+	// has to ask for it, and that is exactly what the CLI/ACP do.
+	const withBuiltins = await loadExtensions({
+		cwd: ROOT,
+		mode: "cli",
+		paths: [],
+		discover: false,
+		workspace: { roots: [ROOT], access: "exec" },
+		log: () => {},
+	});
+	check(
+		"本地工具来自内置插件（builtins: false 时消失）",
+		withoutBuiltins.tools.length === 0 && withBuiltins.tools.some((tool) => tool.name === "read_file"),
+		`without=${withoutBuiltins.tools.length} with=${withBuiltins.tools.map((tool) => tool.name).join(",").slice(0, 60)}`,
+	);
+	check(
+		"策略决定注册哪些工具（access: read 时没有写/执行）",
+		await (async () => {
+			const readOnly = await loadExtensions({
+				cwd: ROOT,
+				mode: "cli",
+				paths: [],
+				discover: false,
+				workspace: { roots: [ROOT], access: "read" },
+				log: () => {},
+			});
+			const names = readOnly.tools.map((tool) => tool.name);
+			return names.includes("read_file") && !names.includes("write_file") && !names.includes("run_command");
+		})(),
+	);
+
 	const withHome = (fn) => {
 		const previous = process.env.HOME;
 		process.env.HOME = scratchHome;
@@ -157,6 +191,37 @@ async function hostChecks() {
 		"插件可声明 permission=ask（核心闸门据此询问）",
 		host.permissionRequired().includes("risky"),
 		host.permissionRequired().join(","),
+	);
+
+	// The host's view is not enough: the declarations must survive the trip into the
+	// runtime's tool registry, or plugin tools are never gated and never previewed.
+	const { createAgentRuntime } = await import("../dist/features/runtime.js");
+	const runtime = createAgentRuntime({
+		config: {
+			apiKey: "mock",
+			authStyle: "auto",
+			systemPrompt: "test",
+			model: {
+				id: "mock",
+				name: "mock",
+				provider: "custom",
+				api: "anthropic-messages",
+				baseUrl: "http://127.0.0.1:1",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1000,
+				maxTokens: 100,
+			},
+		},
+		extensions: host,
+		logger: (message) => logs.push(message),
+	});
+	const registry = runtime.toolRegistry();
+	check(
+		"插件工具的声明会进入运行时注册表（permission/metadata/describe 不丢）",
+		registry.permissionRequired().includes("risky") && registry.kindFor("risky") === "execute" && Boolean(registry.describeFor("risky")),
+		`${registry.permissionRequired().join(",")} / ${registry.kindFor("risky")}`,
 	);
 	check(
 		"插件可声明呈现元数据（协议层据此渲染）",

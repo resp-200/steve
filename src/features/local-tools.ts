@@ -10,6 +10,7 @@
  * refused before a single byte is read or written.
  */
 import { execFile } from "node:child_process";
+import type { Logger, ShellCommand } from "../types.js";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -167,12 +168,6 @@ export function isInside(root: string, candidate: string, options: ContainmentOp
 	const separator = options.separator ?? sep;
 	const [a, b] = caseInsensitive ? [root.toLowerCase(), candidate.toLowerCase()] : [root, candidate];
 	return b === a || b.startsWith(a.endsWith(separator) ? a : a + separator);
-}
-
-/** How this platform runs a shell command. */
-export interface ShellCommand {
-	file: string;
-	args: string[];
 }
 
 /**

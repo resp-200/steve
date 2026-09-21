@@ -19,7 +19,6 @@ import { isAbsolute, join } from "node:path";
 import { editPreview, writePreview } from "../../features/change-preview.js";
 import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "../../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
-import { createLocalTools } from "../../features/local-tools.js";
 import type { Logger, McpServerStatus } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
 import { diffContent, toolCallContent } from "./tool-call.js";
@@ -106,22 +105,15 @@ export class AcpSession {
 			capabilities: options.clientCapabilities,
 		});
 
-		// Local tools only fill the gaps the editor does not cover, so names never clash.
-		const taken = new Set(clientTools.map((tool) => tool.name));
-		const localOptions = {
-			roots: [options.cwd, ...options.additionalDirectories],
-			allowWrite: true,
-			allowExec: true,
-			supportsImages: this.supportsImages,
-		};
-		const fallbackTools = options.allowLocalTools ? createLocalTools(localOptions).filter((tool) => !taken.has(tool.name)) : [];
-
-		const tools = [...clientTools, ...fallbackTools];
+		// Local tools (when the front end allows them) come from the built-in plugin;
+		// the runtime drops a plugin tool whose name the editor already provides.
+		const tools = [...clientTools];
 
 		this.runtime = createAgentRuntime({
 			config: options.config,
 			tools,
 			mcpServers: options.mcpServers ?? [],
+			logger: options.logger,
 			extensions: options.extensions,
 			systemPrompt: this.systemPrompt(),
 			// The runtime asks before any tool that declared `permission: "ask"`.

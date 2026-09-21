@@ -21,6 +21,7 @@ import type { ToolAnnotations } from "../features/tool-annotations.js";
 import {
 	createExtensionAPI,
 	createExtensionContext,
+	type WorkspacePolicy,
 	type ContextHandler,
 	type EventHandler,
 	type ExtensionContext,
@@ -39,6 +40,7 @@ import {
 	type ToolResultPatch,
 } from "./api.js";
 import { demoTools } from "./builtin/demo-tools.js";
+import { localTools } from "./builtin/local-tools.js";
 import { mcpConfig } from "./builtin/mcp-config.js";
 import { sessionCommands } from "./builtin/session-commands.js";
 
@@ -57,10 +59,18 @@ export interface ExtensionHostOptions {
 	paths?: string[];
 	/** Set false to skip the `.steve/extensions` directories. Default: true. */
 	discover?: boolean;
-	/** Load the in-repo plugins (session commands). Default: true. */
+	/** Load the in-repo plugins (session commands, local tools, demo tools, mcp.json). Default: true. */
 	builtins?: boolean;
 	/** Extra in-repo plugins, loaded before files. */
 	inline?: { name: string; factory: PluginFactory }[];
+	/**
+	 * Static session policy plugins may read (workspace roots, access level, shell).
+	 * Defaults to `{ roots: [cwd], access: "none" }`: no local capability unless the
+	 * front end asks for it.
+	 */
+	workspace?: WorkspacePolicy;
+	/** Which model this session uses; plugins may branch on `supportsImages`. */
+	model?: { id: string; api: string; baseUrl: string; supportsImages: boolean };
 	log: (message: string) => void;
 }
 
@@ -110,6 +120,16 @@ function listDirectory(directory: string): string[] {
 }
 
 /** Explicit paths first, then project-local, then global; duplicates removed. */
+/** The policy plugins see; a front end that says nothing gets no local capability. */
+function workspacePolicy(options: ExtensionHostOptions): WorkspacePolicy {
+	return options.workspace ?? { roots: [options.cwd], access: "none" };
+}
+
+/** What is known about the model before the runtime exists. */
+function modelInfo(options: ExtensionHostOptions): { id: string; api: string; baseUrl: string; supportsImages: boolean } {
+	return options.model ?? { id: "unknown", api: "unknown", baseUrl: "", supportsImages: false };
+}
+
 export function discoverExtensionFiles(options: { cwd: string; paths?: string[]; discover?: boolean }): string[] {
 	const found: string[] = [];
 
@@ -149,6 +169,7 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 			? []
 			: [
 					{ label: "builtin:session-commands", factory: sessionCommands as PluginFactory },
+					{ label: "builtin:local-tools", factory: localTools as PluginFactory },
 					{ label: "builtin:demo-tools", factory: demoTools as PluginFactory },
 					{ label: "builtin:mcp-config", factory: mcpConfig as PluginFactory },
 				]),
@@ -158,6 +179,8 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 		const ctx = createExtensionContext({
 			cwd: options.cwd,
 			mode: options.mode,
+			workspace: workspacePolicy(options),
+			model: modelInfo(options),
 			...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
 			log: (message) => options.log(`[plugin ${entry.label}] ${message}`),
 		});
@@ -179,6 +202,8 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 		const ctx = createExtensionContext({
 			cwd: options.cwd,
 			mode: options.mode,
+			workspace: workspacePolicy(options),
+			model: modelInfo(options),
 			...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
 			log: (message) => options.log(`[plugin ${label}] ${message}`),
 		});
