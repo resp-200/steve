@@ -18,11 +18,6 @@ import type { AnnotatedTool } from "./tool-annotations.js";
 import { editPreview, findOccurrences, writePreview } from "./change-preview.js";
 import type { ToolChangePreview } from "./permissions.js";
 
-/** Tool names that need the user's approval before they run (see the `permission` declarations below). */
-export const LOCAL_WRITE_TOOLS = ["write_file", "edit_file"] as const;
-export const LOCAL_EXEC_TOOLS = ["run_command"] as const;
-export const LOCAL_PERMISSION_TOOLS = [...LOCAL_WRITE_TOOLS, ...LOCAL_EXEC_TOOLS];
-
 /** Directories that are never walked by glob/grep. */
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", "dist", ".next", "target", "vendor"]);
 

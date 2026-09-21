@@ -5,7 +5,14 @@
  * counters live here, so protocols and entries never touch pi directly — they
  * consume {@link AgentRuntimeEvent} and {@link TurnResult}.
  */
-import type { AfterToolCallContext, AfterToolCallResult, AgentMessage, AgentTool, BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
+import type {
+	AfterToolCallContext,
+	AfterToolCallResult,
+	AgentMessage,
+	AgentTool,
+	BeforeToolCallContext,
+	BeforeToolCallResult,
+} from "./contract.js";
 import type { PluginCommand, SessionAccessors } from "../extensions/api.js";
 import { createToolRegistry, type ToolRegistry } from "./tool-annotations.js";
 import type { ExtensionHost } from "../extensions/host.js";

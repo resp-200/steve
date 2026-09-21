@@ -97,7 +97,9 @@ for (const { full, rel } of files) {
 		const isTypeOnly = Boolean(match[1]);
 		const spec = match[2];
 
-		if (spec.startsWith("@earendil-works/") && (layer >= LAYERS.protocols || layer === -1)) {
+		// pi is allowed only where it is unavoidable: the model adapter, the single
+		// Agent assembly point, and the tool contract everyone else imports.
+		if (spec.startsWith("@earendil-works/") && layer !== LAYERS.model && layer !== LAYERS.kernel && rel !== "features/contract.ts") {
 			piInBoundary.push(`${rel} → ${spec}`);
 		}
 		if (spec.startsWith("@agentclientprotocol/") && layer !== LAYERS.protocols) {
@@ -134,9 +136,35 @@ for (const { full, rel } of files) {
 }
 
 check("依赖方向：只向下，横向例外只有两条", violations.length === 0, violations.slice(0, 5).join("; "));
-check("协议层 / 入口层零 pi 依赖", piInBoundary.length === 0, piInBoundary.slice(0, 5).join("; "));
+check(
+	"pi 只出现在 model/、kernel/、features/contract.ts",
+	piInBoundary.length === 0,
+	piInBoundary.slice(0, 5).join("; "),
+);
 check("ACP SDK 只出现在协议层", sdkOutsideProtocols.length === 0, sdkOutsideProtocols.slice(0, 5).join("; "));
 check("只有 kernel/agent.ts 装配 pi 的 Agent", agentConstructions.length === 0, agentConstructions.join(", "));
+
+/* ------------------------------------------------------------------ */
+/* 3b. 协议层不认识工具名                                                */
+/* ------------------------------------------------------------------ */
+
+// Built-in tool names. The protocol layer may *define* tools (protocols/acp/tools.ts
+// declares the client-backed ones) but must never branch on a tool name — that is
+// what the tools' own `metadata`/`describe` declarations are for.
+const BUILTIN_TOOLS = ["read_file", "write_file", "edit_file", "glob", "grep", "run_command", "get_current_time"];
+const toolNameLeaks = [];
+for (const { full, rel } of files) {
+	if (!rel.startsWith("protocols/") || rel === "protocols/acp/tools.ts") continue;
+	const source = readFileSync(full, "utf8");
+	for (const tool of BUILTIN_TOOLS) {
+		if (source.includes(`"${tool}"`) || source.includes(`'${tool}'`)) toolNameLeaks.push(`${rel}: ${tool}`);
+	}
+}
+check(
+	"协议层不认识具体工具名（只有 tools.ts 定义它们）",
+	toolNameLeaks.length === 0,
+	toolNameLeaks.slice(0, 5).join("; "),
+);
 
 /* ------------------------------------------------------------------ */
 /* 4. 运行时依赖白名单                                                   */

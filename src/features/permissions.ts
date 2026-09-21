@@ -5,7 +5,7 @@
  * *user* stays the caller's job (the ACP layer forwards the question to the
  * editor), which keeps this module free of transport details.
  */
-import type { BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
+import type { BeforeToolCallContext, BeforeToolCallResult } from "./contract.js";
 
 /** What the user decided about one tool call. */
 export type PermissionDecision = "allow_once" | "allow_always" | "deny" | "cancel";

@@ -285,7 +285,9 @@ async function acpChecks() {
 			.map((update) => (update.content ?? []).map((part) => part.content?.text ?? "").join(""))
 			.join("\n");
 		check("模型调用 MCP 工具并拿到结果", toolText.includes("echo: hello from the gateway"), toolText.replace(/\n/g, " ").slice(0, 100));
-		check("MCP 工具走权限确认", permissions.some((title) => title.includes("mcp__mock__echo")), permissions.join(" | ").slice(0, 90));
+		// The card title comes from the tool's own `metadata.title` — the protocol layer
+		// no longer keeps a fallback table of tool names.
+		check("MCP 工具走权限确认，卡片用工具声明的标题", permissions.includes("mock: echo"), permissions.join(" | ").slice(0, 90));
 
 		// `/mcp` is a plugin command, so it also has to work through the editor.
 		const mcpText = () =>

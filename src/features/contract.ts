@@ -5,4 +5,11 @@
  * they never import a pi package directly.
  */
 export { Type, type Static, type TSchema } from "@earendil-works/pi-ai";
-export type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+export type {
+	AgentMessage,
+	AgentTool,
+	AfterToolCallContext,
+	AfterToolCallResult,
+	BeforeToolCallContext,
+	BeforeToolCallResult,
+} from "@earendil-works/pi-agent-core";

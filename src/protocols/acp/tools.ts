@@ -1,4 +1,5 @@
 import { Type, type Static, type AgentTool } from "../../features/contract.js";
+import { writePreview } from "../../features/change-preview.js";
 import type { AnnotatedTool } from "../../features/tool-annotations.js";
 import type { AgentContext, ClientCapabilities } from "@agentclientprotocol/sdk";
 
@@ -15,9 +16,6 @@ export interface AcpToolContext {
 	client: AgentContext;
 	capabilities: ClientCapabilities;
 }
-
-/** Tool names the editor must approve before pi executes them. */
-export const ACP_PERMISSION_TOOLS = ["write_file", "run_command"] as const;
 
 const ReadFileParams = Type.Object({
 	path: Type.String({ description: "Absolute path of the file to read." }),
@@ -65,6 +63,22 @@ function writeFileTool(context: AcpToolContext): AnnotatedTool<typeof WriteFileP
 		description: "Create or overwrite a UTF-8 text file through the editor. Paths must be absolute.",
 		permission: "ask",
 		metadata: { kind: "edit", title: (args) => `Write ${(args as { path?: string })?.path ?? "file"}` },
+		// The tool describes its own change (like the core tools do): the protocol
+		// layer must not keep a table of tool names and their argument shapes.
+		describe: async (args) => {
+			const params = (args ?? {}) as { path?: string; content?: string };
+			if (!params.path) return undefined;
+			const before = await context.client
+				.request("fs/read_text_file", { sessionId: context.sessionId, path: params.path, line: null, limit: null })
+				.then((response) => response.content)
+				.catch(() => undefined); // a missing file just means "this is a create"
+			return writePreview({
+				path: params.path,
+				shown: params.path,
+				...(before === undefined ? {} : { before }),
+				after: params.content ?? "",
+			});
+		},
 		parameters: WriteFileParams,
 		execute: async (_toolCallId, params: Static<typeof WriteFileParams>) => {
 			await context.client.request("fs/write_text_file", {
@@ -87,6 +101,12 @@ function runCommandTool(context: AcpToolContext): AnnotatedTool<typeof RunComman
 		description: "Run a shell command in the client's terminal and return its output and exit code.",
 		permission: "ask",
 		metadata: { kind: "execute", title: (args) => `Run ${(args as { command?: string })?.command ?? "command"}` },
+		describe: (args) => {
+			const params = (args ?? {}) as { command?: string; args?: string[] };
+			if (!params.command) return undefined;
+			const rest = Array.isArray(params.args) && params.args.length > 0 ? ` ${params.args.join(" ")}` : "";
+			return { summary: `run ${params.command}${rest}` };
+		},
 		parameters: RunCommandParams,
 		execute: async (_toolCallId, params: Static<typeof RunCommandParams>) => {
 			const terminal = await context.client.request("terminal/create", {

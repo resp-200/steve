@@ -5,39 +5,10 @@
  * Kept apart from the session state machine so that mapping logic and
  * presentation logic stay separately readable.
  */
-import type { ToolCallContent, ToolKind } from "@agentclientprotocol/sdk";
+import type { ToolCallContent } from "@agentclientprotocol/sdk";
 import type { PromptImage } from "../../features/events.js";
 import type { ToolChangePreview } from "../../features/permissions.js";
 import { truncate } from "./content.js";
-
-/** Fallback table for tools that declare no `metadata` of their own. */
-export const TOOL_KINDS: Record<string, ToolKind> = {
-	read_file: "read",
-	write_file: "edit",
-	run_command: "execute",
-	get_current_time: "other",
-};
-
-/** Fallback title for tools that declare no `metadata.title`. */
-export function describeToolCall(name: string, args: unknown): string {
-	const record = (args ?? {}) as Record<string, unknown>;
-	const text = (key: string): string | undefined => (typeof record[key] === "string" ? (record[key] as string) : undefined);
-
-	switch (name) {
-		case "read_file":
-			return `Read ${text("path") ?? "file"}`;
-		case "write_file":
-			return `Write ${text("path") ?? "file"}`;
-		case "run_command": {
-			const extra = Array.isArray(record.args) ? (record.args as unknown[]).join(" ") : "";
-			return `Run ${text("command") ?? "command"}${extra ? ` ${extra}` : ""}`;
-		}
-		case "get_current_time":
-			return "Get current time";
-		default:
-			return name;
-	}
-}
 
 /** Tool output shown in the client's tool-call UI: text, images, embedded terminal. */
 export function toolCallContent(text: string, details: unknown, images: PromptImage[] = []): ToolCallContent[] {

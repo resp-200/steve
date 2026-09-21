@@ -297,7 +297,7 @@ export default function gitStatus(pi) {
 2. MCP → 插件用 `registerMcpServer()` 声明，核心负责连接（CLI 侧唯一的 MCP 入口）
 3. 演示工具（`get_current_time`）→ `src/extensions/builtin/demo-tools.ts`，`src/features/tools.ts` 已删除
 
-**核心工具和插件工具用同一套声明**（`src/features/tool-annotations.ts`）：`read_file` / `write_file` / `run_command` 这些核心工具也是自己声明 `permission`、`metadata`、`describe`，协议层与权限闸门都改成"先问工具、再兜底"，不再维护工具名硬编码表。
+**核心工具和插件工具用同一套声明**（`src/features/tool-annotations.ts`）：`read_file` / `write_file` / `run_command` 这些核心工具也是自己声明 `permission`、`metadata`、`describe`；**协议层现在不认识任何工具名**（连兜底名字表都删了，只保留 `protocols/acp/tools.ts` 里"定义"客户端工具的那三处），权限闸门也只看声明。`arch:test` 会挡住回退。
 
 插件能贡献的东西：
 
@@ -306,7 +306,7 @@ export default function gitStatus(pi) {
 | 工具 | `registerTool({ name, description, parameters, execute, permission?, metadata? })` | 校验、执行、结果回灌；`permission: "ask"` 交给权限闸门 |
 | 斜杠命令 | `registerCommand({ name, description, run })` | CLI 斜杠命令 + ACP `available_commands_update` |
 | MCP server | `registerMcpServer({ name, command, args, env })` | 连接、工具并入工具表（`mcp__server__tool`）、会话结束关闭子进程 |
-| 呈现元数据 | `registerTool({ metadata: { kind, title } })` | ACP 工具卡片按声明渲染；协议层的名字表降级为兜底 |
+| 呈现元数据 | `registerTool({ metadata: { kind, title } })` | ACP 工具卡片完全按声明渲染（协议层不认识工具名，没有兜底表） |
 | 审批预览 | `registerTool({ describe: (args) => ToolChangePreview })` | 权限闸门优先用工具自己的预览，宿主回调只是兜底 |
 | 会话内省 | `ctx.session.{ tools, commands, model, mcp, stats(), reset() }` | 只读视图，够写 `/tools`、`/stats`、`/mcp` 这类命令 |
 
@@ -548,7 +548,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
-| `npm run arch:test` | 架构契约与发布卫生 13 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
+| `npm run arch:test` | 架构契约与发布卫生 14 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
 | `npm run mcp:test` | MCP 与会话管理 41 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
@@ -603,6 +603,8 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | `new Agent({ ... })` 只允许出现在 `kernel/agent.ts` | 「接 pi 的位置」只有一处，CLI 与编辑器行为天然一致 | `arch:test` |
 | `src/types.ts` 零依赖 | 它是跨层共享类型，不能变成隐性依赖源 | `arch:test` |
 | 协议层拿工具/类型只走 `features/contract.ts` | 类型也走契约，别各自 `import` pi | 约定 |
+| **pi 只出现在 `model/`、`kernel/`、`features/contract.ts`** | 换掉 pi 时改动面就这三处 | `arch:test` |
+| **协议层不认识具体工具名**（只有 `protocols/acp/tools.ts` 定义客户端工具） | 工具名与参数形状属于工具自己的声明，协议层不该有分支 | `arch:test` |
 
 四条对应的「实现约定」：
 
@@ -625,7 +627,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 文件名 | kebab-case | `local-tools.ts`、`change-preview.ts` |
 | 函数 / 变量 | camelCase；工厂用 `createXxx` | `createToolRegistry()` |
 | 类型 / 接口 | PascalCase | `AgentRuntimeOptions` |
-| 常量 | UPPER_SNAKE | `LOCAL_PERMISSION_TOOLS` |
+| 常量 | UPPER_SNAKE | `SOURCE_PRIORITY` |
 | 工具变量 | `xxxTool`；工具**名**用 snake_case | `readFileTool` / `"read_file"` |
 | MCP 工具名 | `mcp__<server>__<tool>` | `mcp__mock__echo` |
 | 内置插件 | `extensions/builtin/<name>.ts`，导出 `<name>(pi)` 工厂 | `demoTools(pi)` |
@@ -702,7 +704,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 插件优先，而非插件唯一 | 一切**能力**走插件；引导、边界、协议三件事留在核心 | 需要不断用 dogfooding 检验 API 是否够用 |
 | MCP 实现留在核心、由插件声明 | 子进程生命周期必须被保证（会话结束要关干净） | 插件只能声明，不能自己实现传输 |
 | 会话持久化留在核心 | 「存哪里 / 存不存」是引导决策，丢历史不可接受 | 插件无法替换存储实现 |
-| 工具声明化（permission / metadata / describe） | 协议层不该认识具体工具名；MCP 与插件工具也需要审批预览 | 多一层注册表与兜底逻辑 |
+| 工具声明化（permission / metadata / describe） | 协议层不该认识具体工具名；MCP 与插件工具也需要审批预览 | 多一层注册表；工具不声明就没有好看的工具卡片 |
 | 重试放功能层 | 协议无关，编辑器与终端行为一致；取消不重试 | 功能层要处理回滚与上下文净化 |
 | 路径收敛放核心 | 这是安全边界，插件只能加约束不能放宽 | 工具无法自行定义「越界」 |
 | `--allow-local-tools` 默认关 | 编辑器里的 agent 不该悄悄绕过编辑器沙箱改本机文件 | 客户端没有 fs/terminal 能力时需要显式开启 |

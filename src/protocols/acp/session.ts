@@ -22,7 +22,7 @@ import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../fe
 import { createLocalTools } from "../../features/local-tools.js";
 import type { Logger, McpServerStatus } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
-import { TOOL_KINDS, describeToolCall, diffContent, toolCallContent } from "./tool-call.js";
+import { diffContent, toolCallContent } from "./tool-call.js";
 import { createAcpTools } from "./tools.js";
 
 export type PermissionMode = "ask" | "allow";
@@ -128,7 +128,6 @@ export class AcpSession {
 			permissions: {
 				mode: options.permissionMode,
 				ask: (request) => this.askPermission(request),
-				describe: (request) => this.describeChange(request.toolName, request.args),
 			},
 		});
 		this.toolNames = this.runtime.toolNames;
@@ -267,64 +266,6 @@ export class AcpSession {
 	}
 
 
-	/**
-	 * Previews what a write/edit is about to do. The previous content comes from the
-	 * editor's filesystem when it has one, otherwise from the local fallback.
-	 */
-	private async describeChange(toolName: string, args: unknown): Promise<ToolChangePreview | undefined> {
-		const input = (args ?? {}) as Record<string, unknown>;
-		const text = (key: string): string => (typeof input[key] === "string" ? (input[key] as string) : "");
-
-		if (toolName === "run_command") {
-			const command = text("command");
-			return command ? { summary: `run ${command}` } : undefined;
-		}
-
-		const rawPath = text("path");
-		if (!rawPath) return undefined;
-		const path = isAbsolute(rawPath) ? rawPath : join(this.cwd, rawPath);
-
-		if (toolName === "write_file") {
-			const before = await this.readForPreview(path);
-			return writePreview({ path, shown: path, ...(before === undefined ? {} : { before }), after: text("content") });
-		}
-
-		if (toolName === "edit_file") {
-			const before = await this.readForPreview(path);
-			if (before === undefined) return undefined;
-			return editPreview({
-				path,
-				shown: path,
-				before,
-				find: text("old_string"),
-				replace: text("new_string"),
-				...(typeof input.line === "number" ? { line: input.line } : {}),
-				...(input.replace_all === true ? { replaceAll: true } : {}),
-			});
-		}
-
-		return undefined;
-	}
-
-	/** Reads a file for preview purposes only; failures just mean "no preview". */
-	private async readForPreview(path: string): Promise<string | undefined> {
-		if (this.options.clientCapabilities.fs?.readTextFile) {
-			try {
-				const response = await this.options.client.request("fs/read_text_file", { sessionId: this.id, path, line: null, limit: null });
-				return response.content;
-			} catch {
-				return undefined;
-			}
-		}
-
-		if (!this.options.allowLocalTools) return undefined;
-		try {
-			return await readFile(path, "utf8");
-		} catch {
-			return undefined;
-		}
-	}
-
 	async announceCommands(): Promise<void> {
 		// Built-in commands are plugins too, so this is just the command registry.
 		const commands = this.runtime.commands.map((command) => ({ name: command.name, description: command.description }));
@@ -402,8 +343,8 @@ export class AcpSession {
 			sessionId: this.id,
 			toolCall: {
 				toolCallId: request.toolCallId,
-				title: request.preview?.summary ?? describeToolCall(request.toolName, request.args),
-				kind: TOOL_KINDS[request.toolName] ?? "other",
+				title: request.preview?.summary ?? this.titleFor(request.toolName, request.args),
+				kind: this.kindFor(request.toolName),
 				status: "pending",
 				rawInput: request.args,
 				locations: locationsFromArgs(request.args) ?? null,
@@ -429,14 +370,14 @@ export class AcpSession {
 		}
 	}
 
-	/** Tools declare their own presentation; the protocol table is a fallback. */
+	/** Tools declare their own presentation; the protocol layer knows no tool names. */
 	private kindFor(toolName: string): ToolKind {
 		const declared = this.runtime.toolRegistry().kindFor(toolName);
-		return (declared as ToolKind | undefined) ?? TOOL_KINDS[toolName] ?? "other";
+		return (declared as ToolKind | undefined) ?? "other";
 	}
 
 	private titleFor(toolName: string, args: unknown): string {
-		return this.runtime.toolRegistry().titleFor(toolName, args) ?? describeToolCall(toolName, args);
+		return this.runtime.toolRegistry().titleFor(toolName, args) ?? toolName;
 	}
 
 	private send(update: SessionUpdate): Promise<void> {
