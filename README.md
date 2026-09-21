@@ -283,7 +283,7 @@ export default function gitStatus(pi) {
 | `on("text_delta" … "turn_end")` | 观察归一化事件（`src/features/events.ts` 那套词表） | 功能层事件派发 |
 | `registerTool` / `registerCommand` | 加工具、加斜杠命令 | 工具表；CLI 斜杠命令 + ACP `available_commands_update` |
 
-**原则：插件优先（plugin-first），而不是插件唯一。** 一切**能力**都由插件贡献；核心只保留三件不可插件化的东西：
+**原则：插件优先（plugin-first），而不是插件唯一。** 一切**能力**都由插件贡献；核心只保留三件不可插件化的东西（判据与 Tier 划分见「约定与规范」第 2 节）：
 
 | 核心保留 | 为什么 |
 | --- | --- |
@@ -611,7 +611,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **契约文件**：`features/contract.ts`（TypeBox / `AgentTool`）、`features/events.ts`（事件词表）、`features/tool-annotations.ts`（工具声明）、`extensions/api.ts`（插件契约）——它们是层与层之间唯一的词汇表。
 - **事件词表是唯一的对外语言**：协议层与入口层只说 `features/events.ts` 里那套事件，不吐 pi 的原始事件，也不吐 ACP 专属事件。
 - **内核是唯一的装配点**：`createKernelAgent()` 负责 systemPrompt、工具表、hooks 组合（含内置失败轮过滤 + 插件 `transformContext` 的顺序）。
-- **错误编码进流**：`StreamFn` 不 throw，见下文第 4 节。
+- **错误编码进流**：`StreamFn` 不 throw，见下文第 5 节。
 
 动手前的自检（新增东西时先问这三个问题）：
 
@@ -619,7 +619,33 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 2. **能不能做成插件？** 只有引导（`kernel/`、`model/`、`extensions/host.ts`）、边界（权限闸门、路径收敛、截断）、协议（`protocols/`、`entries/`）三件事进核心，其余都走插件。
 3. **加协议要不要动内核？** 不用：新协议在 `protocols/` 下加目录，新模型协议在 `model/` 里加分支（`streamFn` 按 `model.api` 路由）。
 
-### 2. 命名与目录
+### 2. 插件化判据（要不要做成插件）
+
+"是不是能力"**不是**判据 —— 否则会把权限闸门、会话存储也搬出去。真正决定的是三个问题：
+
+| 问题 | 偏向插件 | 偏向核心 |
+| --- | --- | --- |
+| ① **有变体预期吗**（多实现、按用户/组织/场景变化） | 会：只读版、编辑器版、组织内部工具集、ripgrep 版 `grep` | 只有唯一实现，看不到变体 |
+| ② **装配代码重复吗**（每个前端都要知道它的参数） | 重复：CLI 与 ACP 各装配一遍 | 一处装配、参数固定 |
+| ③ **它在边界上吗**（判断者 / 引导 / 协议专属） | 是**能力**（被执行、被拦截的那一侧） | 是边界本身、引导、或协议映射 |
+
+①② 是插件化的**真正收益**：装配代码从每个前端消失 + 走同一套契约（声明式权限/呈现/预览、一条注册路径、一套测试）。"用户能删掉它"通常不是理由。
+
+**三种东西（Tier）**，混在一起谈"万物皆插件"必然得出错误结论：
+
+| Tier | 是什么 | 加载语义 |
+| --- | --- | --- |
+| 0 核心 | 引导（`model/`、`kernel/`、`extensions/host.ts`）、边界（权限闸门、路径收敛、截断）、协议（`protocols/`、`entries/`） | 编译进去，不可关 |
+| 1 内置插件 | 默认能力：会话命令、演示工具、`.steve/mcp.json` 读取、（待办）本地工具 | **必装、失败要响**（不像用户插件那样静默跳过）；可拆卸只是为了测试与替换 |
+| 2 发现插件 | 用户插件、组织工具集、MCP server | 失败隔离：记日志并跳过 |
+
+**同名工具**：默认**拒绝**（记日志，先注册者保留）；要替换必须显式 `registerTool({ name, override: true })`。客户端能力插件先加载、本地插件只补空缺 —— 这条规则取代过去写在 `acp/session.ts` 里的"客户端优先"。（`override` 尚未实现，见文末「接下来」。）
+
+**反向判据（这些情况留核心）**：既没有变体预期、装配又不重复、还不在边界上 —— 做成插件只是多一层间接。纯函数库（如 `features/change-preview.ts`）就是这一类。
+
+**API 增长红线**：如果为了搬一个能力，需要公开越来越多的核心配置字段，说明方向错了 —— 停下来重新设计，而不是继续加字段。
+
+### 3. 命名与目录
 
 | 类别 | 约定 | 例子 |
 | --- | --- | --- |
@@ -637,14 +663,14 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 
 单文件超过约 300 行就考虑拆（`features/local-tools.ts` 541 行是当前上限；再往里加能力先拆文件）。
 
-### 3. 依赖纪律
+### 4. 依赖纪律
 
 - 运行时依赖白名单：`@earendil-works/pi-agent-core`、`@earendil-works/pi-ai`、`@agentclientprotocol/sdk`（`arch:test` 会查）。
 - `ws` 只能出现在 `optionalDependencies`，且**缺失时必须降级**（WebSocket 传输不可用，HTTP 照常）。
 - **不依赖 `pi-coding-agent`**：它会把依赖树从 10.5M 拉到 434M，而且内置工具与扩展宿主都在里面——本项目要自己写这两块。
 - 新增运行时依赖要先回答「标准库为什么不够」；`devDependencies` 只放 `tsx` / `typescript` / `@types/node`。
 
-### 4. 错误处理
+### 5. 错误处理
 
 | 场景 | 约定 |
 | --- | --- |
@@ -656,7 +682,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 取消（aborted） | 不是错误：不重试、不报错，`stopReason = cancelled` |
 | 日志 | stdio 模式下只写 stderr，**stdout 只走协议**；`--quiet` 只留错误 |
 
-### 5. 工具与安全
+### 6. 工具与安全
 
 - 每个工具自己声明 `permission` / `metadata` / `describe`（`features/tool-annotations.ts`），**核心工具与插件工具共用同一套**；协议层与权限闸门「先问工具，再兜底」，不再维护工具名硬编码表。
 - 工具 `execute` 返回 `content`（回灌给模型）+ `details`（给 UI / 日志）。
@@ -664,7 +690,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - 审批要给出**将要发生什么**：`describe` 返回 diff 预览，CLI 打彩色 diff，ACP 塞进 `session/request_permission` 的 `toolCall.content`。
 - MCP 工具一律先问权限（它们能做的事和 server 一样多）。
 
-### 6. 测试
+### 7. 测试
 
 - **一个能力 = 一个测试脚本**：`scripts/<能力>-test.mjs` + npm script，用 `check(name, ok, detail)` 输出 `✓/✗` 与结尾的 `N/N checks passed`（`npm run verify` 就靠这一行汇总）。
 - **离线优先**：所有测试都打到 `scripts/mock-server.mjs`，不联网、不烧真实额度（`verify` 启动 ACP server 时会用 mock 环境变量覆盖 `.env`）。
@@ -682,7 +708,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | `npm run mcp:test` | 8894 | 8892 |
 | `npm run sessions:test` | 8896 | 8895 |
 
-### 7. 提交与发布
+### 8. 提交与发布
 
 - 提交信息**中文**、结构化（标题 + 新增 / 改动 / 测试 / 回归分段），**一个提交一个主题**。
 - 提交要跳过用户全局的 lefthook：`LEFTHOOK=0 git commit ...`。
@@ -690,7 +716,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **历史改写只在明确 lease 下**：`--force-with-lease=main:<sha>`，绝不 blind force。
 - **发布卫生**（`arch:test` 会查）：`.env` 与整个 `.steve/`（本地配置、`mcp.json`、插件、会话记录）永不入库，只提交 `.env.example`；公开文件里不出现内网域名、key 片段、真实模型 id——文档里的网关一律写成 `https://your-gateway.example.com`。
 
-### 8. 文档
+### 9. 文档
 
 - **新能力 = 代码 + README 对应表格 + 测试脚本**，三件套缺一不算完成。
 - README 中文、代码注释英文；涉及环境变量的命令同时给 POSIX 与 PowerShell 写法。
@@ -708,10 +734,29 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 重试放功能层 | 协议无关，编辑器与终端行为一致；取消不重试 | 功能层要处理回滚与上下文净化 |
 | 路径收敛放核心 | 这是安全边界，插件只能加约束不能放宽 | 工具无法自行定义「越界」 |
 | `--allow-local-tools` 默认关 | 编辑器里的 agent 不该悄悄绕过编辑器沙箱改本机文件 | 客户端没有 fs/terminal 能力时需要显式开启 |
+| 本地工具**暂留核心**（待插件化） | 按判据 ①② 它该是 Tier 1 插件（变体真实存在、两个入口各装配一遍），但插件 API 还缺会话策略与前端能力 | 核心暂时多知道一件事；补齐 API 后搬（见文末「接下来」） |
+| 同名工具默认拒绝、替换要显式 `override` | 插件化后客户端工具与本地工具同名，必须有明确语义，不能靠加载顺序 | 想替换的插件要显式声明（待实现） |
+| 纯函数库不做插件 | 没有变体、装配不重复、不在边界上 → 插件化只增加间接层 | 调用方直接 import |
 
 ## 换个模型 / 加个工具
 
 - 换模型：改 `.env` 即可。换协议时只需要 `LLM_API`（或让 baseUrl 自动判定），`Agent` 侧代码一行都不用动。
-- 加工具：**推荐写插件**（`registerTool`，见上文「拓展」），这样两端同时生效、还能声明权限与呈现。核心内的工具分两处：本地工具在 `src/features/local-tools.ts`，依赖客户端能力的在 `src/protocols/acp/tools.ts`；`execute` 里返回 `content`（回灌给模型）+ `details`（给 UI/日志）。演示工具就是内置插件（`src/extensions/builtin/demo-tools.ts`）。
+- 加工具：**推荐写插件**（`registerTool`，见上文「拓展」），这样两端同时生效、还能声明权限与呈现。核心内目前还剩两处工具：本地工具 `src/features/local-tools.ts`（按「接下来」第 1、2 项搬成 Tier 1 插件）与依赖客户端能力的 `src/protocols/acp/tools.ts`（协议专属，留协议层）；`execute` 里返回 `content`（回灌给模型）+ `details`（给 UI/日志）。演示工具就是内置插件（`src/extensions/builtin/demo-tools.ts`）。
 - 改内核装配（streamFn / 上下文净化 / thinking 等级 / hooks）：只动 `src/kernel/agent.ts` 一处，CLI 与 ACP 同时生效。
 - 加能力而不改代码：写个插件（见上文「拓展」），`STEVE_EXTENSIONS=...` 或 `--extension` 加载即可，两端同时生效。
+
+## 接下来（按约定排序）
+
+按上面的判据，当前该做的顺序是：
+
+| # | 做什么 | 依据 | 状态 |
+| --- | --- | --- | --- |
+| 1 | 给插件 API 补「会话策略 + 前端能力」（`workspace.{roots,writable,canExec,shell}`、`session.model.supportsImages`、`client.{fs,terminal}`） | 判据 ①②：本地工具变体真实存在、两个入口各装配一遍 | 待做 |
+| 2 | 本地工具变成 Tier 1 内置插件（`extensions/builtin/local-tools.ts`），入口只发布策略 | 同上；也是唯一的 dogfooding 检验 | 待做 |
+| 3 | `registerTool({ override: true })` 与「同名默认拒绝」落地，替掉 `acp/session.ts` 里的手写"客户端优先" | 判据 ③：同名冲突必须规则化 | 待做 |
+| 4 | 拆超长文件：`runtime.ts`（486）、`acp/session.ts`（440）超过 300 行口径；本地工具搬家时顺手拆 | 命名与目录一节的规模口径 | 待做 |
+| 5 | 插件影响 system prompt 的契约（`contributePrompt`：限长、顺序、能否覆盖） | 先定契约再实现：这是提示词注入面 | 待定 |
+| 6 | 能力补齐：MCP `http` 传输、`session/fork`、`session/resume` | 功能缺口，不涉及分层 | 待定 |
+| 7 | 真机验证：Zed（IDEA 已实测）、Windows | 跨平台一节标注为"未在真机验证" | 待做 |
+
+不做清单（避免反复讨论）：权限闸门、路径收敛、截断、会话存储、MCP 客户端实现、ACP 客户端工具 —— 见「决策记录」的理由。
