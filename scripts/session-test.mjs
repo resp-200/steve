@@ -5,6 +5,8 @@
 //   B. runtime: snapshot/restore/transcript normalisation
 //   C. ACP end to end: a session is saved to disk, `session/load` replays the
 //      history to the client, and the resumed session keeps chatting
+//   D. CLI: the transcript is saved, resumed on the next start, emptied by /new,
+//      and skipped entirely with --no-sessions
 //
 //   npm run build && node scripts/session-test.mjs
 import { spawn } from "node:child_process";
@@ -234,6 +236,85 @@ async function acpChecks() {
 	}
 }
 
+/* -------------------------------- D. CLI --------------------------------- */
+
+/** Runs the CLI in `cwd`, waits for `waitFor` in stdout, then quits. */
+function runCli(cwd, input, options = {}) {
+	return new Promise((resolve) => {
+		const child = spawn(process.execPath, [join(ROOT, "dist/entries/cli.js"), ...(options.args ?? [])], {
+			cwd,
+			env: {
+				...process.env,
+				NO_COLOR: "1",
+				STEVE_DISCOVERY: "off",
+				HOME: scratchHome,
+				LLM_API_KEY: "mock",
+				LLM_MODEL_ID: "mock",
+				LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,
+			},
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		let stdout = "";
+		child.stdout.on("data", (chunk) => (stdout += chunk));
+		child.stdin.write(input);
+
+		// `/exit` while a turn is running is ignored (the REPL says "still working"),
+		// so close stdin as well: EOF ends the read loop and the process exits.
+		const deadline = Date.now() + 20_000;
+		const timer = setInterval(() => {
+			if (options.waitFor.test(stdout) || Date.now() > deadline) {
+				clearInterval(timer);
+				child.stdin.write("/exit\n");
+				child.stdin.end();
+			}
+		}, 200);
+		const guard = setTimeout(() => child.kill("SIGKILL"), 30_000);
+		child.on("exit", () => {
+			clearInterval(timer);
+			clearTimeout(guard);
+			resolve(stdout);
+		});
+	});
+}
+
+async function cliChecks() {
+	const mock = spawn(process.execPath, ["scripts/mock-server.mjs"], {
+		cwd: ROOT,
+		env: { ...process.env, MOCK_PORT: String(MOCK_PORT) },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const workspace = mkdtempSync(join(tmpdir(), "steve-cli-session-"));
+	const file = join(workspace, ".steve", "sessions", "cli.json");
+	const stored = () => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined);
+
+	try {
+		await waitForPort(MOCK_PORT);
+
+		const first = await runCli(workspace, "现在几点了？\n", { waitFor: /工具返回|assistant/ });
+		check("CLI 显示会话状态（新会话）", first.includes("cli · new"), first.split("\n").find((line) => line.includes("session")) ?? "");
+		check("CLI 把 transcript 落盘", (stored()?.messages.length ?? 0) >= 2, `messages=${stored()?.messages.length ?? 0}`);
+
+		const second = await runCli(workspace, "/stats\n", { waitFor: /turns \d+/ });
+		check("CLI 重启后恢复会话", second.includes("resumed") && /turns [1-9]/.test(second), second.split("\n").find((line) => line.includes("session")) ?? "");
+		check("恢复后的统计接着算", /tool calls [1-9]/.test(second), second.split("\n").find((line) => line.includes("turns")) ?? "");
+
+		const fresh = await runCli(workspace, "/new\n", { waitFor: /conversation/ });
+		check("/new 之后落盘的是新会话（不会被旧历史续上）", fresh.includes("conversation") && stored()?.messages.length === 0, `messages=${stored()?.messages.length ?? "none"}`);
+
+		const offDir = join(workspace, "off");
+		const off = await runCli(workspace, "/stats\n", { args: ["--no-sessions", "--session-dir", offDir], waitFor: /turns \d+/ });
+		check("--no-sessions 既不读也不写", off.includes("off (--no-sessions)") && !existsSync(offDir), off.split("\n").find((line) => line.includes("session")) ?? "");
+
+		const named = await runCli(workspace, "/stats\n", { args: ["--session", "second"], waitFor: /turns \d+/ });
+		check("--session <id> 用另一个 transcript", named.includes("second · new") && existsSync(join(workspace, ".steve", "sessions", "second.json")), named.split("\n").find((line) => line.includes("session")) ?? "");
+	} finally {
+		mock.kill("SIGTERM");
+		await sleep(200);
+		mock.kill("SIGKILL");
+		rmSync(workspace, { recursive: true, force: true });
+	}
+}
+
 async function main() {
 	process.stderr.write("sessions · store\n");
 	await storeChecks();
@@ -241,6 +322,8 @@ async function main() {
 	await runtimeChecks();
 	process.stderr.write("\nsessions · ACP session/load\n");
 	await acpChecks();
+	process.stderr.write("\nsessions · CLI resume\n");
+	await cliChecks();
 
 	const failed = checks.filter((entry) => !entry.passed);
 	process.stderr.write(`\n${checks.length - failed.length}/${checks.length} checks passed\n`);

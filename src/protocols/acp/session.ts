@@ -14,7 +14,7 @@ import type { AgentRuntimeEvent, TurnStopReason, TurnUsage } from "../../feature
 import type { ExtensionHost } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
 import { readFile } from "node:fs/promises";
-import type { SessionStore, StoredSession } from "../../features/session-store.js";
+import { sessionRecord, type SessionStore, type StoredSession } from "../../features/session-store.js";
 import { isAbsolute, join } from "node:path";
 import { editPreview, writePreview } from "../../features/change-preview.js";
 import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "../../features/permissions.js";
@@ -211,14 +211,15 @@ export class AcpSession {
 	/** Saves the transcript so the session can be resumed after a restart. */
 	private async persist(): Promise<void> {
 		if (!this.options.store) return;
-		await this.options.store.save({
-			id: this.id,
-			cwd: this.cwd,
-			createdAt: this.createdAt,
-			updatedAt: new Date().toISOString(),
-			messages: this.runtime.snapshot(),
-			usage: { ...this.usage },
-		});
+		await this.options.store.save(
+			sessionRecord({
+				id: this.id,
+				cwd: this.cwd,
+				createdAt: this.createdAt,
+				messages: this.runtime.snapshot(),
+				usage: { ...this.usage },
+			}),
+		);
 	}
 
 	/** Replays a stored transcript to the client (used by `session/load`). */

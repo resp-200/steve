@@ -37,6 +37,30 @@ export interface SessionStore {
 	remove(id: string): Promise<void>;
 }
 
+/**
+ * Builds the record to persist. Both front ends save through this, so the shape
+ * (and the timestamps) exist once — the CLI and the ACP server used to assemble
+ * the same object by hand.
+ */
+export function sessionRecord(options: {
+	id: string;
+	cwd: string;
+	messages: unknown[];
+	/** Kept from the record being resumed, so a session keeps its birth time. */
+	createdAt?: string;
+	usage?: unknown;
+}): StoredSession {
+	const now = new Date().toISOString();
+	return {
+		id: options.id,
+		cwd: options.cwd,
+		createdAt: options.createdAt ?? now,
+		updatedAt: now,
+		messages: options.messages,
+		...(options.usage !== undefined ? { usage: options.usage } : {}),
+	};
+}
+
 /** Session ids are UUIDs we generate; anything else is refused outright. */
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 

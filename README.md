@@ -123,6 +123,8 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 ## REPL 命令
 
+CLI 的会话参数与 ACP 对齐：`--session <id>`（默认 `cli`，一个项目目录一个会话）、`--session-dir <dir>`（默认 `<cwd>/.steve/sessions`）、`--no-sessions`。启动时如果找到旧 transcript 会自动续聊（banner 里显示 `cli · resumed N message(s)`），每轮结束与 `/new` 之后落盘。
+
 `/exit` `/quit` `/plugins` 由 CLI 自己实现（host 级）；`/help` `/new` `/tools` `/model` `/stats` `/mcp` 由 `session-commands` 插件提供 —— 所以终端与编辑器里行为一致，CLI 的 `/help` 也不会像以前那样过期（它现在就是插件生成的命令列表）。流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
 
 `/mcp` 列出当前配置的 MCP server（来源、传输、命令行、连上的工具，或失败原因）：
@@ -223,7 +225,7 @@ runtime.subscribe((event) => {
 CLI 的三种审批模式：
 
 ```bash
-npm run dev                     # 默认：写/执行前在终端问 y/n（非交互运行时默认拒绝）
+npm run dev                     # 默认：写/执行前在终端问 y/n（非交互运行时默认拒绝），会话自动续聊
 npm run dev -- --yes            # 自动批准所有写/执行（危险，慎用）
 npm run dev -- --read-only      # 只注册读工具，没有审批提示
 ```
@@ -552,7 +554,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 | `npm run plugins:test` | 插件层 26 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
-| `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
+| `npm run sessions:test` | 会话持久化 29 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的落盘/续聊/`/new`/`--no-sessions`/`--session <id>` |
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 16 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
@@ -587,7 +589,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **每条连接独立**：HTTP/WS 传输下每个连接有自己的 `AgentApp` 和 session 表，session 之间不串上下文。
 - **stdout 只走协议**：stdio 模式下所有日志都写到 stderr，`--quiet` 可只留错误。
 - **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/mcp` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
-- **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，编辑器重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
+- **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）；**CLI 与 ACP 共用同一个 store 与文件格式**（`features/session-store.ts` 的 `sessionRecord()` 是唯一的记录装配处），所以终端里也能续聊。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，编辑器重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
 - **会话管理**：`session/list`（可按 `cwd` 过滤，返回 `sessionId`/`cwd`/`updatedAt`）与 `session/delete`（先 dispose 活会话——顺带 abort 并关掉它的 MCP 子进程——再删文件）。两者都在 initialize 的 `sessionCapabilities` 里声明。
 - **MCP 透传**：来源有两个 —— ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`，以及插件用 `registerMcpServer()` 声明的（**这是 CLI 侧唯一入口**，终端里没有客户端可传）。两者都连（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表；`/mcp` 会列出每个 server 的来源（`plugin` / `client`）、传输、命令行与工具，连不上的把原因也列出来，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
 
@@ -745,6 +747,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 本地工具是 **Tier 1 内置插件** | 判据 ①②：变体真实存在（只读/编辑器/组织版），且两个入口各装配一遍 | 默认能力依赖插件加载 → 内置插件失败要响，并有 `builtins: false` 的测试兜住 |
 | 同名工具默认拒绝、替换要显式 `override` | 插件化后客户端工具与本地工具同名，必须有明确语义，不能靠加载顺序 | 想替换的插件要显式声明（待实现） |
 | 纯函数库不做插件 | 没有变体、装配不重复、不在边界上 → 插件化只增加间接层 | 调用方直接 import |
+| CLI 也持久化会话（与 ACP 同一 store 与文件格式） | 能力不对称会让"终端里聊完就没了"显得像 bug；共用一个 store 后两端行为一致 | CLI 多三个 flag；`/new` 之后也要落盘（否则重启会把刚丢弃的历史续回来） |
 | 前端只**发布策略**，不装配能力 | 装配代码重复就是插件化的信号：`features/session-policy.ts`（策略形状 + 模型信息）与 `extensions/discovery.ts`（插件路径/发现开关）都是"一份实现、两个前端调用" | 前端多一层间接调用（换来单一真相） |
 | 插件命令只有一个实现（在插件里） | CLI 曾同时实现 `/new`、`/help`，导致插件的同名命令在终端里永远不生效、`/help` 两端不一致且会过期 | CLI 的 `/help` 走插件；host 级只留 `/exit` `/quit` `/plugins` |
 
@@ -767,7 +770,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 4 | 拆超长文件：`runtime.ts`、`acp/session.ts` 仍超 300 行口径；`features/local-tools.ts`（578）也该按 fs/search/exec 拆 | 命名与目录一节的规模口径 | 待做 |
 | 4b | 客户端工具也做成插件（需要 `ctx.client.{fs,terminal}`） | 判据 ①②：它俩现在仍写在协议层；但协议层是宿主，暂可接受 | 待定 |
 | 5b | ~~消除前端重复配置~~ | 已完成：`modelInfo`/`workspacePolicy` 收进 `features/session-policy.ts`，env 解析收进 `extensions/discovery.ts`，CLI 不再重复实现插件命令 | ✅ 已做 |
-| 5c | CLI 也支持会话持久化（`--session-dir` / `--no-sessions`） | 能力不对称：编辑器里能续聊，终端里聊完就没了 —— 这是产品决定，不是重复 | 待定 |
+| 5c | ~~CLI 也支持会话持久化~~ | 已完成：`--session` / `--session-dir` / `--no-sessions`，与 ACP 共用 `sessionRecord()` 与同一份 store | ✅ 已做 |
 | 5 | 插件影响 system prompt 的契约（`contributePrompt`：限长、顺序、能否覆盖） | 先定契约再实现：这是提示词注入面 | 待定 |
 | 6 | 能力补齐：MCP `http` 传输、`session/fork`、`session/resume` | 功能缺口，不涉及分层 | 待定 |
 | 7 | 真机验证：Zed（IDEA 已实测）、Windows | 跨平台一节标注为"未在真机验证" | 待做 |

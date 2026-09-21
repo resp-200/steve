@@ -7,8 +7,10 @@ import type { AgentTool } from "../features/contract.js";
 import { connectMcpServers } from "../features/mcp.js";
 import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
+import { createSessionStore, sessionRecord } from "../features/session-store.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
+import { join } from "node:path";
 import { color, Renderer } from "./render.js";
 
 const HELP = `
@@ -21,6 +23,9 @@ Commands
 Flags
   --read-only    no write_file / edit_file / run_command (so no approval prompts)
   --yes, -y      approve every write/exec without asking
+  --session <id> transcript to resume (default "cli", one per project directory)
+  --session-dir  where transcripts live (default <cwd>/.steve/sessions)
+  --no-sessions  do not read or write any transcript
   --help, -h     show this help
 
 Anything else is sent to the model. Ctrl+C aborts a running answer;
@@ -32,6 +37,12 @@ interface CliOptions {
 	readOnly: boolean;
 	/** Approve write/exec without asking. */
 	autoApprove: boolean;
+	/** Transcript to resume/continue (default `cli`, one per project directory). */
+	session: string;
+	/** Where transcripts live (default `<cwd>/.steve/sessions`). */
+	sessionDir?: string;
+	/** `--no-sessions`: nothing is read or written. */
+	noSessions: boolean;
 	/** One-shot prompt (everything that was not a flag). */
 	prompt: string;
 }
@@ -42,13 +53,18 @@ interface ReplContext {
 	config: AppConfig;
 	extensions: ExtensionHost;
 	options: CliOptions;
+	/** How the transcript ended up: resumed from disk, fresh, or switched off. */
+	sessionState: string;
+	/** Persists the transcript (no-op with `--no-sessions`). */
+	saveSession: () => Promise<void>;
 }
 
 function parseArgv(argv: string[]): CliOptions | "help" {
-	const options: CliOptions = { readOnly: false, autoApprove: false, prompt: "" };
+	const options: CliOptions = { readOnly: false, autoApprove: false, session: "cli", noSessions: false, prompt: "" };
 	const rest: string[] = [];
 
-	for (const arg of argv) {
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index] ?? "";
 		if (arg === "--help" || arg === "-h") return "help";
 		if (arg === "--read-only" || arg === "--readonly") {
 			options.readOnly = true;
@@ -56,6 +72,20 @@ function parseArgv(argv: string[]): CliOptions | "help" {
 		}
 		if (arg === "--yes" || arg === "-y") {
 			options.autoApprove = true;
+			continue;
+		}
+		if (arg === "--no-sessions") {
+			options.noSessions = true;
+			continue;
+		}
+		if (arg === "--session") {
+			options.session = argv[index + 1] ?? options.session;
+			index += 1;
+			continue;
+		}
+		if (arg === "--session-dir") {
+			options.sessionDir = argv[index + 1] ?? options.sessionDir;
+			index += 1;
 			continue;
 		}
 		rest.push(arg);
@@ -125,7 +155,7 @@ function askPermission(request: PermissionRequest, options: CliOptions): Promise
 /* --------------------------------- banner --------------------------------- */
 
 function banner(context: ReplContext): void {
-	const { config, options } = context;
+	const { config, options, sessionState } = context;
 	const access = options.readOnly
 		? color.dim("read-only (--read-only)")
 		: options.autoApprove
@@ -141,6 +171,7 @@ function banner(context: ReplContext): void {
 			`${color.dim("cwd     ")} ${process.cwd()}`,
 			`${color.dim("tools   ")} ${context.chat.toolNames.join(", ")}`,
 			`${color.dim("access  ")} ${access}`,
+			`${color.dim("session ")} ${sessionState}`,
 			`${color.dim("hint    ")} /help for commands, /exit to quit`,
 			"",
 		].join("\n") + "\n",
@@ -254,6 +285,9 @@ async function runRepl(context: ReplContext): Promise<void> {
 
 			if (input.startsWith("/")) {
 				const keepGoing = await runCommand(context, input);
+				// `/new` (a plugin command) empties the transcript; save so a restart
+				// resumes the fresh conversation rather than the one just discarded.
+				await context.saveSession();
 				if (!keepGoing) break;
 				prompt();
 				continue;
@@ -268,6 +302,7 @@ async function runRepl(context: ReplContext): Promise<void> {
 				})
 				.finally(() => {
 					running = false;
+					void context.saveSession();
 					prompt();
 				});
 		}
@@ -287,6 +322,21 @@ async function main(): Promise<void> {
 
 	const config = loadConfig();
 	const cwd = process.cwd();
+
+	// Transcript persistence, same store and file format the ACP server uses:
+	// one session per project directory unless `--session <id>` says otherwise.
+	const store = parsed.noSessions
+		? undefined
+		: createSessionStore({
+				dir: parsed.sessionDir ?? join(cwd, ".steve", "sessions"),
+				logger: (message) => process.stderr.write(`${color.dim(message)}\n`),
+			});
+	const stored = await store?.load(parsed.session);
+	const sessionState = store
+		? stored
+			? `${parsed.session} · resumed ${stored.messages.length} message(s)`
+			: `${parsed.session} · new`
+		: "off (--no-sessions)";
 	const extensions = await loadExtensions({
 		cwd,
 		mode: "cli",
@@ -322,16 +372,32 @@ async function main(): Promise<void> {
 			ask: (request) => askPermission(request, parsed),
 		},
 	});
+	if (stored) chat.restore(stored.messages);
+
+	/** Saves the transcript after every turn, and after `/new` (which empties it). */
+	const saveSession = async (): Promise<void> => {
+		if (!store) return;
+		await store.save(
+			sessionRecord({
+				id: parsed.session,
+				cwd,
+				messages: chat.snapshot(),
+				...(stored?.createdAt !== undefined ? { createdAt: stored.createdAt } : {}),
+			}),
+		);
+	};
+
 	const renderer = new Renderer();
 	chat.subscribe((event) => renderer.handle(event));
 
 	if (parsed.prompt) {
 		await runOneShot(chat, parsed.prompt);
+		await saveSession();
 		await closeMcp();
 		return;
 	}
 
-	await runRepl({ chat, config, extensions, options: parsed });
+	await runRepl({ chat, config, extensions, options: parsed, sessionState, saveSession });
 	await closeMcp();
 }
 
