@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { AcpHttpClient } from "../web/acp-http-client.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const scratchHome = mkdtempSync(join(tmpdir(), "steve-home-")); // isolate ~/.steve for spawned agents
 const MOCK_PORT = Number(process.env.MOCK_PORT ?? 8894);
 const ACP_PORT = Number(process.env.PLUGIN_TEST_PORT ?? 8892);
 const MCP_SCRIPT = join(ROOT, "scripts", "mock-mcp-server.mjs");
@@ -212,6 +213,7 @@ async function acpChecks() {
 		{
 			cwd: ROOT,
 			env: { ...process.env, STEVE_DISCOVERY: "off",
+					HOME: scratchHome,
 					LLM_API_KEY: "mock", LLM_MODEL_ID: "mock", LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic` },
 			stdio: ["ignore", "pipe", "pipe"],
 		},
@@ -340,6 +342,7 @@ async function cliChecks() {
 					...process.env,
 					NO_COLOR: "1",
 					STEVE_DISCOVERY: "off",
+					HOME: scratchHome,
 					LLM_API_KEY: "mock",
 					LLM_MODEL_ID: "mock",
 					LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,
@@ -453,7 +456,13 @@ async function configChecks() {
 	const templateDir = mkdtempSync(join(tmpdir(), "steve-mcp-template-"));
 	mkdirSync(join(templateDir, ".steve"), { recursive: true });
 	writeFileSync(join(templateDir, ".steve", "mcp.json"), readFileSync(join(ROOT, "mcp.example.json"), "utf8"));
+	// Pin HOME: the mcp-config builtin also reads ~/.steve/mcp.json, and the
+	// developer's own global config must not leak into this assertion.
+	const previousHome = process.env.HOME;
+	process.env.HOME = mkdtempSync(join(tmpdir(), "steve-home-"));
 	const templateHost = await loadExtensions({ cwd: templateDir, mode: "cli", paths: [], discover: false, builtins: true, log: (message) => logs.push(message) });
+	if (previousHome === undefined) delete process.env.HOME;
+	else process.env.HOME = previousHome;
 	check(
 		"仓库里的 mcp.example.json 可直接用",
 		templateHost.mcpServers.length === 1 &&

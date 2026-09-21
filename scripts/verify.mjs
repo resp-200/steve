@@ -9,6 +9,9 @@
  * 需要外部服务的只有浏览器测试，所以这里统一负责起停（mock 8899 / ACP 8890）。
  */
 import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -52,6 +55,8 @@ const mockEnv = {
 	LLM_API_KEY: "mock",
 	LLM_MODEL_ID: "mock",
 	LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,
+	// 隔离 ~/.steve（全局插件 / mcp.json / .env）：本机配置不该影响回归结果
+	HOME: mkdtempSync(join(tmpdir(), "steve-verify-home-")),
 };
 
 /* ------------------------------------------------------------------ */

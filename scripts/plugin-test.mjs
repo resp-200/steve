@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { AcpHttpClient } from "../web/acp-http-client.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const scratchHome = mkdtempSync(join(tmpdir(), "steve-home-")); // isolate ~/.steve for spawned agents
 const MOCK_PORT = Number(process.env.MOCK_PORT ?? 8898);
 const ACP_PORT = Number(process.env.PLUGIN_TEST_PORT ?? 8893);
 
@@ -90,8 +91,27 @@ async function hostChecks() {
 		].join("\n"),
 	);
 
-	check("项目本地 .steve/extensions 会被发现", discoverExtensionFiles({ cwd: temp }).length === 1);
-	check("discover: false 时跳过目录发现", discoverExtensionFiles({ cwd: temp, discover: false }).length === 0);
+	// Discovery also looks at ~/.steve/extensions, so pin HOME to a scratch dir:
+	// the developer's own global plugins must not change the result.
+	const withHome = (fn) => {
+		const previous = process.env.HOME;
+		process.env.HOME = scratchHome;
+		try {
+			return fn();
+		} finally {
+			if (previous === undefined) delete process.env.HOME;
+			else process.env.HOME = previous;
+		}
+	};
+	check("项目本地 .steve/extensions 会被发现", withHome(() => discoverExtensionFiles({ cwd: temp }).length) === 1);
+	check("discover: false 时跳过目录发现", withHome(() => discoverExtensionFiles({ cwd: temp, discover: false }).length) === 0);
+	const globalPluginDir = join(scratchHome, ".steve", "extensions");
+	mkdirSync(globalPluginDir, { recursive: true });
+	writeFileSync(join(globalPluginDir, "global.mjs"), "export default function () {}\n");
+	check(
+		"全局 ~/.steve/extensions 也会被发现",
+		withHome(() => discoverExtensionFiles({ cwd: mkdtempSync(join(tmpdir(), "steve-empty-")) }).length) === 1,
+	);
 
 	const logs = [];
 	const host = await loadExtensions({
@@ -202,6 +222,7 @@ async function acpChecks() {
 			env: {
 				...process.env,
 					STEVE_DISCOVERY: "off",
+					HOME: scratchHome,
 					LLM_API_KEY: "mock",
 				LLM_MODEL_ID: "mock",
 				LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,

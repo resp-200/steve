@@ -154,12 +154,19 @@ export class AcpSession {
 			throw RequestError.invalidParams(undefined, "Prompt contained no usable content");
 		}
 
+		// Editors forward the agent's stderr into their own logs, so these lines are
+		// how "the client never sent a prompt" is told apart from "we never answered".
+		this.options.logger(
+			`session/prompt: ${this.id} ${request.prompt.length} block(s)${images.length > 0 ? `, ${images.length} image(s)` : ""}`,
+		);
+
 		// Slash commands are answered locally; anything else goes to the model.
 		const command = /^\/([\w-]+)\s*([\s\S]*)$/.exec(text.trim());
 		if (command) {
 			const name = command[1] ?? "";
 			const args = command[2]?.trim() ?? "";
 			if (this.runtime.commands.some((entry) => entry.name === name)) {
+				this.options.logger(`session/prompt: ${this.id} running /${name} locally`);
 				const output = await this.runtime.runCommand(name, args);
 				if (output) {
 					await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
@@ -200,7 +207,12 @@ export class AcpSession {
 		}
 
 		await this.persist();
-		return { stopReason: STOP_REASONS[result.stopReason], usage: { ...this.usage } };
+		const stopReason = STOP_REASONS[result.stopReason];
+		this.options.logger(
+			`session/prompt done: ${this.id} stopReason=${stopReason} tokens in/out=${this.usage.inputTokens}/${this.usage.outputTokens}` +
+				(result.failed && result.errorMessage ? ` error=${result.errorMessage.slice(0, 160)}` : ""),
+		);
+		return { stopReason, usage: { ...this.usage } };
 	}
 
 	/** Saves the transcript so the session can be resumed after a restart. */

@@ -16,6 +16,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const scratchHome = mkdtempSync(join(tmpdir(), "steve-home-")); // isolate ~/.steve for spawned agents
 const MOCK_PORT = Number(process.env.MOCK_PORT ?? 8897);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -231,6 +232,7 @@ async function cliChecks() {
 		...process.env,
 		NO_COLOR: "1",
 					STEVE_DISCOVERY: "off",
+					HOME: scratchHome,
 					LLM_API_KEY: "mock",
 		LLM_MODEL_ID: "mock",
 		LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic`,
@@ -330,6 +332,7 @@ async function acpFallbackChecks() {
 		{
 			cwd: ROOT,
 			env: { ...process.env, STEVE_DISCOVERY: "off",
+					HOME: scratchHome,
 					LLM_API_KEY: "mock", LLM_MODEL_ID: "mock", LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic` },
 			stdio: ["ignore", "pipe", "pipe"],
 		},

@@ -526,7 +526,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:probe` | Node 版 HTTP client（import 浏览器同一份 `web/acp-http-client.js`），带真实的 fs/terminal 回调 |
 | `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），17 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
-| `npm run plugins:test` | 插件层 22 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
+| `npm run plugins:test` | 插件层 23 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
@@ -650,6 +650,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **离线优先**：所有测试都打到 `scripts/mock-server.mjs`，不联网、不烧真实额度（`verify` 启动 ACP server 时会用 mock 环境变量覆盖 `.env`）。
 - **端到端优先**：真浏览器（headless Chrome + CDP）、真子进程、真 HTTP/SSE、真 ACP 客户端；尽量不做「纯 mock 的单测」。
 - **自起自停**：脚本自己 spawn mock / ACP server，收尾 `SIGTERM`；端口从环境变量取（见下表），不抢端口。
+- **隔离本机配置**：测试用临时 `HOME`，所以 `~/.steve/`（全局插件、`mcp.json`、`.env`）不会影响断言——你自己的插件不该让回归变红。
 - **断言要能失败**：写完后故意改坏一次，确认变红（`arch:test` 就是这么验的）。
 
 | 脚本 | mock 端口 | ACP 端口 |

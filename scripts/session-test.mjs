@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { AcpHttpClient } from "../web/acp-http-client.js";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const scratchHome = mkdtempSync(join(tmpdir(), "steve-home-")); // isolate ~/.steve for spawned agents
 const MOCK_PORT = Number(process.env.MOCK_PORT ?? 8896);
 const ACP_PORT = Number(process.env.PLUGIN_TEST_PORT ?? 8895);
 
@@ -157,6 +158,7 @@ async function acpChecks() {
 		{
 			cwd: ROOT,
 			env: { ...process.env, STEVE_DISCOVERY: "off",
+					HOME: scratchHome,
 					LLM_API_KEY: "mock", LLM_MODEL_ID: "mock", LLM_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/anthropic` },
 			stdio: ["ignore", "pipe", "pipe"],
 		},
