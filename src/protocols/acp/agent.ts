@@ -55,6 +55,16 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 	 * Connects the MCP servers the client asked for. A server that fails to start is
 	 * logged and skipped, so a broken one never blocks the session.
 	 */
+	/**
+	 * `setImmediate` runs after the JSON-RPC response has been written (the SDK writes
+	 * it in a microtask), which is what the ACP ordering requires.
+	 */
+	const announceLater = (session: AcpSession): void => {
+		setImmediate(() => {
+			void session.announceCommands().catch((error: unknown) => options.logger(`session ${session.id}: announcing commands failed: ${String(error)}`));
+		});
+	};
+
 	/** Connects in the background and hands the tools to the session when ready. */
 	const connectMcpInBackground = (servers: McpServerLike[], cwd: string, id: string, session: AcpSession): void => {
 		void connectMcp(servers, cwd, (status, connection) => session.attachMcpServer(status, connection)).catch((error: unknown) =>
@@ -127,7 +137,10 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					logger: options.logger,
 				});
 				sessions.set(id, session);
-				await session.announceCommands();
+				// Announce *after* the response: a client cannot resolve a session/update
+				// for a session it has not been told about yet (IDEA then treats the whole
+				// session setup as failed and retries forever).
+				announceLater(session);
 				// Not awaited on purpose: a slow MCP server (npx cold start) must not
 				// delay the response, or editors time out and kill the agent.
 				connectMcpInBackground([...clientServers, ...extensions.mcpServers], ctx.params.cwd, id, session);
@@ -169,9 +182,14 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 				});
 				sessions.set(stored.id, session);
 
-				// Replay history first, then the command list, so the client sees a full session.
-				await session.replay();
-				await session.announceCommands();
+				// Replay history, then the command list — both after the response, for the
+				// same reason as session/new.
+				setImmediate(() => {
+					void (async () => {
+						await session.replay();
+						await session.announceCommands();
+					})().catch((error: unknown) => options.logger(`session ${stored.id}: replay failed: ${String(error)}`));
+				});
 				connectMcpInBackground([...clientServers, ...extensions.mcpServers], cwd, stored.id, session);
 				options.logger(`session/load: ${stored.id} messages=${stored.messages.length}`);
 				return {};

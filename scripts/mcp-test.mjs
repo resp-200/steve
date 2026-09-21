@@ -236,6 +236,9 @@ async function acpChecks() {
 
 		const updates = [];
 		const announced = [];
+		// Order matters: a client cannot resolve a session/update for a session it has
+		// not been told about yet (IDEA treats that as a failed session setup).
+		const ordering = [];
 		const permissions = [];
 		const client = new AcpHttpClient(`http://127.0.0.1:${ACP_PORT}/acp`, {});
 		client
@@ -243,6 +246,7 @@ async function acpChecks() {
 				if (event.message?.method === "session/update") {
 					const update = event.message.params.update;
 					updates.push(update);
+					ordering.push(`update:${update.sessionUpdate}`);
 					if (update.sessionUpdate === "available_commands_update") announced.push(...(update.availableCommands ?? []).map((command) => command.name));
 				}
 			})
@@ -259,6 +263,13 @@ async function acpChecks() {
 		);
 
 		const session = await client.newSession({ cwd: ROOT, mcpServers: [stdioServer()] });
+		ordering.push("response:session/new");
+		await sleep(300);
+		check(
+			"session/new 的响应先于该会话的 session/update",
+			ordering[0] === "response:session/new",
+			ordering.slice(0, 3).join(" → "),
+		);
 		check(
 			"每个 MCP server 连上就立刻挂到会话（不等其它 server）",
 			await waitForLog(serverLog, /mcp mock connected \(4 tool\(s\)\)/),
