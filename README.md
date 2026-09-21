@@ -123,7 +123,14 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 ## REPL 命令
 
-CLI 的会话参数与 ACP 对齐：`--session <id>`（默认 `cli`，一个项目目录一个会话）、`--session-dir <dir>`（默认 `<cwd>/.steve/sessions`）、`--no-sessions`。启动时如果找到旧 transcript 会自动续聊（banner 里显示 `cli · resumed N message(s)`），每轮结束与 `/new` 之后落盘。
+CLI 的会话是**显式续期**，不会自动接上上次的上下文：每次运行分配一个新 id（banner 里显示 `session  9f3a1c7e`），退出时（`/exit`、`/quit`、空闲时 `Ctrl+C`）打印
+
+```
+Resume this session with:
+  steve --resume 9f3a1c7e
+```
+
+再用 `--resume <id>` 回来（banner 会显示 `· resumed N message(s)`，统计接着算）。相关参数：`--resume <id>`、`--session-dir <dir>`（默认 `<cwd>/.steve/sessions`）、`--no-sessions`。每轮结束与 `/new` 之后落盘；**空会话不落盘、也不提示续期**（否则每次跑一下都会留下垃圾文件）。
 
 `/exit` `/quit` `/plugins` 由 CLI 自己实现（host 级）；`/help` `/new` `/tools` `/model` `/stats` `/mcp` 由 `session-commands` 插件提供 —— 所以终端与编辑器里行为一致，CLI 的 `/help` 也不会像以前那样过期（它现在就是插件生成的命令列表）。流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
 
@@ -225,7 +232,8 @@ runtime.subscribe((event) => {
 CLI 的三种审批模式：
 
 ```bash
-npm run dev                     # 默认：写/执行前在终端问 y/n（非交互运行时默认拒绝），会话自动续聊
+npm run dev                     # 默认：写/执行前在终端问 y/n（非交互运行时默认拒绝）
+npm run dev -- --resume 9f3a1c7e  # 续上次的会话（id 在退出时打印）
 npm run dev -- --yes            # 自动批准所有写/执行（危险，慎用）
 npm run dev -- --read-only      # 只注册读工具，没有审批提示
 ```
@@ -554,7 +562,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 | `npm run plugins:test` | 插件层 26 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
-| `npm run sessions:test` | 会话持久化 29 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的落盘/续聊/`/new`/`--no-sessions`/`--session <id>` |
+| `npm run sessions:test` | 会话持久化 31 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`、`/new` 清空、`--no-sessions` |
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 16 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
@@ -747,7 +755,8 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 本地工具是 **Tier 1 内置插件** | 判据 ①②：变体真实存在（只读/编辑器/组织版），且两个入口各装配一遍 | 默认能力依赖插件加载 → 内置插件失败要响，并有 `builtins: false` 的测试兜住 |
 | 同名工具默认拒绝、替换要显式 `override` | 插件化后客户端工具与本地工具同名，必须有明确语义，不能靠加载顺序 | 想替换的插件要显式声明（待实现） |
 | 纯函数库不做插件 | 没有变体、装配不重复、不在边界上 → 插件化只增加间接层 | 调用方直接 import |
-| CLI 也持久化会话（与 ACP 同一 store 与文件格式） | 能力不对称会让"终端里聊完就没了"显得像 bug；共用一个 store 后两端行为一致 | CLI 多三个 flag；`/new` 之后也要落盘（否则重启会把刚丢弃的历史续回来） |
+| CLI 也持久化会话（与 ACP 同一 store 与文件格式） | 能力不对称会让"终端里聊完就没了"显得像 bug；共用一个 store 后两端行为一致 | CLI 多三个 flag；`/new` 之后也要落盘（否则续期会把刚丢弃的历史接回来） |
+| CLI **显式续期**（`--resume <id>`），不自动接上次上下文 | 自动续聊不可预期：想开一个干净会话还得先删文件，而且"为什么模型记得上次的事"很难解释。ACP 那边由编辑器管理会话，终端这边把选择权交给用户 | 每次运行多一个 id 要记（退出时打印，可复制） |
 | 前端只**发布策略**，不装配能力 | 装配代码重复就是插件化的信号：`features/session-policy.ts`（策略形状 + 模型信息）与 `extensions/discovery.ts`（插件路径/发现开关）都是"一份实现、两个前端调用" | 前端多一层间接调用（换来单一真相） |
 | 插件命令只有一个实现（在插件里） | CLI 曾同时实现 `/new`、`/help`，导致插件的同名命令在终端里永远不生效、`/help` 两端不一致且会过期 | CLI 的 `/help` 走插件；host 级只留 `/exit` `/quit` `/plugins` |
 
@@ -770,7 +779,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 4 | 拆超长文件：`runtime.ts`、`acp/session.ts` 仍超 300 行口径；`features/local-tools.ts`（578）也该按 fs/search/exec 拆 | 命名与目录一节的规模口径 | 待做 |
 | 4b | 客户端工具也做成插件（需要 `ctx.client.{fs,terminal}`） | 判据 ①②：它俩现在仍写在协议层；但协议层是宿主，暂可接受 | 待定 |
 | 5b | ~~消除前端重复配置~~ | 已完成：`modelInfo`/`workspacePolicy` 收进 `features/session-policy.ts`，env 解析收进 `extensions/discovery.ts`，CLI 不再重复实现插件命令 | ✅ 已做 |
-| 5c | ~~CLI 也支持会话持久化~~ | 已完成：`--session` / `--session-dir` / `--no-sessions`，与 ACP 共用 `sessionRecord()` 与同一份 store | ✅ 已做 |
+| 5c | ~~CLI 会话持久化 + 显式续期~~ | 已完成：每次运行新 id、退出打印 `steve --resume <id>`、`--resume` 恢复；与 ACP 共用 `sessionRecord()` 与同一份 store | ✅ 已做 |
 | 5 | 插件影响 system prompt 的契约（`contributePrompt`：限长、顺序、能否覆盖） | 先定契约再实现：这是提示词注入面 | 待定 |
 | 6 | 能力补齐：MCP `http` 传输、`session/fork`、`session/resume` | 功能缺口，不涉及分层 | 待定 |
 | 7 | 真机验证：Zed（IDEA 已实测）、Windows | 跨平台一节标注为"未在真机验证" | 待做 |

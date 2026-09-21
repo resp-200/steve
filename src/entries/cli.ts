@@ -10,6 +10,7 @@ import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
 import { createSessionStore, sessionRecord } from "../features/session-store.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { color, Renderer } from "./render.js";
 
@@ -23,7 +24,7 @@ Commands
 Flags
   --read-only    no write_file / edit_file / run_command (so no approval prompts)
   --yes, -y      approve every write/exec without asking
-  --session <id> transcript to resume (default "cli", one per project directory)
+  --resume <id>  continue a previous session (the id is printed on exit)
   --session-dir  where transcripts live (default <cwd>/.steve/sessions)
   --no-sessions  do not read or write any transcript
   --help, -h     show this help
@@ -32,13 +33,18 @@ Anything else is sent to the model. Ctrl+C aborts a running answer;
 pressing it again while idle exits.
 `.trim();
 
+/** Short, typeable session id (12 hex chars); collisions are irrelevant locally. */
+function newSessionId(): string {
+	return randomBytes(6).toString("hex");
+}
+
 interface CliOptions {
 	/** Register read-only tools only. */
 	readOnly: boolean;
 	/** Approve write/exec without asking. */
 	autoApprove: boolean;
-	/** Transcript to resume/continue (default `cli`, one per project directory). */
-	session: string;
+	/** Transcript to resume (`--resume <id>`); new sessions get a generated id. */
+	resume?: string;
 	/** Where transcripts live (default `<cwd>/.steve/sessions`). */
 	sessionDir?: string;
 	/** `--no-sessions`: nothing is read or written. */
@@ -57,10 +63,12 @@ interface ReplContext {
 	sessionState: string;
 	/** Persists the transcript (no-op with `--no-sessions`). */
 	saveSession: () => Promise<void>;
+	/** Prints the `steve --resume <id>` hint when there is something to resume. */
+	printResumeHint: () => void;
 }
 
 function parseArgv(argv: string[]): CliOptions | "help" {
-	const options: CliOptions = { readOnly: false, autoApprove: false, session: "cli", noSessions: false, prompt: "" };
+	const options: CliOptions = { readOnly: false, autoApprove: false, noSessions: false, prompt: "" };
 	const rest: string[] = [];
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -78,8 +86,8 @@ function parseArgv(argv: string[]): CliOptions | "help" {
 			options.noSessions = true;
 			continue;
 		}
-		if (arg === "--session") {
-			options.session = argv[index + 1] ?? options.session;
+		if (arg === "--resume") {
+			options.resume = argv[index + 1];
 			index += 1;
 			continue;
 		}
@@ -257,6 +265,7 @@ async function runRepl(context: ReplContext): Promise<void> {
 			return;
 		}
 		process.stdout.write("\n");
+		context.printResumeHint();
 		rl.close();
 		process.exit(0);
 	};
@@ -310,6 +319,7 @@ async function runRepl(context: ReplContext): Promise<void> {
 		canAsk = false;
 		process.off("SIGINT", onSigint);
 		rl.close();
+		context.printResumeHint();
 	}
 }
 
@@ -323,19 +333,27 @@ async function main(): Promise<void> {
 	const config = loadConfig();
 	const cwd = process.cwd();
 
-	// Transcript persistence, same store and file format the ACP server uses:
-	// one session per project directory unless `--session <id>` says otherwise.
+	// Transcript persistence, same store and file format the ACP server uses.
+	// A run never resumes on its own: it gets a fresh id, prints it, and the exit
+	// hint tells the user how to come back (`--resume <id>`).
 	const store = parsed.noSessions
 		? undefined
 		: createSessionStore({
 				dir: parsed.sessionDir ?? join(cwd, ".steve", "sessions"),
 				logger: (message) => process.stderr.write(`${color.dim(message)}\n`),
 			});
-	const stored = await store?.load(parsed.session);
+	const sessionId = parsed.resume ?? newSessionId();
+	if (parsed.resume && parsed.noSessions) {
+		process.stderr.write(`${color.yellow("note")} --resume is ignored with --no-sessions\n`);
+	}
+	const stored = store && parsed.resume ? await store.load(parsed.resume) : undefined;
+	if (store && parsed.resume && !stored) {
+		process.stderr.write(`${color.yellow("note")} no transcript for "${parsed.resume}" — starting a new one\n`);
+	}
 	const sessionState = store
 		? stored
-			? `${parsed.session} · resumed ${stored.messages.length} message(s)`
-			: `${parsed.session} · new`
+			? `${sessionId} · resumed ${stored.messages.length} message(s)`
+			: sessionId
 		: "off (--no-sessions)";
 	const extensions = await loadExtensions({
 		cwd,
@@ -374,17 +392,29 @@ async function main(): Promise<void> {
 	});
 	if (stored) chat.restore(stored.messages);
 
-	/** Saves the transcript after every turn, and after `/new` (which empties it). */
+	/**
+	 * Saves the transcript after every turn, and after `/new` (which empties it).
+	 * A brand-new session with nothing in it writes no file — otherwise every
+	 * `steve --help`-style run would litter the sessions directory.
+	 */
 	const saveSession = async (): Promise<void> => {
 		if (!store) return;
+		const messages = chat.snapshot();
+		if (messages.length === 0 && !stored) return;
 		await store.save(
 			sessionRecord({
-				id: parsed.session,
+				id: sessionId,
 				cwd,
-				messages: chat.snapshot(),
+				messages,
 				...(stored?.createdAt !== undefined ? { createdAt: stored.createdAt } : {}),
 			}),
 		);
+	};
+
+	/** How to come back to this conversation; only worth printing if there is one. */
+	const printResumeHint = (): void => {
+		if (!store || chat.snapshot().length === 0) return;
+		process.stdout.write(`\n${color.dim("Resume this session with:")}\n  ${color.bold(`steve --resume ${sessionId}`)}\n`);
 	};
 
 	const renderer = new Renderer();
@@ -393,11 +423,12 @@ async function main(): Promise<void> {
 	if (parsed.prompt) {
 		await runOneShot(chat, parsed.prompt);
 		await saveSession();
+		printResumeHint();
 		await closeMcp();
 		return;
 	}
 
-	await runRepl({ chat, config, extensions, options: parsed, sessionState, saveSession });
+	await runRepl({ chat, config, extensions, options: parsed, sessionState, saveSession, printResumeHint });
 	await closeMcp();
 }
 

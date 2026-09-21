@@ -5,8 +5,9 @@
 //   B. runtime: snapshot/restore/transcript normalisation
 //   C. ACP end to end: a session is saved to disk, `session/load` replays the
 //      history to the client, and the resumed session keeps chatting
-//   D. CLI: the transcript is saved, resumed on the next start, emptied by /new,
-//      and skipped entirely with --no-sessions
+//   D. CLI: each run gets a fresh id and prints a `--resume <id>` hint on exit;
+//      resuming is explicit, /new empties the stored transcript, --no-sessions
+//      reads and writes nothing
 //
 //   npm run build && node scripts/session-test.mjs
 import { spawn } from "node:child_process";
@@ -284,29 +285,47 @@ async function cliChecks() {
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const workspace = mkdtempSync(join(tmpdir(), "steve-cli-session-"));
-	const file = join(workspace, ".steve", "sessions", "cli.json");
-	const stored = () => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined);
+	const fileFor = (id) => join(workspace, ".steve", "sessions", `${id}.json`);
+	const messagesIn = (id) => (existsSync(fileFor(id)) ? JSON.parse(readFileSync(fileFor(id), "utf8")).messages.length : -1);
 
 	try {
 		await waitForPort(MOCK_PORT);
 
+		// A run never resumes by itself: it gets a fresh id, prints it, and tells the
+		// user how to come back.
 		const first = await runCli(workspace, "现在几点了？\n", { waitFor: /工具返回|assistant/ });
-		check("CLI 显示会话状态（新会话）", first.includes("cli · new"), first.split("\n").find((line) => line.includes("session")) ?? "");
-		check("CLI 把 transcript 落盘", (stored()?.messages.length ?? 0) >= 2, `messages=${stored()?.messages.length ?? 0}`);
+		const bannerOf = (output) => output.split("\n").find((line) => line.startsWith("session ")) ?? "";
+		const idOf = (output) => /^session\s+([0-9a-f]{12})/m.exec(output)?.[1];
+		const id = idOf(first);
+		check("banner 展示 sessionId", Boolean(id), bannerOf(first));
+		check("退出时提示如何续期", Boolean(id) && first.includes(`steve --resume ${id}`), first.split("\n").slice(-3).join(" / "));
+		check("transcript 按 id 落盘", messagesIn(id) >= 2, `messages=${messagesIn(id)}`);
 
 		const second = await runCli(workspace, "/stats\n", { waitFor: /turns \d+/ });
-		check("CLI 重启后恢复会话", second.includes("resumed") && /turns [1-9]/.test(second), second.split("\n").find((line) => line.includes("session")) ?? "");
-		check("恢复后的统计接着算", /tool calls [1-9]/.test(second), second.split("\n").find((line) => line.includes("turns")) ?? "");
+		const secondId = idOf(second);
+		check(
+			"不带 --resume 时不自动续（全新 id + 空统计）",
+			Boolean(secondId) && secondId !== id && /turns 0/.test(second),
+			`${bannerOf(second)} | ${secondId}`,
+		);
 
-		const fresh = await runCli(workspace, "/new\n", { waitFor: /conversation/ });
-		check("/new 之后落盘的是新会话（不会被旧历史续上）", fresh.includes("conversation") && stored()?.messages.length === 0, `messages=${stored()?.messages.length ?? "none"}`);
+		const resumed = await runCli(workspace, "/stats\n", { args: ["--resume", id], waitFor: /turns \d+/ });
+		check(
+			"--resume <id> 恢复会话且统计接着算",
+			new RegExp(`resumed ${messagesIn(id)} message\\(s\\)`).test(resumed) && /turns [1-9]/.test(resumed) && /tool calls [1-9]/.test(resumed),
+			`${bannerOf(resumed)} | ${resumed.split("\n").find((line) => line.startsWith("turns")) ?? ""}`,
+		);
+
+		const missing = await runCli(workspace, "/exit\n", { args: ["--resume", "nope"], waitFor: /session\s+nope/ });
+		check("--resume 未知 id 时以该 id 开新会话", missing.includes("session  nope"), bannerOf(missing));
+
+		const fresh = await runCli(workspace, "/new\n", { args: ["--resume", id], waitFor: /conversation/ });
+		check("/new 之后该 id 的 transcript 被清空", messagesIn(id) === 0, `messages=${messagesIn(id)}`);
+		check("空会话不再提示续期", !fresh.includes("Resume this session"), fresh.split("\n").slice(-2).join(" / "));
 
 		const offDir = join(workspace, "off");
 		const off = await runCli(workspace, "/stats\n", { args: ["--no-sessions", "--session-dir", offDir], waitFor: /turns \d+/ });
-		check("--no-sessions 既不读也不写", off.includes("off (--no-sessions)") && !existsSync(offDir), off.split("\n").find((line) => line.includes("session")) ?? "");
-
-		const named = await runCli(workspace, "/stats\n", { args: ["--session", "second"], waitFor: /turns \d+/ });
-		check("--session <id> 用另一个 transcript", named.includes("second · new") && existsSync(join(workspace, ".steve", "sessions", "second.json")), named.split("\n").find((line) => line.includes("session")) ?? "");
+		check("--no-sessions 既不读也不写", off.includes("off (--no-sessions)") && !existsSync(offDir), bannerOf(off));
 	} finally {
 		mock.kill("SIGTERM");
 		await sleep(200);
