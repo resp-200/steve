@@ -256,24 +256,28 @@ function runCli(cwd, input, options = {}) {
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		let stdout = "";
+		let stderr = "";
 		child.stdout.on("data", (chunk) => (stdout += chunk));
+		child.stderr.on("data", (chunk) => (stderr += chunk));
 		child.stdin.write(input);
 
 		// `/exit` while a turn is running is ignored (the REPL says "still working"),
 		// so close stdin as well: EOF ends the read loop and the process exits.
 		const deadline = Date.now() + 20_000;
 		const timer = setInterval(() => {
-			if (options.waitFor.test(stdout) || Date.now() > deadline) {
+			if (options.waitFor.test(stdout + stderr) || Date.now() > deadline) {
 				clearInterval(timer);
-				child.stdin.write("/exit\n");
-				child.stdin.end();
+				if (!child.stdin.destroyed) {
+					child.stdin.write("/exit\n");
+					child.stdin.end();
+				}
 			}
 		}, 200);
 		const guard = setTimeout(() => child.kill("SIGKILL"), 30_000);
-		child.on("exit", () => {
+		child.on("exit", (code) => {
 			clearInterval(timer);
 			clearTimeout(guard);
-			resolve(stdout);
+			resolve({ stdout, stderr, code });
 		});
 	});
 }
@@ -293,7 +297,7 @@ async function cliChecks() {
 
 		// A run never resumes by itself: it gets a fresh id, prints it, and tells the
 		// user how to come back.
-		const first = await runCli(workspace, "现在几点了？\n", { waitFor: /工具返回|assistant/ });
+		const { stdout: first } = await runCli(workspace, "现在几点了？\n", { waitFor: /工具返回|assistant/ });
 		const bannerOf = (output) => output.split("\n").find((line) => line.startsWith("session ")) ?? "";
 		const idOf = (output) => /^session\s+([0-9a-f]{12})/m.exec(output)?.[1];
 		const id = idOf(first);
@@ -301,7 +305,7 @@ async function cliChecks() {
 		check("退出时提示如何续期", Boolean(id) && first.includes(`steve --resume ${id}`), first.split("\n").slice(-3).join(" / "));
 		check("transcript 按 id 落盘", messagesIn(id) >= 2, `messages=${messagesIn(id)}`);
 
-		const second = await runCli(workspace, "/stats\n", { waitFor: /turns \d+/ });
+		const { stdout: second } = await runCli(workspace, "/stats\n", { waitFor: /turns \d+/ });
 		const secondId = idOf(second);
 		check(
 			"不带 --resume 时不自动续（全新 id + 空统计）",
@@ -309,22 +313,57 @@ async function cliChecks() {
 			`${bannerOf(second)} | ${secondId}`,
 		);
 
-		const resumed = await runCli(workspace, "/stats\n", { args: ["--resume", id], waitFor: /turns \d+/ });
+		const { stdout: resumed } = await runCli(workspace, "/stats\n", { args: ["--resume", id], waitFor: /turns \d+/ });
 		check(
 			"--resume <id> 恢复会话且统计接着算",
 			new RegExp(`resumed ${messagesIn(id)} message\\(s\\)`).test(resumed) && /turns [1-9]/.test(resumed) && /tool calls [1-9]/.test(resumed),
 			`${bannerOf(resumed)} | ${resumed.split("\n").find((line) => line.startsWith("turns")) ?? ""}`,
 		);
 
-		const missing = await runCli(workspace, "/exit\n", { args: ["--resume", "nope"], waitFor: /session\s+nope/ });
-		check("--resume 未知 id 时以该 id 开新会话", missing.includes("session  nope"), bannerOf(missing));
 
-		const fresh = await runCli(workspace, "/new\n", { args: ["--resume", id], waitFor: /conversation/ });
+		// A wrong `--resume` must fail loudly: silently starting a fresh session (or a
+		// bogus one named after the typo) would hide that the history is gone.
+		const noValue = await runCli(workspace, "", { args: ["--resume"], waitFor: /needs a value/ });
+		check(
+			"--resume 不带值时参数错误（退出码 2）",
+			noValue.code === 2 && noValue.stderr.includes("--resume needs a value"),
+			`code=${noValue.code} ${noValue.stderr.trim().slice(0, 60)}`,
+		);
+
+		const unknown = await runCli(workspace, "", { args: ["--resume", "deadbeef1234"], waitFor: /no session/ });
+		check(
+			"--resume 未知 id 报错并列出已有会话（退出码 1）",
+			unknown.code === 1 && unknown.stderr.includes("no session") && unknown.stderr.includes(id),
+			`code=${unknown.code} ${unknown.stderr.split("\n")[0]?.slice(0, 70)}`,
+		);
+
+		const badId = await runCli(workspace, "", { args: ["--resume", "../etc/passwd"], waitFor: /not a session id/ });
+		check(
+			"--resume 非法 id 报错（退出码 2）",
+			badId.code === 2 && badId.stderr.includes("not a session id"),
+			`code=${badId.code} ${badId.stderr.trim().slice(0, 60)}`,
+		);
+
+		const conflicting = await runCli(workspace, "", { args: ["--resume", id, "--no-sessions"], waitFor: /cannot be combined/ });
+		check(
+			"--resume 与 --no-sessions 互斥（退出码 2）",
+			conflicting.code === 2 && conflicting.stderr.includes("cannot be combined"),
+			`code=${conflicting.code} ${conflicting.stderr.trim().slice(0, 60)}`,
+		);
+
+		const flagValue = await runCli(workspace, "", { args: ["--session-dir"], waitFor: /needs a value/ });
+		check(
+			"--session-dir 不带值时参数错误（退出码 2）",
+			flagValue.code === 2 && flagValue.stderr.includes("--session-dir needs a value"),
+			`code=${flagValue.code} ${flagValue.stderr.trim().slice(0, 60)}`,
+		);
+
+		const { stdout: fresh } = await runCli(workspace, "/new\n", { args: ["--resume", id], waitFor: /conversation/ });
 		check("/new 之后该 id 的 transcript 被清空", messagesIn(id) === 0, `messages=${messagesIn(id)}`);
 		check("空会话不再提示续期", !fresh.includes("Resume this session"), fresh.split("\n").slice(-2).join(" / "));
 
 		const offDir = join(workspace, "off");
-		const off = await runCli(workspace, "/stats\n", { args: ["--no-sessions", "--session-dir", offDir], waitFor: /turns \d+/ });
+		const { stdout: off } = await runCli(workspace, "/stats\n", { args: ["--no-sessions", "--session-dir", offDir], waitFor: /turns \d+/ });
 		check("--no-sessions 既不读也不写", off.includes("off (--no-sessions)") && !existsSync(offDir), bannerOf(off));
 	} finally {
 		mock.kill("SIGTERM");

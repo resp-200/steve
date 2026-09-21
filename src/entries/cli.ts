@@ -7,7 +7,7 @@ import type { AgentTool } from "../features/contract.js";
 import { connectMcpServers } from "../features/mcp.js";
 import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
-import { createSessionStore, sessionRecord } from "../features/session-store.js";
+import { createSessionStore, isSessionId, sessionRecord } from "../features/session-store.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
 import { randomBytes } from "node:crypto";
@@ -67,7 +67,16 @@ interface ReplContext {
 	printResumeHint: () => void;
 }
 
-function parseArgv(argv: string[]): CliOptions | "help" {
+type ParseResult = { options: CliOptions } | { error: string } | "help";
+
+/** A flag that takes a value must actually get one (`--resume --yes` is a mistake). */
+function valueFor(argv: string[], index: number, flag: string): string | { error: string } {
+	const value = argv[index + 1];
+	if (value === undefined || value.startsWith("--")) return { error: `${flag} needs a value (see --help)` };
+	return value;
+}
+
+function parseArgv(argv: string[]): ParseResult {
 	const options: CliOptions = { readOnly: false, autoApprove: false, noSessions: false, prompt: "" };
 	const rest: string[] = [];
 
@@ -87,12 +96,16 @@ function parseArgv(argv: string[]): CliOptions | "help" {
 			continue;
 		}
 		if (arg === "--resume") {
-			options.resume = argv[index + 1];
+			const value = valueFor(argv, index, "--resume");
+			if (typeof value !== "string") return value;
+			options.resume = value;
 			index += 1;
 			continue;
 		}
 		if (arg === "--session-dir") {
-			options.sessionDir = argv[index + 1] ?? options.sessionDir;
+			const value = valueFor(argv, index, "--session-dir");
+			if (typeof value !== "string") return value;
+			options.sessionDir = value;
 			index += 1;
 			continue;
 		}
@@ -100,7 +113,7 @@ function parseArgv(argv: string[]): CliOptions | "help" {
 	}
 
 	options.prompt = rest.join(" ").trim();
-	return options;
+	return { options };
 }
 
 /* --------------------------- permission prompts --------------------------- */
@@ -324,11 +337,17 @@ async function runRepl(context: ReplContext): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	const parsed = parseArgv(process.argv.slice(2));
-	if (parsed === "help") {
+	const argv = parseArgv(process.argv.slice(2));
+	if (argv === "help") {
 		process.stdout.write(`${HELP}\n`);
 		return;
 	}
+	if ("error" in argv) {
+		process.stderr.write(`${color.red("error")} ${argv.error}\n`);
+		process.exitCode = 2;
+		return;
+	}
+	const parsed = argv.options;
 
 	const config = loadConfig();
 	const cwd = process.cwd();
@@ -343,13 +362,40 @@ async function main(): Promise<void> {
 				logger: (message) => process.stderr.write(`${color.dim(message)}\n`),
 			});
 	const sessionId = parsed.resume ?? newSessionId();
-	if (parsed.resume && parsed.noSessions) {
-		process.stderr.write(`${color.yellow("note")} --resume is ignored with --no-sessions\n`);
+
+	// Resuming is an explicit request: a bad or unknown id is an error, never a
+	// silent fresh session (a typo would otherwise start writing to a new file and
+	// the user would think they were back in the old conversation).
+	if (parsed.resume) {
+		if (parsed.noSessions) {
+			process.stderr.write(`${color.red("error")} --resume cannot be combined with --no-sessions\n`);
+			process.exitCode = 2;
+			return;
+		}
+		if (!isSessionId(parsed.resume)) {
+			process.stderr.write(`${color.red("error")} "${parsed.resume}" is not a session id (letters, digits, - and _ only)\n`);
+			process.exitCode = 2;
+			return;
+		}
 	}
-	const stored = store && parsed.resume ? await store.load(parsed.resume) : undefined;
-	if (store && parsed.resume && !stored) {
-		process.stderr.write(`${color.yellow("note")} no transcript for "${parsed.resume}" — starting a new one\n`);
+
+	const stored = parsed.resume && store ? await store.load(parsed.resume) : undefined;
+	if (parsed.resume && store && !stored) {
+		const saved = await store.list();
+		process.stderr.write(`${color.red("error")} no session "${parsed.resume}" in ${store.dir}\n`);
+		if (saved.length > 0) {
+			process.stderr.write(`${color.dim("  known sessions:")}\n`);
+			for (const session of saved.slice(0, 10)) {
+				process.stderr.write(color.dim(`    ${session.id}  ${session.updatedAt}\n`));
+			}
+		} else {
+			process.stderr.write(color.dim("  (no sessions saved yet)\n"));
+		}
+		process.stderr.write(color.dim("  drop --resume to start a new session\n"));
+		process.exitCode = 1;
+		return;
 	}
+
 	const sessionState = store
 		? stored
 			? `${sessionId} · resumed ${stored.messages.length} message(s)`

@@ -132,6 +132,15 @@ Resume this session with:
 
 再用 `--resume <id>` 回来（banner 会显示 `· resumed N message(s)`，统计接着算）。相关参数：`--resume <id>`、`--session-dir <dir>`（默认 `<cwd>/.steve/sessions`）、`--no-sessions`。每轮结束与 `/new` 之后落盘；**空会话不落盘、也不提示续期**（否则每次跑一下都会留下垃圾文件）。
 
+续期失败一律**报错退出**，不会静默开新会话（否则打错一个 id 就会以为回到了旧对话）：
+
+| 情况 | 行为 |
+| --- | --- |
+| `--resume` 不带值 / 后面跟的是另一个 flag | `--resume needs a value`，退出码 **2** |
+| id 非法（含 `/`、空格等） | `"..." is not a session id`，退出码 **2** |
+| `--resume` 与 `--no-sessions` 同时给 | `cannot be combined`，退出码 **2** |
+| id 合法但找不到 | `no session "<id>" in <dir>` + 列出已有会话，退出码 **1** |
+
 `/exit` `/quit` `/plugins` 由 CLI 自己实现（host 级）；`/help` `/new` `/tools` `/model` `/stats` `/mcp` 由 `session-commands` 插件提供 —— 所以终端与编辑器里行为一致，CLI 的 `/help` 也不会像以前那样过期（它现在就是插件生成的命令列表）。流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
 
 `/mcp` 列出当前配置的 MCP server（来源、传输、命令行、连上的工具，或失败原因）：
@@ -562,7 +571,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 | `npm run plugins:test` | 插件层 26 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
-| `npm run sessions:test` | 会话持久化 31 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`、`/new` 清空、`--no-sessions` |
+| `npm run sessions:test` | 会话持久化 35 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`（含无值/非法 id/未知 id/与 `--no-sessions` 冲突四种报错）、`/new` 清空、`--no-sessions` |
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 16 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
