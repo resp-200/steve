@@ -56,7 +56,6 @@ export interface AcpSessionOptions {
 	/** A stored transcript to resume instead of starting empty. */
 	restore?: StoredSession;
 	/** Tools contributed by MCP servers the client asked for. */
-	mcpTools?: AgentTool<any>[];
 	/** Configured MCP servers with their status, for the `/mcp` command. */
 	mcpServers?: McpServerStatus[];
 	/** Closes the MCP connections this session opened. */
@@ -90,6 +89,9 @@ export class AcpSession {
 		thoughtTokens: 0,
 	};
 	private running = false;
+	private disposed = false;
+	/** Closers for MCP servers that were attached after the session started. */
+	private readonly mcpClosers: (() => Promise<void>)[] = [];
 
 	constructor(options: AcpSessionOptions) {
 		this.options = options;
@@ -114,7 +116,7 @@ export class AcpSession {
 		};
 		const fallbackTools = options.allowLocalTools ? createLocalTools(localOptions).filter((tool) => !taken.has(tool.name)) : [];
 
-		const tools = [...clientTools, ...fallbackTools, ...(options.mcpTools ?? [])];
+		const tools = [...clientTools, ...fallbackTools];
 
 		this.runtime = createAgentRuntime({
 			config: options.config,
@@ -337,12 +339,39 @@ export class AcpSession {
 		this.runtime.abort();
 	}
 
+	/**
+	 * Attaches one MCP server that settled after `session/new` returned. Editors kill
+	 * an agent whose `session/new` is slow (IDEA: exit code 143), so connections run
+	 * in the background — and each server is attached as soon as it is up, so one
+	 * slow server (npx cold start) does not hold back the others.
+	 */
+	attachMcpServer(status: McpServerStatus, connection?: { tools: AgentTool<any>[]; close: () => Promise<void> }): void {
+		if (connection) {
+			this.runtime.addTools(connection.tools);
+			this.mcpClosers.push(() => connection.close());
+		}
+		this.runtime.upsertMcpServer(status);
+		const tools = connection ? ` (${connection.tools.length} tool(s))` : "";
+		this.options.logger(`session ${this.id}: mcp ${status.name} ${status.status}${tools}`);
+		if (this.disposed) void this.closeMcp();
+	}
+
 	dispose(): void {
+		this.disposed = true;
 		this.unsubscribe();
 		this.runtime.abort();
-		void this.options.closeMcp?.().catch((error: unknown) => {
-			this.options.logger(`session ${this.id}: closing MCP servers failed: ${String(error)}`);
-		});
+		void this.closeMcp();
+	}
+
+	private async closeMcp(): Promise<void> {
+		const closers = this.mcpClosers.splice(0, this.mcpClosers.length);
+		await Promise.all(
+			closers.map((close) =>
+				Promise.resolve(close()).catch((error: unknown) => {
+					this.options.logger(`session ${this.id}: closing MCP servers failed: ${String(error)}`);
+				}),
+			),
+		);
 	}
 
 	/* ------------------------------- internals ------------------------------ */

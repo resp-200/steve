@@ -54,6 +54,12 @@ export interface McpConnectOptions {
 	 * server elsewhere while the session belongs to a project.
 	 */
 	cwd?: string;
+	/**
+	 * Called as soon as each server settles (connected / failed / unsupported).
+	 * Callers that attach tools to a live session use this: waiting for the whole
+	 * batch would let one slow server (npx cold start) hold back the others.
+	 */
+	onServer?: (status: McpServerStatus, connection?: McpConnection) => void;
 }
 
 interface PendingRequest {
@@ -281,7 +287,9 @@ export async function connectMcpServers(
 		if (winner !== server) {
 			const message = `MCP server "${server.name}" (${server.source ?? "plugin"}) ignored: the ${winner?.source ?? "plugin"} declaration wins`;
 			errors.push(message);
-			statuses.push({ ...describe(server), status: "skipped", tools: [], error: message });
+			const skipped: McpServerStatus = { ...describe(server), status: "skipped", tools: [], error: message };
+			statuses.push(skipped);
+			options.onServer?.(skipped);
 			logger(`[mcp] ${message}`);
 			continue;
 		}
@@ -289,7 +297,9 @@ export async function connectMcpServers(
 		if (server.type && server.type !== "stdio") {
 			const message = `MCP server "${server.name}": transport "${server.type}" is not supported yet (only stdio)`;
 			errors.push(message);
-			statuses.push({ ...describe(server), status: "unsupported", tools: [], error: message });
+			const unsupported: McpServerStatus = { ...describe(server), status: "unsupported", tools: [], error: message };
+			statuses.push(unsupported);
+			options.onServer?.(unsupported);
 			logger(`[mcp] ${message}`);
 			continue;
 		}
@@ -297,7 +307,9 @@ export async function connectMcpServers(
 		if (!server.command) {
 			const message = `MCP server "${server.name}": missing command`;
 			errors.push(message);
-			statuses.push({ ...describe(server), status: "failed", tools: [], error: message });
+			const missing: McpServerStatus = { ...describe(server), status: "failed", tools: [], error: message };
+			statuses.push(missing);
+			options.onServer?.(missing);
 			logger(`[mcp] ${message}`);
 			continue;
 		}
@@ -308,11 +320,15 @@ export async function connectMcpServers(
 				{ ...options, ...(server.timeoutMs !== undefined ? { timeoutMs: server.timeoutMs } : {}) },
 			);
 			connections.push(connection);
-			statuses.push({ ...describe(server), status: "connected", tools: connection.toolNames });
+			const connected: McpServerStatus = { ...describe(server), status: "connected", tools: connection.toolNames };
+			statuses.push(connected);
+			options.onServer?.(connected, connection);
 		} catch (error) {
 			const message = `MCP server "${server.name}": ${error instanceof Error ? error.message : String(error)}`;
 			errors.push(message);
-			statuses.push({ ...describe(server), status: "failed", tools: [], error: message });
+			const failed: McpServerStatus = { ...describe(server), status: "failed", tools: [], error: message };
+			statuses.push(failed);
+			options.onServer?.(failed);
 			logger(`[mcp] ${message}`);
 		}
 	}

@@ -51,6 +51,16 @@ async function waitForPort(port, timeoutMs = 10_000) {
 
 const stdioServer = (name = "mock") => ({ name, command: process.execPath, args: [MCP_SCRIPT], env: [] });
 
+/** Polls the agent's stderr for a line, so background work can be awaited deterministically. */
+async function waitForLog(chunks, pattern, timeoutMs = 10_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (pattern.test(chunks.join(""))) return true;
+		await sleep(100);
+	}
+	return false;
+}
+
 /* ------------------------------ A. MCP client ---------------------------- */
 
 async function mcpClientChecks() {
@@ -249,11 +259,10 @@ async function acpChecks() {
 		);
 
 		const session = await client.newSession({ cwd: ROOT, mcpServers: [stdioServer()] });
-		await sleep(150);
 		check(
-			"MCP 工具进入会话工具表",
-			/mcp__mock__echo/.test(serverLog.join("")) && serverLog.join("").includes("[mcp mock] connected"),
-			serverLog.join("").match(/tools=[^\s]*/)?.[0]?.slice(0, 120) ?? "",
+			"每个 MCP server 连上就立刻挂到会话（不等其它 server）",
+			await waitForLog(serverLog, /mcp mock connected \(4 tool\(s\)\)/),
+			serverLog.join("").split("\n").filter((line) => line.includes("mcp ")).slice(-3).join(" | ").slice(0, 160),
 		);
 
 		// The mock gateway plans a call to mcp__mock__echo for prompts with "mcp-echo".
@@ -281,6 +290,24 @@ async function acpChecks() {
 			mcpText().replace(/\n/g, " | ").slice(0, 140),
 		);
 		check("命令列表里播报了 /mcp", announced.includes("mcp"), announced.join(","));
+
+		// A slow MCP server must not delay `session/new`: editors kill the agent when
+		// initialization is slow (IDEA reports exit code 143 and "Failed to initialize").
+		const slowStart = Date.now();
+		const slowSession = await client.newSession({
+			cwd: ROOT,
+			mcpServers: [{ name: "slow", command: process.execPath, args: [MCP_SCRIPT], env: [{ name: "SLOW_INIT_MS", value: "1500" }] }],
+		});
+		const slowElapsed = Date.now() - slowStart;
+		check("慢 MCP server 不阻塞 session/new", slowElapsed < 1000, `${slowElapsed}ms`);
+		check("慢 server 连上后也会挂到运行中的会话", await waitForLog(serverLog, /mcp slow connected \(4 tool\(s\)\)/));
+		updates.length = 0;
+		await client.prompt(slowSession.sessionId, [{ type: "text", text: "/mcp" }]);
+		check(
+			"后台挂载的 server 出现在 /mcp 里",
+			mcpText().includes("slow [client] stdio") && mcpText().includes("4 tool(s): echo, sum, fail, image"),
+			mcpText().replace(/\n/g, " | ").slice(0, 140),
+		);
 
 		// C. session/list + session/delete
 		const listed = await client.request("session/list", { cwd: ROOT });

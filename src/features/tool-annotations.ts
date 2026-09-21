@@ -31,6 +31,8 @@ export interface ToolAnnotations {
 export type AnnotatedTool<T extends TSchema = TSchema> = AgentTool<T> & ToolAnnotations;
 
 export interface ToolRegistry {
+	/** Adds a tool that showed up after the session started (MCP connects in the background). */
+	add(tool: AgentTool<any>): void;
 	/** Names of the tools that ask for approval. */
 	permissionRequired(): string[];
 	/** Presentation kind a tool declared, if any. */
@@ -55,6 +57,10 @@ export function createToolRegistry(tools: AgentTool<any>[]): ToolRegistry {
 	for (const tool of tools) byName.set(tool.name, tool as AnnotatedTool);
 
 	return {
+		add: (tool) => {
+			byName.set(tool.name, tool as AnnotatedTool);
+		},
+
 		permissionRequired: () =>
 			tools.filter((tool) => (tool as AnnotatedTool).permission === "ask").map((tool) => tool.name),
 

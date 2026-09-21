@@ -364,6 +364,7 @@ export default function (pi) {
 | 命名 | 工具叫 `mcp__<server>__<tool>`（`/tools` 能看到），MCP 的 `inputSchema` 直接当参数 schema 用 |
 | 权限 | **一律先问**（MCP server 能做的事和它自己一样多），拒绝就是一次 `isError` 工具结果 |
 | 失败隔离 | 连不上只记日志并跳过，不影响会话；`/mcp` 会写出原因（含 server 的 stderr 末行） |
+| 连接时机 | **`session/new` 不会被 MCP 阻塞**：后台连接，**每个 server 一连上就挂到会话**（编辑器对初始化有超时，IDEA 等不及会杀进程：`exit code 143`）。所以第一个问题可能还没有 MCP 工具，`/mcp` 里能看到它陆续就绪 |
 | 生命周期 | 会话结束 / `session/delete` 时关掉子进程 |
 
 排查顺序：`/mcp` 看状态 → 看 `[mcp <name>] ...` 日志里 server 自己的输出 → 手动跑一遍 `command + args` 确认它能起来。
@@ -374,6 +375,7 @@ export default function (pi) {
 | `failed — MCP initialize timed out` | `npx -y` 首次下载太慢 → 加 `timeoutMs`，或先 `npm i -g` |
 | `unsupported — transport "http"` | 只实现了 stdio |
 | `skipped — the plugin declaration wins` | 同名 server 在插件/mcp.json 里各声明了一次，按优先级只连一个 |
+| 编辑器报 `Failed to initialize ACP process` / 进程被 SIGTERM（143） | 初始化太慢被杀：升级到会后台连 MCP 的版本（现在 `session/new` 约 20ms 返回）；或先把慢 server（`npx -y ...`）预热 |
 | `[extensions] failed to load ...` | `registerMcpServer` 校验失败（缺 name/command）会让整个插件加载报错 |
 | `[mcp.json] ...: missing "command"` | mcp.json 的条目缺 command（stdio 必需），该条被跳过 |
 
@@ -532,7 +534,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 13 项：依赖方向、协议层零 pi 依赖、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
-| `npm run mcp:test` | MCP 与会话管理 38 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
+| `npm run mcp:test` | MCP 与会话管理 41 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"

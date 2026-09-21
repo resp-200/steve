@@ -111,6 +111,10 @@ export interface AgentRuntime {
 	accessors(): SessionAccessors;
 	/** Declarative extras (permission / metadata / describe) keyed by tool name. */
 	toolRegistry(): ToolRegistry;
+	/** Adds tools to the live agent (MCP servers connect after `session/new` returned). */
+	addTools(tools: AgentTool<any>[]): void;
+	/** Adds or replaces one MCP server's status (same array identity, so `/mcp` sees it). */
+	upsertMcpServer(status: McpServerStatus): void;
 	stats(): AgentStats;
 }
 
@@ -221,6 +225,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 	const agentTools = [...(options.tools ?? []), ...pluginTools];
 	const defaultRetries = options.retries ?? 2;
 	const listeners = new Set<(event: AgentRuntimeEvent) => void>();
+	/** Same array identity for the session lifetime: `/mcp` sees background updates. */
+	const mcpServers: McpServerStatus[] = [...(options.mcpServers ?? [])];
 
 	const registry = createToolRegistry(agentTools);
 
@@ -365,11 +371,25 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
 		toolRegistry: () => registry,
 
+		addTools: (tools) => {
+			if (tools.length === 0) return;
+			agentTools.push(...tools);
+			for (const tool of tools) registry.add(tool);
+			// pi copies the array on assignment, so hand it a fresh one.
+			agent.state.tools = [...agentTools];
+		},
+
+		upsertMcpServer: (status) => {
+			const index = mcpServers.findIndex((server) => server.name === status.name && server.source === status.source);
+			if (index === -1) mcpServers.push(status);
+			else mcpServers[index] = status;
+		},
+
 		accessors: () => ({
 			tools: agentTools.map((tool) => ({ name: tool.name, description: tool.description })),
 			commands: (extensions?.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
 			model: { id: config.model.id, api: String(config.model.api), baseUrl: config.model.baseUrl },
-			mcp: options.mcpServers ?? [],
+			mcp: mcpServers,
 			stats: () => runtime.stats(),
 			reset: () => runtime.reset(),
 		}),

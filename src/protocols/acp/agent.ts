@@ -11,7 +11,7 @@ import type { Logger } from "../../types.js";
 import { loadExtensions } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
 import type { SessionStore } from "../../features/session-store.js";
-import { connectMcpServers, type McpServerLike } from "../../features/mcp.js";
+import { connectMcpServers, type McpConnectOptions, type McpServerLike } from "../../features/mcp.js";
 import type { McpServerStatus } from "../../types.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
@@ -55,17 +55,18 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 	 * Connects the MCP servers the client asked for. A server that fails to start is
 	 * logged and skipped, so a broken one never blocks the session.
 	 */
+	/** Connects in the background and hands the tools to the session when ready. */
+	const connectMcpInBackground = (servers: McpServerLike[], cwd: string, id: string, session: AcpSession): void => {
+		void connectMcp(servers, cwd, (status, connection) => session.attachMcpServer(status, connection)).catch((error: unknown) =>
+			options.logger(`session ${id}: MCP setup failed: ${String(error)}`),
+		);
+	};
+
 	/** Client-declared servers are tagged so `/mcp` can tell them from plugin ones. */
-	const connectMcp = async (servers: McpServerLike[], cwd: string) => {
-		if (servers.length === 0) {
-			return { tools: [] as AgentTool[], servers: [] as McpServerStatus[], close: undefined as undefined | (() => Promise<void>) };
-		}
-		const { connections, tools, servers: statuses } = await connectMcpServers(servers, { logger: options.logger, cwd });
-		return {
-			tools,
-			servers: statuses,
-			close: connections.length > 0 ? async () => { await Promise.all(connections.map((connection) => connection.close())); } : undefined,
-		};
+	const connectMcp = async (servers: McpServerLike[], cwd: string, onServer?: McpConnectOptions["onServer"]) => {
+		if (servers.length === 0) return { tools: [] as AgentTool[], servers: [] as McpServerStatus[] };
+		const { tools, servers: statuses } = await connectMcpServers(servers, { logger: options.logger, cwd, ...(onServer ? { onServer } : {}) });
+		return { tools, servers: statuses };
 	};
 
 	return (
@@ -112,7 +113,6 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
-				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers], ctx.params.cwd);
 				const session = new AcpSession({
 					id,
 					cwd: ctx.params.cwd,
@@ -124,13 +124,13 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					...(options.allowLocalTools ? { allowLocalTools: true } : {}),
 					...(options.store ? { store: options.store } : {}),
 					extensions,
-					...(mcp.tools.length > 0 ? { mcpTools: mcp.tools } : {}),
-					mcpServers: mcp.servers,
-					...(mcp.close ? { closeMcp: mcp.close } : {}),
 					logger: options.logger,
 				});
 				sessions.set(id, session);
 				await session.announceCommands();
+				// Not awaited on purpose: a slow MCP server (npx cold start) must not
+				// delay the response, or editors time out and kill the agent.
+				connectMcpInBackground([...clientServers, ...extensions.mcpServers], ctx.params.cwd, id, session);
 				options.logger(
 					`session/new: ${id} cwd=${session.cwd} tools=${session.toolNames.join(",")}${extensions.files.length > 0 ? ` plugins=${extensions.files.length}` : ""}`,
 				);
@@ -153,7 +153,6 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					log: options.logger,
 				});
 				const clientServers = (ctx.params.mcpServers ?? []).map((server) => ({ ...server, source: "client" as const }));
-				const mcp = await connectMcp([...clientServers, ...extensions.mcpServers], cwd);
 				const session = new AcpSession({
 					id: stored.id,
 					cwd,
@@ -165,9 +164,6 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					...(options.allowLocalTools ? { allowLocalTools: true } : {}),
 					extensions,
 					...(options.store ? { store: options.store } : {}),
-					...(mcp.tools.length > 0 ? { mcpTools: mcp.tools } : {}),
-					mcpServers: mcp.servers,
-					...(mcp.close ? { closeMcp: mcp.close } : {}),
 					restore: stored,
 					logger: options.logger,
 				});
@@ -176,6 +172,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 				// Replay history first, then the command list, so the client sees a full session.
 				await session.replay();
 				await session.announceCommands();
+				connectMcpInBackground([...clientServers, ...extensions.mcpServers], cwd, stored.id, session);
 				options.logger(`session/load: ${stored.id} messages=${stored.messages.length}`);
 				return {};
 			})
