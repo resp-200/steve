@@ -1,23 +1,22 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { createInterface } from "node:readline";
+import { discoveryEnabled, pluginPaths } from "../extensions/discovery.js";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
 import type { AgentTool } from "../features/contract.js";
 import { connectMcpServers } from "../features/mcp.js";
 import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
+import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
 import { color, Renderer } from "./render.js";
 
 const HELP = `
 Commands
-  /help          show this help
-  /new           start a fresh conversation (keeps the model)
-  /tools         list the tools the agent can call
-  /model         show the active model and endpoint
-  /plugins       list loaded plugins (hooks, tools, commands)
-  /stats         show turn / token counters
   /exit, /quit   leave
+  /plugins       list loaded plugins (hooks, tools, commands)
+  /help          the full command list — provided by the session-commands plugin,
+                 so it also works in editors and cannot go stale here
 
 Flags
   --read-only    no write_file / edit_file / run_command (so no approval prompts)
@@ -39,10 +38,9 @@ interface CliOptions {
 
 interface ReplContext {
 	chat: AgentRuntime;
+	/** For the banner (model id + endpoint); the session itself lives in `chat`. */
 	config: AppConfig;
 	extensions: ExtensionHost;
-	/** Tools the session registered (demo + local), for `/tools`. */
-	catalog: AgentTool<any>[];
 	options: CliOptions;
 }
 
@@ -65,19 +63,6 @@ function parseArgv(argv: string[]): CliOptions | "help" {
 
 	options.prompt = rest.join(" ").trim();
 	return options;
-}
-
-/** `STEVE_DISCOVERY=off` runs with only the plugins named explicitly. */
-function discoveryEnabled(): boolean {
-	return (process.env.STEVE_DISCOVERY ?? "").toLowerCase() !== "off";
-}
-
-/** Plugin paths from `STEVE_EXTENSIONS` (comma separated files or directories). */
-function extensionPaths(): string[] {
-	return (process.env.STEVE_EXTENSIONS ?? "")
-		.split(",")
-		.map((entry) => entry.trim())
-		.filter(Boolean);
 }
 
 /* --------------------------- permission prompts --------------------------- */
@@ -170,7 +155,7 @@ function onRetry(reason: string, attempt: number): void {
 
 /** Handles a `/command`. Returns false when the REPL should stop. */
 async function runCommand(context: ReplContext, input: string): Promise<boolean> {
-	const { chat, config, extensions, catalog } = context;
+	const { chat, extensions } = context;
 	const [rawCommand, ...rest] = input.split(/\s+/);
 	const command = rawCommand ?? "";
 
@@ -178,15 +163,6 @@ async function runCommand(context: ReplContext, input: string): Promise<boolean>
 		case "/exit":
 		case "/quit":
 			return false;
-
-		case "/help":
-			process.stdout.write(`${HELP}\n`);
-			return true;
-
-		case "/new":
-			chat.reset();
-			process.stdout.write(color.dim("Started a new conversation.\n"));
-			return true;
 
 		case "/plugins": {
 			for (const file of extensions.files) process.stdout.write(`  ${color.bold(file)}\n`);
@@ -314,16 +290,11 @@ async function main(): Promise<void> {
 	const extensions = await loadExtensions({
 		cwd,
 		mode: "cli",
-		paths: extensionPaths(),
+		paths: pluginPaths(),
 		discover: discoveryEnabled(),
 		// The front end publishes policy; the local-tools plugin reads it.
-		workspace: { roots: [cwd], access: parsed.readOnly ? "read" : "exec" },
-		model: {
-			id: config.model.id,
-			api: String(config.model.api),
-			baseUrl: config.model.baseUrl,
-			supportsImages: config.model.input.includes("image"),
-		},
+		workspace: workspacePolicy({ cwd, access: parsed.readOnly ? "read" : "exec" }),
+		model: modelInfo(config),
 		log: (message) => process.stderr.write(`${color.dim(message)}\n`),
 	});
 
@@ -360,7 +331,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	await runRepl({ chat, config, extensions, catalog, options: parsed });
+	await runRepl({ chat, config, extensions, options: parsed });
 	await closeMcp();
 }
 

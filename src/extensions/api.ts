@@ -14,30 +14,15 @@ import { promisify } from "node:util";
 import { Type } from "../features/contract.js";
 import type { AgentMessage, AgentTool } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
-import type { McpServerStatus, ShellCommand } from "../types.js";
+import type { McpServerStatus, ModelInfo, WorkspacePolicy } from "../types.js";
+
+// Plugin-facing re-exports: authors import everything from this module.
+export type { ModelInfo, WorkspaceAccess, WorkspacePolicy } from "../types.js";
 import type { ToolAnnotations } from "../features/tool-annotations.js";
 
 const run = promisify(execFile);
 
 /** What a plugin gets to see about the session it was loaded for. */
-/**
- * How far a session may reach into the local machine. A ladder: every level adds
- * tools on top of the previous one.
- *
- * The front end publishes this; plugins only *read* it. Core keeps the enforcement
- * (path confinement, the permission gate) — a plugin can never widen it.
- */
-export type WorkspaceAccess = "none" | "read" | "write" | "exec";
-
-/** What this session is allowed to do locally, published before plugins load. */
-export interface WorkspacePolicy {
-	/** Path confinement boundary: every path a tool touches must resolve inside one of these. */
-	roots: string[];
-	access: WorkspaceAccess;
-	/** Shell command tools should use; defaults to the platform shell. */
-	shell?: ShellCommand;
-}
-
 export interface ExtensionContext {
 	/** Working directory of the session. */
 	readonly cwd: string;
@@ -66,7 +51,7 @@ export interface SessionAccessors {
 	/** Commands available in this session (built-ins + plugins). */
 	readonly commands: { name: string; description: string }[];
 	/** Which model and endpoint this session talks to. */
-	readonly model: { id: string; api: string; baseUrl: string; supportsImages: boolean };
+	readonly model: ModelInfo;
 	/** MCP servers configured for this session, with their connection status. */
 	readonly mcp: McpServerStatus[];
 	stats(): { turns: number; userMessages: number; toolCalls: number; inputTokens: number; outputTokens: number };
@@ -253,7 +238,7 @@ export function createExtensionContext(options: {
 	mode: "cli" | "acp";
 	sessionId?: string;
 	workspace: WorkspacePolicy;
-	model: { id: string; api: string; baseUrl: string; supportsImages: boolean };
+	model: ModelInfo;
 	log: (message: string) => void;
 }): ExtensionContext {
 	return {

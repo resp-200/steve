@@ -11,9 +11,7 @@
  * loading — or later, while handling a hook — is reported and skipped, never
  * allowed to take the agent loop down with it.
  */
-import { readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentMessage } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
@@ -21,6 +19,7 @@ import type { ToolAnnotations } from "../features/tool-annotations.js";
 import {
 	createExtensionAPI,
 	createExtensionContext,
+	type ModelInfo,
 	type WorkspacePolicy,
 	type ContextHandler,
 	type EventHandler,
@@ -43,6 +42,10 @@ import { demoTools } from "./builtin/demo-tools.js";
 import { localTools } from "./builtin/local-tools.js";
 import { mcpConfig } from "./builtin/mcp-config.js";
 import { sessionCommands } from "./builtin/session-commands.js";
+import { discoverExtensionFiles, discoveryEnabled, pluginPaths } from "./discovery.js";
+
+// Re-exported: discovery is part of the host's surface, the implementation lives next door.
+export { discoverExtensionFiles, discoveryEnabled, pluginPaths };
 
 const EXTENSION_SUFFIXES = [".mjs", ".js"];
 
@@ -70,7 +73,7 @@ export interface ExtensionHostOptions {
 	 */
 	workspace?: WorkspacePolicy;
 	/** Which model this session uses; plugins may branch on `supportsImages`. */
-	model?: { id: string; api: string; baseUrl: string; supportsImages: boolean };
+	model?: ModelInfo;
 	log: (message: string) => void;
 }
 
@@ -106,19 +109,6 @@ export interface ExtensionHost {
 	attachSession(session: SessionAccessors): void;
 }
 
-function listDirectory(directory: string): string[] {
-	try {
-		if (!statSync(directory).isDirectory()) return [];
-	} catch {
-		return [];
-	}
-
-	return readdirSync(directory)
-		.filter((entry) => EXTENSION_SUFFIXES.some((suffix) => entry.endsWith(suffix)))
-		.sort()
-		.map((entry) => join(directory, entry));
-}
-
 /** Explicit paths first, then project-local, then global; duplicates removed. */
 /** The policy plugins see; a front end that says nothing gets no local capability. */
 function workspacePolicy(options: ExtensionHostOptions): WorkspacePolicy {
@@ -126,31 +116,10 @@ function workspacePolicy(options: ExtensionHostOptions): WorkspacePolicy {
 }
 
 /** What is known about the model before the runtime exists. */
-function modelInfo(options: ExtensionHostOptions): { id: string; api: string; baseUrl: string; supportsImages: boolean } {
+function modelInfo(options: ExtensionHostOptions): ModelInfo {
 	return options.model ?? { id: "unknown", api: "unknown", baseUrl: "", supportsImages: false };
 }
 
-export function discoverExtensionFiles(options: { cwd: string; paths?: string[]; discover?: boolean }): string[] {
-	const found: string[] = [];
-
-	for (const entry of options.paths ?? []) {
-		const path = resolve(entry);
-		try {
-			if (statSync(path).isDirectory()) found.push(...listDirectory(path));
-			else found.push(path);
-		} catch {
-			/* the loader turns this into a load error */
-			found.push(path);
-		}
-	}
-
-	if (options.discover !== false) {
-		found.push(...listDirectory(join(options.cwd, ".steve", "extensions")));
-		found.push(...listDirectory(join(homedir(), ".steve", "extensions")));
-	}
-
-	return [...new Set(found)];
-}
 
 interface LoadedPlugin {
 	file: string;

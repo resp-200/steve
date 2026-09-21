@@ -184,6 +184,25 @@ check(
 	capabilityLeaks.slice(0, 5).join("; "),
 );
 
+// Commands that plugins provide must not be *handled* by an entry: two
+// implementations of `/new` or `/help` drift apart (the CLI's help text had
+// already gone stale). Entries own only their own host-level commands.
+const PLUGIN_COMMANDS = ["tools", "stats", "model", "mcp", "new", "help"];
+const commandLeaks = [];
+for (const { full, rel } of files) {
+	if (!rel.startsWith("entries/")) continue;
+	const source = readFileSync(full, "utf8");
+	for (const name of PLUGIN_COMMANDS) {
+		const handlers = [`case "/${name}"`, `=== "/${name}"`, `startsWith("/${name}"`];
+		if (handlers.some((pattern) => source.includes(pattern))) commandLeaks.push(`${rel}: /${name}`);
+	}
+}
+check(
+	"入口只实现自己的 host 级命令（插件命令交给插件）",
+	commandLeaks.length === 0,
+	commandLeaks.slice(0, 5).join("; "),
+);
+
 /* ------------------------------------------------------------------ */
 /* 4. 运行时依赖白名单                                                   */
 /* ------------------------------------------------------------------ */

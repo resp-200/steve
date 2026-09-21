@@ -2,6 +2,7 @@
 import process from "node:process";
 import { join } from "node:path";
 import { createAcpAgentApp, AGENT_NAME, AGENT_VERSION } from "./agent.js";
+import { discoveryEnabled, pluginPaths } from "../../extensions/discovery.js";
 import { createSessionStore } from "../../features/session-store.js";
 import { loadConfig } from "../../model/config.js";
 import type { PermissionMode } from "./session.js";
@@ -123,14 +124,8 @@ function parseArgs(argv: string[]): CliOptions | "help" {
 						...(token ? { token } : {}),
 					},
 		permissionMode,
-		extensionPaths: [
-			...extensionPaths,
-			...(process.env.STEVE_EXTENSIONS ?? "")
-				.split(",")
-				.map((entry) => entry.trim())
-				.filter(Boolean),
-		],
-		discover: !values.has("no-discovery") && (process.env.STEVE_DISCOVERY ?? "").toLowerCase() !== "off",
+		extensionPaths: [...extensionPaths, ...pluginPaths()],
+		discover: !values.has("no-discovery") && discoveryEnabled(),
 		allowLocalTools: values.has("allow-local-tools") || (process.env.ACP_ALLOW_LOCAL_TOOLS ?? "").toLowerCase() === "true",
 		...(pick("session-dir", "ACP_SESSION_DIR") ? { sessionDir: pick("session-dir", "ACP_SESSION_DIR") as string } : {}),
 		noSessions: values.has("no-sessions"),

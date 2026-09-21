@@ -15,6 +15,7 @@ import type {
 } from "./contract.js";
 import type { PluginCommand, SessionAccessors } from "../extensions/api.js";
 import { createToolRegistry, type AnnotatedTool, type ToolRegistry } from "./tool-annotations.js";
+import { modelInfo } from "./session-policy.js";
 import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
@@ -418,12 +419,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 		accessors: () => ({
 			tools: agentTools.map((tool) => ({ name: tool.name, description: tool.description })),
 			commands: (extensions?.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
-			model: {
-				id: config.model.id,
-				api: String(config.model.api),
-				baseUrl: config.model.baseUrl,
-				supportsImages: config.model.input.includes("image"),
-			},
+			model: modelInfo(config),
 			mcp: mcpServers,
 			stats: () => runtime.stats(),
 			reset: () => runtime.reset(),

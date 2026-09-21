@@ -37,3 +37,29 @@ export interface ShellCommand {
 	file: string;
 	args: string[];
 }
+
+/**
+ * How far a session may reach into the local machine. A ladder: every level adds
+ * tools on top of the previous one.
+ *
+ * The front end publishes this; plugins only *read* it. Core keeps the enforcement
+ * (path confinement, the permission gate) — a plugin can never widen it.
+ */
+export type WorkspaceAccess = "none" | "read" | "write" | "exec";
+
+/** What a session is allowed to do locally, published before plugins load. */
+export interface WorkspacePolicy {
+	/** Path confinement boundary: every path a tool touches must resolve inside one of these. */
+	roots: string[];
+	access: WorkspaceAccess;
+	/** Shell command tools should use; defaults to the platform shell. */
+	shell?: ShellCommand;
+}
+
+/** What is known about the model before the runtime exists (plugins may branch on it). */
+export interface ModelInfo {
+	id: string;
+	api: string;
+	baseUrl: string;
+	supportsImages: boolean;
+}

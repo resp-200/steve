@@ -33,10 +33,12 @@ src/features/runtime.ts  L3 会话运行时：事件归一化、失败重试与�
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
 src/features/contract.ts  L3 工具契约：协议层定义工具的唯一入口（TypeBox/AgentTool）
+src/features/session-policy.ts L3 会话策略装配：modelInfo() + workspacePolicy()（两个前端共用）
 src/features/tool-annotations.ts L3 工具声明（permission / metadata / describe）的注册表
 src/features/local-tools.ts L3 本地工具的实现（read_file / glob / grep / write_file / edit_file / run_command）
                           —— 由内置插件 local-tools 按会话策略注册，入口不再直接使用
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
+src/extensions/discovery.ts L3′ 插件发现与 STEVE_EXTENSIONS / STEVE_DISCOVERY 的解析（两个前端共用）
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
 src/extensions/builtin/*  L3′ 内置插件（Tier 1）：会话命令（含 /mcp）、本地工具、演示工具、.steve/mcp.json 读取
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
@@ -121,7 +123,7 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 ## REPL 命令
 
-`/help` `/new` `/tools` `/model` `/stats` `/mcp` `/exit`；流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
+`/exit` `/quit` `/plugins` 由 CLI 自己实现（host 级）；`/help` `/new` `/tools` `/model` `/stats` `/mcp` 由 `session-commands` 插件提供 —— 所以终端与编辑器里行为一致，CLI 的 `/help` 也不会像以前那样过期（它现在就是插件生成的命令列表）。流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
 
 `/mcp` 列出当前配置的 MCP server（来源、传输、命令行、连上的工具，或失败原因）：
 
@@ -552,7 +554,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 22 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错） |
 | `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
-| `npm run arch:test` | 架构契约与发布卫生 15 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
+| `npm run arch:test` | 架构契约与发布卫生 16 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
 | `npm run mcp:test` | MCP 与会话管理 41 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
@@ -609,6 +611,8 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 协议层拿工具/类型只走 `features/contract.ts` | 类型也走契约，别各自 `import` pi | 约定 |
 | **pi 只出现在 `model/`、`kernel/`、`features/contract.ts`** | 换掉 pi 时改动面就这三处 | `arch:test` |
 | **协议层不认识具体工具名**（只有 `protocols/acp/tools.ts` 定义客户端工具） | 工具名与参数形状属于工具自己的声明，协议层不该有分支 | `arch:test` |
+| **能力实现只能被它的插件引用**（如 `features/local-tools.ts` 只被 `extensions/builtin/local-tools.ts` 用） | 否则"能力都走插件"就是假的：入口又会知道它的参数 | `arch:test` |
+| **入口不实现插件命令**（`entries/` 里不得出现 `case "/new"` 之类） | 两份实现必然漂移（CLI 的 `/help` 文本就曾漏掉 `/mcp`） | `arch:test` |
 
 四条对应的「实现约定」：
 
@@ -741,6 +745,8 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 本地工具是 **Tier 1 内置插件** | 判据 ①②：变体真实存在（只读/编辑器/组织版），且两个入口各装配一遍 | 默认能力依赖插件加载 → 内置插件失败要响，并有 `builtins: false` 的测试兜住 |
 | 同名工具默认拒绝、替换要显式 `override` | 插件化后客户端工具与本地工具同名，必须有明确语义，不能靠加载顺序 | 想替换的插件要显式声明（待实现） |
 | 纯函数库不做插件 | 没有变体、装配不重复、不在边界上 → 插件化只增加间接层 | 调用方直接 import |
+| 前端只**发布策略**，不装配能力 | 装配代码重复就是插件化的信号：`features/session-policy.ts`（策略形状 + 模型信息）与 `extensions/discovery.ts`（插件路径/发现开关）都是"一份实现、两个前端调用" | 前端多一层间接调用（换来单一真相） |
+| 插件命令只有一个实现（在插件里） | CLI 曾同时实现 `/new`、`/help`，导致插件的同名命令在终端里永远不生效、`/help` 两端不一致且会过期 | CLI 的 `/help` 走插件；host 级只留 `/exit` `/quit` `/plugins` |
 
 ## 换个模型 / 加个工具
 
@@ -760,6 +766,8 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 3 | `registerTool({ override: true })`：显式替换宿主工具 | 同名冲突已规则化（前端优先 + 记日志），但"故意替换"还没有出口 | 待做 |
 | 4 | 拆超长文件：`runtime.ts`、`acp/session.ts` 仍超 300 行口径；`features/local-tools.ts`（578）也该按 fs/search/exec 拆 | 命名与目录一节的规模口径 | 待做 |
 | 4b | 客户端工具也做成插件（需要 `ctx.client.{fs,terminal}`） | 判据 ①②：它俩现在仍写在协议层；但协议层是宿主，暂可接受 | 待定 |
+| 5b | ~~消除前端重复配置~~ | 已完成：`modelInfo`/`workspacePolicy` 收进 `features/session-policy.ts`，env 解析收进 `extensions/discovery.ts`，CLI 不再重复实现插件命令 | ✅ 已做 |
+| 5c | CLI 也支持会话持久化（`--session-dir` / `--no-sessions`） | 能力不对称：编辑器里能续聊，终端里聊完就没了 —— 这是产品决定，不是重复 | 待定 |
 | 5 | 插件影响 system prompt 的契约（`contributePrompt`：限长、顺序、能否覆盖） | 先定契约再实现：这是提示词注入面 | 待定 |
 | 6 | 能力补齐：MCP `http` 传输、`session/fork`、`session/resume` | 功能缺口，不涉及分层 | 待定 |
 | 7 | 真机验证：Zed（IDEA 已实测）、Windows | 跨平台一节标注为"未在真机验证" | 待做 |

@@ -12,18 +12,9 @@ import { loadExtensions } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
 import type { SessionStore } from "../../features/session-store.js";
 import { connectMcpServers, type McpConnectOptions, type McpServerLike } from "../../features/mcp.js";
+import { modelInfo, workspacePolicy } from "../../features/session-policy.js";
 import type { McpServerStatus } from "../../types.js";
 import { AcpSession, type PermissionMode } from "./session.js";
-
-/** What plugins may know about the model before the session exists. */
-function modelInfo(config: AppConfig): { id: string; api: string; baseUrl: string; supportsImages: boolean } {
-	return {
-		id: config.model.id,
-		api: String(config.model.api),
-		baseUrl: config.model.baseUrl,
-		supportsImages: config.model.input.includes("image"),
-	};
-}
 
 export const AGENT_NAME = "steve";
 export const AGENT_VERSION = "0.1.0";
@@ -131,10 +122,11 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					paths: options.extensionPaths ?? [],
 					discover: options.discover !== false,
 					// Policy only: the local-tools plugin decides what to register.
-					workspace: {
-						roots: [ctx.params.cwd, ...(ctx.params.additionalDirectories ?? [])],
+					workspace: workspacePolicy({
+						cwd: ctx.params.cwd,
+						additionalDirectories: ctx.params.additionalDirectories ?? [],
 						access: options.allowLocalTools ? "exec" : "none",
-					},
+					}),
 					model: modelInfo(options.config),
 					log: options.logger,
 				});
@@ -179,10 +171,11 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 					sessionId: stored.id,
 					paths: options.extensionPaths ?? [],
 					discover: options.discover !== false,
-					workspace: {
-						roots: [cwd, ...(ctx.params.additionalDirectories ?? [])],
+					workspace: workspacePolicy({
+						cwd,
+						additionalDirectories: ctx.params.additionalDirectories ?? [],
 						access: options.allowLocalTools ? "exec" : "none",
-					},
+					}),
 					model: modelInfo(options.config),
 					log: options.logger,
 				});
