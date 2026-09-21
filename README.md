@@ -497,6 +497,22 @@ npm run mock &                                        # 离线：不消耗真实
 LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic npm run acp:client -- "现在几点了？"
 ```
 
+### 抓编辑器与 agent 之间的流量
+
+编辑器只会把 agent 的 stderr 转出来，看不到客户端发了什么 —— 排查「编辑器里一直卡在 Starting…」时，把编辑器指到探针上，双向 JSON-RPC 都会落盘：
+
+```jsonc
+// ~/.jetbrains/acp.json（Zed 则是 settings.json 的 agent_servers）
+{ "agent_servers": { "steve": { "command": "node",
+    "args": ["/path/to/steve/scripts/acp-tap.mjs"] } } }
+```
+
+```bash
+tail -f <项目>/.steve/acp-tap.log      # → client / ← agent，一行一条消息
+```
+
+可选环境变量：`STEVE_ACP_TARGET`（默认 `steve-acp`）、`STEVE_ACP_TARGET_ARGS`、`STEVE_ACP_TAP`。看完记得把编辑器指回 agent。
+
 ### 浏览器测试页 `test-acp-jsonrpc.html`
 
 ```bash
