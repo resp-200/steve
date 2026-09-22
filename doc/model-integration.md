@@ -29,18 +29,17 @@ Anthropic 协议的 baseUrl 不能填成 `.../v1`），否则会 404。
 
 ## 2. 配置文件的位置与优先级
 
-凭据从 `.env` 文件读，**优先级从低到高**（后面的覆盖前面的）：
+凭据**只从 `.steve/.env` 读**（一种形状，永远在 gitignore 的 `.steve/` 里）。按**优先级从低到高**（后面的覆盖前面的）：
 
 | 顺序 | 路径 | 用途 |
 | --- | --- | --- |
-| 1 | `<安装目录>/.env` | 兼容旧写法；编辑器从别的 cwd 拉起 ACP server 时的兜底 |
-| 2 | `<安装目录>/.steve/.env` | 同上，新位置 |
-| 3 | `~/.steve/.env` | 全局，对所有项目生效 |
-| 4 | `$PWD/.env` | 兼容旧写法 |
-| 5 | `$PWD/.steve/.env` | **推荐**，每个项目自己的网关/模型 |
+| 1 | `<安装目录>/.steve/.env` | 编辑器从别的 cwd 拉起 ACP server 时的兜底 |
+| 2 | `~/.steve/.env` | 全局，对所有项目生效 |
+| 3 | `$PWD/.steve/.env` | **推荐**，每个项目自己的网关/模型 |
 
 - `<安装目录>` = `src/model/config.ts`（或 `dist/model/config.js`）往上两级，即仓库根。
 - **真实环境变量永远最优先**：`LLM_MODEL_ID=xxx npm run dev` 会盖过所有 `.env` 文件。
+- **旧的裸 `.env`（项目根目录、安装目录）已不再读取**：留着不会报错，只是被忽略。缺变量时的报错会直接指路：`Missing required environment variable LLM_API_KEY. Copy .env.example to .steve/.env and fill it in.`
 - `.steve/` 整个目录都在 `.gitignore` 里，本地配置与密钥不会进仓库（`npm run arch:test` 会机检）。
 
 `.env` 解析规则（`parseEnvFile`）：
@@ -141,7 +140,7 @@ Anthropic 协议的 baseUrl 不能填成 `.../v1`），否则会 404。
 
 `false`（默认）会把所有思考档位置为 `null`，UI 里隐藏思考档位。
 
-> 注意：不少网关/模型**自带思考**并始终返回 `reasoning_content`（例如 `grok-4.7`），
+> 注意：不少网关/模型**自带思考**并始终返回 `reasoning_content`，
 > 即使不设 `LLM_REASONING` 也能看到思考内容。这个变量只影响「是否主动请求并暴露思考档位」，
 > 不是「能不能思考」的开关。
 
@@ -165,7 +164,7 @@ baseUrl 含 `anthropic` → 自动判定为 `anthropic-messages`；`auto` 鉴权
 ```ini
 LLM_API_KEY="sk_xxx"
 LLM_MODEL_ID="claude-opus-5"
-LLM_BASE_URL="https://tokenhub.zhuanspirit.com/anthropic"
+LLM_BASE_URL="https://your-gateway.example.com/anthropic"
 LLM_REASONING="true"
 LLM_CONTEXT_WINDOW="1048576"
 LLM_MAX_TOKENS="393216"
@@ -177,10 +176,10 @@ baseUrl 含 `anthropic` → 自动 `anthropic-messages`；非官方 host → `au
 
 ```ini
 LLM_API_KEY="sk-xxx"
-LLM_MODEL_ID="grok-4.7"
-LLM_BASE_URL="https://luckyg.131518.xyz/v1"
+LLM_MODEL_ID="your-model-id"
+LLM_BASE_URL="https://your-gateway.example.com/v1"
 LLM_API="openai-completions"
-LLM_PROVIDER="luckyg"
+LLM_PROVIDER="myprovider"
 LLM_REASONING="true"
 LLM_CONTEXT_WINDOW="256000"
 LLM_MAX_TOKENS="32768"

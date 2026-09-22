@@ -45,6 +45,7 @@ examples/extensions/*     三个示例插件（guard / git-status / turn-logger�
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
+doc/*                    专题文档：模型接入指南（doc/model-integration.md）
 mcp.example.json         MCP 配置模板（复制到 .steve/mcp.json，见「MCP 接入」）
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
 test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
@@ -104,6 +105,8 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `<安装目录>/.steve/.env` | 编辑器从别的 cwd 拉起 ACP server 时的兜底 |
 | `~/.steve/.env` | 全局，对所有项目生效 |
 | `$PWD/.steve/.env` | **推荐** |
+
+换模型 / 网关的完整说明（每个变量的含义、三种协议的写法、常见接入配方、排查表）见 **[`doc/model-integration.md`](doc/model-integration.md)**。
 
 > 旧的写法（项目根目录或安装目录下的裸 `.env`）**已不再读取** —— 留着不会报错，只是被忽略；缺变量时的报错信息会直接指向 `.steve/.env`（`config:test` 有断言盯着这件事）。
 
