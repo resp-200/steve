@@ -73,7 +73,7 @@ CLI 与 ACP 走的是同一个内核装配点，所以「接 pi 的位置」只�
 
 ```bash
 npm install
-mkdir -p .steve && cp .env.example .steve/.env   # 填 LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL
+mkdir -p .steve && cp .env.example .steve/.env   # 填 LLM_API_KEY / LLM_MODEL_ID / LLM_BASE_URL（只认这个位置）
 npm run dev               # 交互式对话
 npm run dev "现在几点？顺便算一下 128*37+15"   # 单次提问
 npm run dev -- --read-only      # 只读模式（默认写/执行前会在终端问 y/n）
@@ -97,15 +97,15 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 ## 环境变量
 
-凭据从 `.env` 文件读，按**优先级从低到高**依次尝试（后面的覆盖前面的，但**真实环境变量永远最优先**）：
+凭据只从 **`.steve/.env`** 读（一种形状，永远在 gitignore 的 `.steve/` 里）。按**优先级从低到高**依次尝试，后面的覆盖前面的，但**真实环境变量永远最优先**：
 
 | 位置 | 用途 |
 | --- | --- |
-| `<安装目录>/.env` | 兼容旧写法；也是编辑器从别的 cwd 启动 ACP server 时的兜底 |
-| `<安装目录>/.steve/.env` | 同上，新位置 |
+| `<安装目录>/.steve/.env` | 编辑器从别的 cwd 拉起 ACP server 时的兜底 |
 | `~/.steve/.env` | 全局，对所有项目生效 |
-| `$PWD/.env` | 兼容旧写法 |
 | `$PWD/.steve/.env` | **推荐** |
+
+> 旧的写法（项目根目录或安装目录下的裸 `.env`）**已不再读取** —— 留着不会报错，只是被忽略；缺变量时的报错信息会直接指向 `.steve/.env`（`config:test` 有断言盯着这件事）。
 
 `.steve/` 整个目录都在 `.gitignore` 里 —— 本地配置与密钥只放这里，永远不进仓库（`npm run arch:test` 会机检这一点）。
 
@@ -572,7 +572,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run plugins:test` | 插件层 26 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 35 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`（含无值/非法 id/未知 id/与 `--no-sessions` 冲突四种报错）、`/new` 清空、`--no-sessions` |
-| `npm run config:test` | 凭据来源 10 项：`.env` 查找链（安装目录 / `~/.steve` / `$PWD` / `$PWD/.steve`）、真实环境变量优先、`.steve/.env` 优于旧 `.env`、引号与注释处理 |
+| `npm run config:test` | 凭据来源 10 项：`.steve/.env` 查找链（安装目录 / `~/.steve` / `$PWD`）、真实环境变量优先、**裸 `.env` 被忽略**、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 16 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
 | `npm run mcp:test` | MCP 与会话管理 41 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
@@ -766,6 +766,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 纯函数库不做插件 | 没有变体、装配不重复、不在边界上 → 插件化只增加间接层 | 调用方直接 import |
 | CLI 也持久化会话（与 ACP 同一 store 与文件格式） | 能力不对称会让"终端里聊完就没了"显得像 bug；共用一个 store 后两端行为一致 | CLI 多三个 flag；`/new` 之后也要落盘（否则续期会把刚丢弃的历史接回来） |
 | CLI **显式续期**（`--resume <id>`），不自动接上次上下文 | 自动续聊不可预期：想开一个干净会话还得先删文件，而且"为什么模型记得上次的事"很难解释。ACP 那边由编辑器管理会话，终端这边把选择权交给用户 | 每次运行多一个 id 要记（退出时打印，可复制） |
+| 凭据只认 `.steve/.env`（不再兼容裸 `.env`） | 一种形状最容易解释：本地配置都在 gitignore 的 `.steve/` 里；旧写法留着只是被忽略，不会造成"为什么这个 key 不生效"的困惑 | 已有裸 `.env` 的人要搬一次（错误信息会指路） |
 | 前端只**发布策略**，不装配能力 | 装配代码重复就是插件化的信号：`features/session-policy.ts`（策略形状 + 模型信息）与 `extensions/discovery.ts`（插件路径/发现开关）都是"一份实现、两个前端调用" | 前端多一层间接调用（换来单一真相） |
 | 插件命令只有一个实现（在插件里） | CLI 曾同时实现 `/new`、`/help`，导致插件的同名命令在终端里永远不生效、`/help` 两端不一致且会过期 | CLI 的 `/help` 走插件；host 级只留 `/exit` `/quit` `/plugins` |
 

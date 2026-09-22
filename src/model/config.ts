@@ -48,16 +48,17 @@ export function loadEnvFiles(files: string[]): void {
 }
 
 /**
- * Where credentials are looked for, lowest priority first. The project's
- * `.steve/.env` is the preferred place (the whole `.steve/` directory is
- * gitignored); the plain `.env` files stay supported for compatibility.
+ * Where credentials are looked for, lowest priority first.
+ *
+ * Only `.steve/.env` is read — one shape, always inside the gitignored `.steve/`
+ * directory. Plain `.env` files (project root, install directory) used to be
+ * supported for compatibility; they are ignored now, so a stale one does nothing
+ * and the missing-variable error points at `.steve/.env`.
  */
 export function envFileCandidates(cwd = process.cwd()): string[] {
 	return [
-		resolve(packageRoot(), ".env"),
 		resolve(packageRoot(), ".steve", ".env"),
 		resolve(homedir(), ".steve", ".env"),
-		resolve(cwd, ".env"),
 		resolve(cwd, ".steve", ".env"),
 	];
 }

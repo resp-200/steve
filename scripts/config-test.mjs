@@ -3,7 +3,8 @@
 //
 //   A. the .env chain: install dir -> ~/.steve -> $PWD -> $PWD/.steve, with a
 //      real environment variable always winning over every file
-//   B. `.steve/.env` is the preferred location, the legacy `.env` still works
+//   B. only `.steve/.env` is read: install dir -> ~/.steve -> $PWD/.steve, and a
+//      plain `.env` anywhere is ignored (legacy support was dropped on purpose)
 //
 //   npm run build && node scripts/config-test.mjs
 import { spawnSync } from "node:child_process";
@@ -91,13 +92,17 @@ try {
 	writeEnv(join(project, ".steve"), 'LLM_API_KEY="from-project-steve"\n');
 	check(".steve/.env 被读到", resolve(project, home).key === "from-project-steve", resolve(project, home).key);
 
-	// 3. a legacy .env in the same directory loses to .steve/.env
-	writeEnv(project, 'LLM_API_KEY="from-legacy-env"\n');
-	check("同目录下 .steve/.env 优先于 .env", resolve(project, home).key === "from-project-steve", resolve(project, home).key);
+
 
 	// 4. the global ~/.steve/.env is used when the project has nothing
 	writeEnv(join(home, ".steve"), 'LLM_API_KEY="from-global"\n');
 	check("项目没配置时用 ~/.steve/.env", resolve(bare, home).key === "from-global", resolve(bare, home).key);
+
+	// 5. a plain `.env` is ignored — legacy support was dropped, so a stale file
+	//    must not silently win over the global one.
+	writeEnv(bare, 'LLM_API_KEY="from-legacy-env"\n');
+	check("旧写法 .env 被忽略（不再兼容）", resolve(bare, home).key === "from-global", resolve(bare, home).key);
+	rmSync(join(bare, ".env"), { force: true });
 
 	// 5. and it loses to the project's own file
 	check("项目配置优先于全局配置", resolve(project, home).key === "from-project-steve", resolve(project, home).key);
@@ -110,13 +115,11 @@ try {
 	//    server from another cwd, so the project's .steve/.env must still be found.
 	const candidates = resolve(bare, home).files;
 	check(
-		"候选顺序：安装目录 < 全局 < 工作目录 < 工作目录/.steve",
-		candidates.length === 5 &&
-			candidates[0] === join(real(INSTALL), ".env") &&
-			candidates[1] === join(real(INSTALL), ".steve", ".env") &&
-			candidates[2] === join(home, ".steve", ".env") && // homedir() keeps $HOME as given
-			candidates[3] === join(real(bare), ".env") &&
-			candidates[4] === join(real(bare), ".steve", ".env"),
+		"候选顺序：安装目录 < 全局 < 工作目录（都只认 .steve/.env）",
+		candidates.length === 3 &&
+			candidates[0] === join(real(INSTALL), ".steve", ".env") &&
+			candidates[1] === join(home, ".steve", ".env") && // homedir() keeps $HOME as given
+			candidates[2] === join(real(bare), ".steve", ".env"),
 		candidates.join(", "),
 	);
 
