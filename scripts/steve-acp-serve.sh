@@ -4,6 +4,12 @@
 #
 #   bash scripts/steve-acp-serve.sh                 # 默认 http://127.0.0.1:8891/acp，页面 http://127.0.0.1:8891/
 #   bash scripts/steve-acp-serve.sh --port 9000     # 额外的参数原样透传给 steve-acp，且可覆盖本脚本的默认值
+#   bash scripts/steve-acp-serve.sh --daemon        # 后台跑，日志与 pidfile 落在 ~/.steve/log/
+#   bash scripts/steve-acp-serve.sh --stop          # 停掉 --daemon 起的那个实例（同端口）
+#   bash scripts/steve-acp-serve.sh --foreground    # 显式前台（systemd/launchd 用这个，日志交给 journald）
+#
+# --daemon 的日志与 pidfile 在 $STEVE_ACP_LOG_DIR（默认 ~/.steve/log/），按端口命名：
+#   steve-acp-8891.log / steve-acp-8891.pid
 #
 # token 从 ~/.steve/.env 的 ACP_TOKEN 读取。
 # 注意：steve 自己不读 ACP_TOKEN（它只认 process.env），所以是这里取出来再用 --token 传进去。
@@ -23,8 +29,9 @@
 #   ACP_SESSION_DIR     ~/.steve/sessions   transcript 落盘位置，会自动 mkdir -p
 #   ACP_PERMISSIONS     ask                 ask | allow（allow 不问直接执行写/命令，慎用）
 #   ACP_ALLOW_LOCAL_TOOLS  true             false 则不给本地文件/命令工具
-#   ACP_QUIET           true                false 则打开 steve 自己的日志
+#   ACP_QUIET           前台 true / --daemon 时 false     false 则打开 steve 自己的日志
 #   ACP_CORS            空                  只在「页面与端点不同源」时需要，如 "*"
+#   STEVE_ACP_LOG_DIR  ~/.steve/log         --daemon 的日志与 pidfile 目录（按端口命名）
 #
 # cwd 有意义：`.steve/mcp.json` 与 `.steve/extensions/` 都按启动目录发现，
 # 所以想带哪个项目的 MCP / 插件，就在那个目录里启动本脚本。
@@ -39,13 +46,33 @@ ENDPOINT_PATH="${ACP_PATH:-/acp}"
 SESSION_DIR="${ACP_SESSION_DIR:-$HOME/.steve/sessions}"
 PERMISSIONS="${ACP_PERMISSIONS:-ask}"
 ALLOW_LOCAL_TOOLS="${ACP_ALLOW_LOCAL_TOOLS:-true}"
-QUIET="${ACP_QUIET:-true}"
+QUIET="${ACP_QUIET:-}"
 CORS="${ACP_CORS:-}"
 
 die() {
 	printf 'steve-acp-serve: %s\n' "$1" >&2
 	exit 1
 }
+
+# ---- 脚本自己的开关：--daemon / --foreground / --stop 自己消化，其余原样透传 ----
+DAEMON=false
+STOP=false
+PASSTHROUGH=()
+for arg in "$@"; do
+	case "$arg" in
+		--daemon|-d) DAEMON=true ;;
+		--foreground) DAEMON=false ;;
+		--stop) STOP=true ;;
+		*) PASSTHROUGH+=("$arg") ;;
+	esac
+done
+
+LOG_DIR="${STEVE_ACP_LOG_DIR:-$HOME/.steve/log}"
+
+# 后台运行时默认打开 steve 自己的日志（前台保持安静），除非显式设了 ACP_QUIET。
+if [ -z "$QUIET" ]; then
+	if [ "$DAEMON" = "true" ]; then QUIET=false; else QUIET=true; fi
+fi
 
 # 与 src/model/config.ts 的 parseEnvFile() 保持同一套规则：逐行 key=value，
 # 去首尾空白、跳过空行与 # 注释、成对引号只剥一层、不做插值、不支持 `export`。
@@ -138,7 +165,7 @@ fi
 # 透传参数里的 --host/--port/--path 会覆盖上面的值（steve-acp 后写的 flag 生效），
 # 摘要跟着一起改，免得打印出来的地址和实际监听的不一致。
 prev=""
-for arg in "$@"; do
+for arg in ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}; do
 	case "$prev" in
 		--host) HOST="$arg" ;;
 		--port) PORT="$arg" ;;
@@ -152,18 +179,61 @@ for arg in "$@"; do
 	prev="$arg"
 done
 
+# pidfile 与日志按端口区分，多实例互不覆盖。
+PIDFILE="$LOG_DIR/steve-acp-$PORT.pid"
+LOG_FILE="$LOG_DIR/steve-acp-$PORT.log"
+
+if [ "$STOP" = "true" ]; then
+	[ -f "$PIDFILE" ] || die "没有 pidfile（${PIDFILE}）：这个端口不是用 --daemon 起的，或者已经停了"
+	pid="$(cat "$PIDFILE")"
+	if kill -0 "$pid" 2>/dev/null; then
+		kill "$pid" # SIGTERM：steve 自己会优雅关闭
+		printf 'steve-acp-serve: 已发送 SIGTERM 给 pid %s（日志 %s）\n' "$pid" "$LOG_FILE" >&2
+	else
+		printf 'steve-acp-serve: pid %s 已经不在了，清掉 pidfile\n' "$pid" >&2
+	fi
+	rm -f "$PIDFILE"
+	exit 0
+fi
+
 # 端口占用是最常见的启动失败原因（上一次的实例还在跑），先给出人话提示。
 if (exec 3<>"/dev/tcp/$HOST/$PORT") 2>/dev/null; then
 	exec 3<&- 3>&-
 	die "$HOST:$PORT 已被占用（可能上一次的实例还在跑）；换端口：ACP_PORT=... 或 $0 --port ..."
 fi
 
-printf 'steve-acp-serve: endpoint http://%s:%s%s\n' "$HOST" "$PORT" "$ENDPOINT_PATH" >&2
+print_summary() {
+	printf 'steve-acp-serve: endpoint http://%s:%s%s\n' "$HOST" "$PORT" "$ENDPOINT_PATH"
+	printf 'steve-acp-serve: 测试页   http://%s:%s/\n' "$HOST" "$PORT"
+	printf 'steve-acp-serve: sessions %s · permissions %s · local-tools %s\n' \
+		"$SESSION_DIR" "$PERMISSIONS" "$ALLOW_LOCAL_TOOLS"
+	printf 'steve-acp-serve: token    %s…（来自 %s）\n' "${TOKEN:0:6}" "$ENV_FILE"
+}
 
-printf 'steve-acp-serve: 测试页   http://%s:%s/\n' "$HOST" "$PORT" >&2
-printf 'steve-acp-serve: sessions %s · permissions %s · local-tools %s\n' \
-	"$SESSION_DIR" "$PERMISSIONS" "$ALLOW_LOCAL_TOOLS" >&2
-printf 'steve-acp-serve: token    %s…（来自 %s）\n' "${TOKEN:0:6}" "$ENV_FILE" >&2
+if [ "$DAEMON" = "true" ]; then
+	mkdir -p "$LOG_DIR" || die "无法创建日志目录：$LOG_DIR"
+	{
+		printf '\n=== %s 启动 %s:%s%s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$HOST" "$PORT" "$ENDPOINT_PATH"
+		print_summary
+	} >>"$LOG_FILE"
+	nohup "${CMD[@]}" "${ARGS[@]}" ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"} >>"$LOG_FILE" 2>&1 &
+	pid=$!
+	printf '%s\n' "$pid" >"$PIDFILE"
+	sleep 1
+	if ! kill -0 "$pid" 2>/dev/null; then
+		rm -f "$PIDFILE"
+		printf 'steve-acp-serve: 启动后立刻退出了，日志末尾：\n' >&2
+		tail -n 20 "$LOG_FILE" >&2
+		exit 1
+	fi
+	print_summary >&2
+	printf 'steve-acp-serve: 后台运行 pid=%s\n' "$pid" >&2
+	printf 'steve-acp-serve: 日志 tail -f %s\n' "$LOG_FILE" >&2
+	printf 'steve-acp-serve: 停止 bash %s --stop\n' "$0" >&2
+	exit 0
+fi
+
+print_summary >&2
 
 # exec：Ctrl+C / SIGTERM 直接交给 steve-acp，它自己会优雅关闭。
-exec "${CMD[@]}" "${ARGS[@]}" "$@"
+exec "${CMD[@]}" "${ARGS[@]}" ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}

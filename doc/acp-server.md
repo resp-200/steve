@@ -55,7 +55,9 @@ node dist/protocols/acp/main.js --port 8890 --allow-local-tools
 # 只需一次：生成 token 并写进 ~/.steve/.env（steve 自己不读 ACP_TOKEN，是脚本读出来再 --token 传进去）
 umask 077 && printf 'ACP_TOKEN=%s\n' "$(openssl rand -hex 32)" >> ~/.steve/.env
 
-npm run acp:serve          # 或 bash scripts/steve-acp-serve.sh
+npm run acp:serve                    # 前台：或 bash scripts/steve-acp-serve.sh
+npm run acp:serve -- --daemon        # 后台：日志与 pidfile 落在 ~/.steve/log/
+npm run acp:serve -- --stop          # 停掉 --daemon 起的那个实例（按端口）
 # → endpoint http://127.0.0.1:8891/acp · 页面 http://127.0.0.1:8891/
 ```
 
@@ -70,14 +72,41 @@ npm run acp:serve          # 或 bash scripts/steve-acp-serve.sh
 | `ACP_SESSION_DIR` | `~/.steve/sessions` | transcript 落盘位置 |
 | `ACP_PERMISSIONS` | `ask` | `ask` \| `allow`（`allow` 不问直接执行写/命令，慎用） |
 | `ACP_ALLOW_LOCAL_TOOLS` | `true` | `false` 则不给本地文件/命令工具 |
-| `ACP_QUIET` | `true` | `false` 打开 steve 自己的日志 |
+| `ACP_QUIET` | 前台 `true` / `--daemon` 时 `false` | `false` 打开 steve 自己的日志 |
 | `ACP_CORS` | 空 | 只在「页面与端点不同源」时需要，如 `*` |
+| `STEVE_ACP_LOG_DIR` | `~/.steve/log` | `--daemon` 的日志与 pidfile 目录 |
 
 额外参数原样透传给 `steve-acp`，且能覆盖上面的默认值（`bash scripts/steve-acp-serve.sh --port 9000` —— steve 后写的 flag 生效，摘要会跟着改）。
 缺 token、端口被占用都会先给人话提示再退出，不会静默起一个没有认证的服务。
 
 命令优先用 PATH 上的 `steve-acp`，没装则退回仓库的 `dist/protocols/acp/main.js`（先 `npm run build`）。
 cwd 就是启动目录 —— `.steve/mcp.json` 与 `.steve/extensions/` 按 cwd 发现。
+
+#### 后台运行与日志
+
+`--daemon` 把服务 `nohup` 到后台，日志和 pidfile 按端口命名，多实例互不覆盖：
+
+```bash
+npm run acp:serve -- --daemon
+# steve-acp-serve: 后台运行 pid=12345
+# steve-acp-serve: 日志 tail -f /Users/you/.steve/log/steve-acp-8891.log
+
+tail -f ~/.steve/log/steve-acp-8891.log    # 服务日志
+npm run acp:serve -- --stop                # 停（SIGTERM，steve 自己优雅关闭）
+```
+
+| 文件 | 说明 |
+| --- | --- |
+| `~/.steve/log/steve-acp-<port>.log` | 追加写入；启动横幅 + steve 的 `[acp]` 日志（后台模式默认关掉 `--quiet`，否则日志里几乎只有错误） |
+| `~/.steve/log/steve-acp-<port>.pid` | pidfile，`--stop` 读它；进程不在了会提示并清掉 |
+
+几个行为细节：
+
+- 后台模式默认 `ACP_QUIET=false`（前台仍默认安静），显式设 `ACP_QUIET` 则按你给的来。
+- 启动后等 1 秒确认进程还活着，立刻退出（配置错、端口被抢）就把日志末尾 20 行打出来并以 1 退出，不会留下假 pidfile。
+- 端口被占用时先报错再退出，所以重复 `--daemon` 不会起出第二个实例。
+- 日志是 `>>` 追加的，长期跑要自己轮转（Linux `logrotate`，或 `: > ~/.steve/log/steve-acp-8891.log` 手动清空）。
+- 真要开机自启 / 崩溃重启，还是交给 systemd（`launchd`）：用 `--foreground` 让进程待在**前台**，日志交给 journald，别用 `--daemon`。
 
 ### 2.2 token 管什么、不管什么
 

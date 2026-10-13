@@ -500,6 +500,7 @@ HTTP / WebSocket 模式（编辑器支持远程连接时用）：
 ```bash
 steve-acp --port 8890 --token secret --cors "*"   # 端点 http://127.0.0.1:8890/acp，页面 http://127.0.0.1:8890/
 npm run acp:serve                                  # 一键启动：8891 + token 取自 ~/.steve/.env 的 ACP_TOKEN（见 doc/acp-server.md §2.1）
+npm run acp:serve -- --daemon                      # 后台跑，日志/pidfile 在 ~/.steve/log/（--stop 停）
 ```
 
 验证连接（`acp:client` 可以从任意目录运行，agent 路径按脚本位置解析）：
