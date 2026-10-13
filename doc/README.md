@@ -29,5 +29,6 @@ LLM_BASE_URL="<端点根地址>"      # Anthropic 形如 https://host/anthropic�
 | --- | --- |
 | 换模型 / 网关、搞清楚每个环境变量 | [model-integration.md](./model-integration.md) |
 | 让编辑器（IDEA / Zed）连上 | [acp-server.md](./acp-server.md) §2–3 |
+| 远程 / 云端访问（一键启动、token、反代） | [acp-server.md](./acp-server.md) §2.1–2.2 |
 | 接一个 MCP server | [mcp.md](./mcp.md) §2–3 |
 | 加工具 / 加斜杠命令 / 挂钩子 | [plugins.md](./plugins.md) |

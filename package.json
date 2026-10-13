@@ -28,6 +28,7 @@
 		"acp:client": "node scripts/acp-client.mjs",
 		"acp:probe": "node scripts/acp-http-probe.mjs",
 		"acp:ui-test": "node scripts/acp-ui-test.mjs",
+		"acp:serve": "bash scripts/steve-acp-serve.sh",
 		"plugins:test": "node scripts/plugin-test.mjs",
 		"tools:test": "node scripts/local-tools-test.mjs",
 		"sessions:test": "node scripts/session-test.mjs",

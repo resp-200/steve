@@ -47,6 +47,57 @@ node dist/protocols/acp/main.js --port 8890 --allow-local-tools
 
 `--port` 模式下默认还会在 `/` 提供内置浏览器测试页（`--no-ui` 关闭）。
 
+### 2.1 一键启动脚本（远程 / 云）
+
+`scripts/steve-acp-serve.sh`（`npm run acp:serve`）把上面那串参数固定下来，token 不用每次手敲：
+
+```bash
+# 只需一次：生成 token 并写进 ~/.steve/.env（steve 自己不读 ACP_TOKEN，是脚本读出来再 --token 传进去）
+umask 077 && printf 'ACP_TOKEN=%s\n' "$(openssl rand -hex 32)" >> ~/.steve/.env
+
+npm run acp:serve          # 或 bash scripts/steve-acp-serve.sh
+# → endpoint http://127.0.0.1:8891/acp · 页面 http://127.0.0.1:8891/
+```
+
+默认值：`127.0.0.1:8891`、`--path /acp`、`~/.steve/sessions`（自动 `mkdir -p`）、`--permissions ask`、
+`--allow-local-tools`、`--quiet`；启动摘要打到 stderr。
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `STEVE_ACP_ENV_FILE` | `~/.steve/.env` | token 从哪个文件读 |
+| `ACP_TOKEN` | — | 直接给 token，优先于文件（与 steve「真实环境变量最优先」一致） |
+| `ACP_HOST` / `ACP_PORT` / `ACP_PATH` | `127.0.0.1` / `8891` / `/acp` | 对外服务先反代，直接暴露才写 `0.0.0.0` |
+| `ACP_SESSION_DIR` | `~/.steve/sessions` | transcript 落盘位置 |
+| `ACP_PERMISSIONS` | `ask` | `ask` \| `allow`（`allow` 不问直接执行写/命令，慎用） |
+| `ACP_ALLOW_LOCAL_TOOLS` | `true` | `false` 则不给本地文件/命令工具 |
+| `ACP_QUIET` | `true` | `false` 打开 steve 自己的日志 |
+| `ACP_CORS` | 空 | 只在「页面与端点不同源」时需要，如 `*` |
+
+额外参数原样透传给 `steve-acp`，且能覆盖上面的默认值（`bash scripts/steve-acp-serve.sh --port 9000` —— steve 后写的 flag 生效，摘要会跟着改）。
+缺 token、端口被占用都会先给人话提示再退出，不会静默起一个没有认证的服务。
+
+命令优先用 PATH 上的 `steve-acp`，没装则退回仓库的 `dist/protocols/acp/main.js`（先 `npm run build`）。
+cwd 就是启动目录 —— `.steve/mcp.json` 与 `.steve/extensions/` 按 cwd 发现。
+
+### 2.2 token 管什么、不管什么
+
+`--token` 是 HTTP 模式下**唯一**的访问控制（`transport.ts`），且只作用于 ACP 端点：
+
+| 位置 | 行为 |
+| --- | --- |
+| `POST/GET/DELETE /acp` | 头不是 `Authorization: Bearer <token>` → **401** |
+| `/acp` 的 WebSocket upgrade | 头不对 → 直接 `socket.destroy()` |
+
+- **不配 token = 没有认证**：连上 `/acp` 就能 `initialize` → `session/new` → `session/prompt`，也就是花你的模型额度、
+  用客户端给的 `cwd` 读写服务器文件、跑命令（开了 `--allow-local-tools` 时）、`session/load` 读回历史 transcript、`session/delete` 删文件。
+- **只管 `/acp`**：`/`、`/index.html`、`/test-acp-jsonrpc.html`、`/acp-http-client.js` 一律不校验，而且 `/` 会把服务端 `process.cwd()` 注入进 HTML。
+  公网部署用 `--no-ui`，测试页用本地 `file://` 打开。
+- **不是身份系统**：一个全局共享密钥，没有用户、没有权限分级、没有过期、没有速率限制、没有审计；比较是普通 `!==`（非 timing-safe）。
+  Bearer 头必须有 TLS 保护；浏览器页支持 `?token=`，会漏进浏览器历史、Referer 与反代日志。
+- 生成用 `openssl rand -hex 32`（或 `rand -base64 32` 的 base64url 版本）。hex 最省事：`?token=` 场景下 `+ / = # &` 容易被 URL 解析吃掉。
+- token 持有者≈该工作区的 root：真正的隔离靠容器 / 非 root / 只读挂载 / `--permissions ask`，不是靠 token。
+  要多用户、要吊销、要限流，得在反代层做（OAuth / mTLS / Cloudflare Access 之类）。
+
 ### 全部参数
 
 | 参数 | 环境变量 | 默认 | 说明 |
@@ -144,7 +195,7 @@ stdio 模式就是换行分隔的 JSON-RPC 2.0；HTTP 模式是 ACP 的 Streamab
 
 | 情况 | 结果 |
 | --- | --- |
-| 没有 `Authorization: Bearer <token>`（配了 `--token` 时） | **401** |
+| 没有 `Authorization: Bearer <token>`（配了 `--token` 时） | **401**（见 §2.2） |
 | `POST initialize` | **200** + `acp-connection-id` |
 | 带 `params.sessionId` 的请求**缺少** `Acp-Session-Id` 头 | **400** |
 | 不带 sessionId 的请求（如 `session/new`） | **202**，响应走连接级 SSE |

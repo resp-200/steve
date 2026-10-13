@@ -49,7 +49,7 @@ doc/*                    专题文档：模型接入 / ACP server / MCP / 插件
 mcp.example.json         MCP 配置模板（复制到 .steve/mcp.json，见「MCP 接入」）
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
 test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
-scripts/*                离线 mock 网关 + ACP 测试客户端 / probe / headless 浏览器测试
+scripts/*                离线 mock 网关 + ACP 测试客户端 / probe / headless 浏览器测试 + 一键启动 ACP 服务（steve-acp-serve.sh）
 scripts/arch-test.mjs    架构契约 + 发布卫生检查（约定与规范的可执行版本）
 scripts/verify.mjs       一键回归：类型 → 构建 → 架构 → 各能力测试 → 浏览器端到端
 ```
@@ -499,6 +499,7 @@ HTTP / WebSocket 模式（编辑器支持远程连接时用）：
 
 ```bash
 steve-acp --port 8890 --token secret --cors "*"   # 端点 http://127.0.0.1:8890/acp，页面 http://127.0.0.1:8890/
+npm run acp:serve                                  # 一键启动：8891 + token 取自 ~/.steve/.env 的 ACP_TOKEN（见 doc/acp-server.md §2.1）
 ```
 
 验证连接（`acp:client` 可以从任意目录运行，agent 路径按脚本位置解析）：
