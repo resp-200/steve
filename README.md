@@ -465,12 +465,12 @@ Zed 的 `settings.json`：
 
 ```bash
 npm run build
-npm pack                      # → steve-0.1.0.tgz（109 KB，files 字段已限定内容）
-npm i -g ./steve-0.1.0.tgz     # 装上两个命令：steve（CLI）与 steve-acp（ACP server）
+npm pack                      # → steve-0.1.0.tgz（123 KB，files 字段已限定内容）
+npm i -g ./steve-0.1.0.tgz     # 装上三个命令：steve（CLI）/ steve-acp（ACP server）/ steve-acp-serve（一键起 HTTP 服务）
 # 或者只在本机试用：npm link
 ```
 
-`bin` 两个入口：`steve`（终端对话）与 `steve-acp`（ACP server）。于是编辑器配置可以简单到：
+`bin` 三个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）。于是编辑器配置可以简单到：
 
 ```jsonc
 // Zed settings.json

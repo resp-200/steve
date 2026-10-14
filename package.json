@@ -9,10 +9,12 @@
 	},
 	"bin": {
 		"steve": "dist/entries/cli.js",
-		"steve-acp": "dist/protocols/acp/main.js"
+		"steve-acp": "dist/protocols/acp/main.js",
+		"steve-acp-serve": "scripts/steve-acp-serve.sh"
 	},
 	"files": [
 		"dist",
+		"scripts/steve-acp-serve.sh",
 		"web",
 		"test-acp-jsonrpc.html",
 		"mcp.example.json",

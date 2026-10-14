@@ -37,7 +37,15 @@
 # 所以想带哪个项目的 MCP / 插件，就在那个目录里启动本脚本。
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# npm 的 bin 是软链（bin/steve-acp-serve -> ../lib/node_modules/steve/scripts/…），
+# 所以要先顺着软链找到脚本真实位置，dirname 才不会停在 bin/ 上。
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+	DIR="$(cd -- "$(dirname -- "$SOURCE")" && pwd)"
+	SOURCE="$(readlink "$SOURCE")"
+	case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SOURCE")" && pwd)"
 
 ENV_FILE="${STEVE_ACP_ENV_FILE:-$HOME/.steve/.env}"
 HOST="${ACP_HOST:-127.0.0.1}"
@@ -57,12 +65,14 @@ die() {
 # ---- 脚本自己的开关：--daemon / --foreground / --stop 自己消化，其余原样透传 ----
 DAEMON=false
 STOP=false
+HELP=false
 PASSTHROUGH=()
 for arg in "$@"; do
 	case "$arg" in
 		--daemon|-d) DAEMON=true ;;
 		--foreground) DAEMON=false ;;
 		--stop) STOP=true ;;
+		-h|--help) HELP=true ;;
 		*) PASSTHROUGH+=("$arg") ;;
 	esac
 done
@@ -72,6 +82,41 @@ LOG_DIR="${STEVE_ACP_LOG_DIR:-$HOME/.steve/log}"
 # 后台运行时默认打开 steve 自己的日志（前台保持安静），除非显式设了 ACP_QUIET。
 if [ -z "$QUIET" ]; then
 	if [ "$DAEMON" = "true" ]; then QUIET=false; else QUIET=true; fi
+fi
+
+# 优先用装到 PATH 上的命令；没装则退回包内（或仓库里）的构建产物。
+if command -v steve-acp >/dev/null 2>&1; then
+	CMD=(steve-acp)
+elif [ -f "$SCRIPT_DIR/../dist/protocols/acp/main.js" ]; then
+	CMD=(node "$SCRIPT_DIR/../dist/protocols/acp/main.js")
+else
+	die "找不到 steve-acp：先 npm run build，或 npm pack && npm i -g ./steve-0.1.0.tgz"
+fi
+
+# --help 要能在没有 token 的情况下看，所以放在 token 解析之前。
+if [ "$HELP" = "true" ]; then
+	cat <<EOF
+steve-acp-serve — 一键启动 steve 的 ACP HTTP 服务（token 取自 ${ENV_FILE} 的 ACP_TOKEN）
+
+用法
+  steve-acp-serve [--daemon | --foreground] [--stop] [steve-acp 的参数…]
+
+本脚本自己的开关
+  --daemon, -d   后台运行；日志与 pidfile 写到 ${LOG_DIR}/steve-acp-<port>.{log,pid}
+  --foreground   前台运行（默认；systemd / launchd 用这个）
+  --stop         按 pidfile 停掉 --daemon 起的实例（SIGTERM，steve 自己优雅关闭）
+  --help, -h     这段说明 + 下面 steve-acp 的完整参数表
+
+环境变量（默认值）
+  STEVE_ACP_ENV_FILE=${ENV_FILE}
+  STEVE_ACP_LOG_DIR=${LOG_DIR}
+  ACP_TOKEN / ACP_HOST / ACP_PORT / ACP_PATH / ACP_SESSION_DIR
+  ACP_PERMISSIONS / ACP_ALLOW_LOCAL_TOOLS / ACP_QUIET / ACP_CORS
+
+其余参数原样透传给 steve-acp（后写的 flag 生效，可覆盖默认值）：
+EOF
+	"${CMD[@]}" --help
+	exit 0
 fi
 
 # 与 src/model/config.ts 的 parseEnvFile() 保持同一套规则：逐行 key=value，
@@ -133,15 +178,6 @@ case "$SESSION_DIR" in
 	"~/"*) SESSION_DIR="$HOME/${SESSION_DIR#\~/}" ;;
 esac
 mkdir -p "$SESSION_DIR" || die "无法创建 session 目录：$SESSION_DIR"
-
-# 优先用装到 PATH 上的命令；没装则退回仓库里的构建产物。
-if command -v steve-acp >/dev/null 2>&1; then
-	CMD=(steve-acp)
-elif [ -f "$SCRIPT_DIR/../dist/protocols/acp/main.js" ]; then
-	CMD=(node "$SCRIPT_DIR/../dist/protocols/acp/main.js")
-else
-	die "找不到 steve-acp：先 npm run build，或 npm pack && npm i -g ./steve-0.1.0.tgz"
-fi
 
 ARGS=(
 	--transport http
@@ -229,7 +265,11 @@ if [ "$DAEMON" = "true" ]; then
 	print_summary >&2
 	printf 'steve-acp-serve: 后台运行 pid=%s\n' "$pid" >&2
 	printf 'steve-acp-serve: 日志 tail -f %s\n' "$LOG_FILE" >&2
-	printf 'steve-acp-serve: 停止 bash %s --stop\n' "$0" >&2
+	if [ -x "$SOURCE" ]; then
+		printf 'steve-acp-serve: 停止 %s --stop\n' "$0" >&2
+	else
+		printf 'steve-acp-serve: 停止 bash %s --stop\n' "$0" >&2
+	fi
 	exit 0
 fi
 

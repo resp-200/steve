@@ -219,18 +219,23 @@ check(
 );
 check("不依赖 pi-coding-agent", !Object.keys(pkg.dependencies ?? {}).some((name) => name.endsWith("pi-coding-agent")));
 
-// Packaging: `bin` must point at real build outputs, and the tarball must carry
-// the browser test page (the HTTP transport serves it) and the mcp template.
-const binTargets = Object.values(pkg.bin ?? {});
-const binSources = binTargets.map((target) => target.replace(/^dist\//, "src/").replace(/\.js$/, ".ts"));
+// Packaging: every `bin` must point at a real entry point — built output → its
+// source, shipped shell script → itself — and the tarball must carry the browser
+// test page (the HTTP transport serves it), the mcp template, and the serve script.
+const EXPECTED_BINS = ["steve", "steve-acp", "steve-acp-serve"];
+const binEntries = Object.entries(pkg.bin ?? {});
+const binSource = (target) =>
+	target.endsWith(".sh") ? target : target.replace(/^dist\//, "src/").replace(/\.js$/, ".ts");
+const missingBins = binEntries.filter(([, target]) => !existsSync(join(ROOT, binSource(target))));
 check(
-	"bin 指向真实存在的构建产物",
-	binTargets.length === 2 && binSources.every((source) => existsSync(join(ROOT, source))),
-	binTargets.join(", "),
+	"bin 提供 steve / steve-acp / steve-acp-serve，且都指向真实存在的入口",
+	EXPECTED_BINS.every((name) => name in (pkg.bin ?? {})) && missingBins.length === 0,
+	binEntries.map(([name, target]) => `${name} → ${target}`).join(", "),
 );
+const REQUIRED_FILES = ["dist", "test-acp-jsonrpc.html", "scripts/steve-acp-serve.sh"];
 check(
-	"files 覆盖 dist 与测试页（打包后 UI 与 ACP 都能用）",
-	(pkg.files ?? []).includes("dist") && (pkg.files ?? []).includes("test-acp-jsonrpc.html"),
+	"files 覆盖 dist / 测试页 / serve 脚本（装完 UI、ACP、一键启动都能用）",
+	REQUIRED_FILES.every((entry) => (pkg.files ?? []).includes(entry)),
 	(pkg.files ?? []).join(", "),
 );
 
@@ -269,7 +274,7 @@ const FORBIDDEN = [
 const leaked = [];
 for (const rel of tracked) {
 	if (rel === "scripts/arch-test.mjs") continue; // 本文件里有这些片段，跳过自己
-	if (!/\.(ts|js|mjs|json|md|html|example|yml|yaml)$/.test(rel) && rel !== ".env.example") continue;
+	if (!/\.(ts|js|mjs|json|md|html|example|yml|yaml|sh)$/.test(rel) && rel !== ".env.example") continue;
 	let text;
 	try {
 		text = readFileSync(join(ROOT, rel), "utf8");

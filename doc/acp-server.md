@@ -49,15 +49,19 @@ node dist/protocols/acp/main.js --port 8890 --allow-local-tools
 
 ### 2.1 一键启动脚本（远程 / 云）
 
-`scripts/steve-acp-serve.sh`（`npm run acp:serve`）把上面那串参数固定下来，token 不用每次手敲：
+`scripts/steve-acp-serve.sh` 把上面那串参数固定下来，token 不用每次手敲。它同时是包里的第三个 bin，
+所以三种跑法等价：**装过就 `steve-acp-serve`**、仓库里 `npm run acp:serve`、或 `bash scripts/steve-acp-serve.sh`。
 
 ```bash
 # 只需一次：生成 token 并写进 ~/.steve/.env（steve 自己不读 ACP_TOKEN，是脚本读出来再 --token 传进去）
 umask 077 && printf 'ACP_TOKEN=%s\n' "$(openssl rand -hex 32)" >> ~/.steve/.env
 
-npm run acp:serve                    # 前台：或 bash scripts/steve-acp-serve.sh
-npm run acp:serve -- --daemon        # 后台：日志与 pidfile 落在 ~/.steve/log/
-npm run acp:serve -- --stop          # 停掉 --daemon 起的那个实例（按端口）
+steve-acp-serve                    # 前台（装过就是 PATH 上的命令）
+steve-acp-serve --daemon            # 后台：日志与 pidfile 落在 ~/.steve/log/
+steve-acp-serve --stop              # 停掉 --daemon 起的那个实例（按端口）
+steve-acp-serve --help              # 本脚本的开关 + steve-acp 的完整参数表
+
+npm run acp:serve -- --daemon       # 在仓库里等价；bash scripts/steve-acp-serve.sh --daemon 也行
 # → endpoint http://127.0.0.1:8891/acp · 页面 http://127.0.0.1:8891/
 ```
 
