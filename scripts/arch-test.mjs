@@ -219,6 +219,20 @@ check(
 );
 check("不依赖 pi-coding-agent", !Object.keys(pkg.dependencies ?? {}).some((name) => name.endsWith("pi-coding-agent")));
 
+// Publish readiness: `private` blocks `npm publish`, and the tarball ships `dist/`
+// only, so `prepublishOnly` has to build it — otherwise a release ships a stale or
+// empty package. `repository` is what lets npm resolve the README's relative links.
+check(
+	"可发布：private 已关，license / repository / prepublishOnly 齐备",
+	pkg.private !== true &&
+		Boolean(pkg.license) &&
+		Boolean(pkg.repository) &&
+		typeof pkg.scripts?.prepublishOnly === "string" &&
+		// scoped 包默认 restricted，且本机 registry 可能是内网镜像：两个都得写死。
+		pkg.publishConfig?.access === "public" &&
+		Boolean(pkg.publishConfig?.registry),
+	`name=${pkg.name} license=${pkg.license ?? "—"} prepublishOnly=${pkg.scripts?.prepublishOnly ?? "—"}`,
+);
 // Packaging: every `bin` must point at a real entry point — built output → its
 // source, shipped shell script → itself — and the tarball must carry the browser
 // test page (the HTTP transport serves it), the mcp template, and the serve script.

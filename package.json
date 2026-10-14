@@ -1,9 +1,23 @@
 {
-	"name": "steve",
+	"name": "@zhyoung/steve",
 	"version": "0.1.0",
-	"private": true,
 	"type": "module",
 	"description": "steve — a minimal streaming chat agent + ACP server built on @earendil-works/pi-agent-core and @earendil-works/pi-ai",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/resp-200/steve.git"
+	},
+	"homepage": "https://github.com/resp-200/steve#readme",
+	"bugs": "https://github.com/resp-200/steve/issues",
+	"keywords": [
+		"agent",
+		"acp",
+		"agent-client-protocol",
+		"llm",
+		"cli",
+		"mcp"
+	],
 	"engines": {
 		"node": ">=22.19.0"
 	},
@@ -22,7 +36,12 @@
 		"README.md",
 		"LICENSE"
 	],
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
 	"scripts": {
+		"prepublishOnly": "npm run build",
 		"dev": "tsx src/entries/cli.ts",
 		"mock": "node scripts/mock-server.mjs",
 		"acp": "node dist/protocols/acp/main.js",

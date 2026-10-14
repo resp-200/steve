@@ -90,7 +90,7 @@ if command -v steve-acp >/dev/null 2>&1; then
 elif [ -f "$SCRIPT_DIR/../dist/protocols/acp/main.js" ]; then
 	CMD=(node "$SCRIPT_DIR/../dist/protocols/acp/main.js")
 else
-	die "找不到 steve-acp：先 npm run build，或 npm pack && npm i -g ./steve-0.1.0.tgz"
+	die "找不到 steve-acp：先 npm run build，或 npm i -g @zhyoung/steve"
 fi
 
 # --help 要能在没有 token 的情况下看，所以放在 token 解析之前。

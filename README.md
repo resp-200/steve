@@ -461,12 +461,13 @@ Zed 的 `settings.json`：
 
 ### 打包与分发（装到别处怎么连）
 
-没有打包器：`npm run build` 用 `tsc` 直接输出 `dist/`（27 个文件、424 KB），入口都带 shebang。要分发给别人或装到别的机器，用 tarball：
+没有打包器：`npm run build` 用 `tsc` 直接输出 `dist/`（60 个文件、456 KB），入口都带 shebang。要分发给别人或装到别的机器，用 tarball：
 
 ```bash
 npm run build
-npm pack                      # → steve-0.1.0.tgz（123 KB，files 字段已限定内容）
-npm i -g ./steve-0.1.0.tgz     # 装上三个命令：steve（CLI）/ steve-acp（ACP server）/ steve-acp-serve（一键起 HTTP 服务）
+npm pack                      # → zhyoung-steve-0.1.0.tgz（126 KB，files 字段已限定内容）
+npm i -g ./zhyoung-steve-0.1.0.tgz   # 装上三个命令：steve（CLI）/ steve-acp（ACP server）/ steve-acp-serve（一键起 HTTP 服务）
+npm i -g @zhyoung/steve       # 已发布的话，直接从 registry 装
 # 或者只在本机试用：npm link
 ```
 
@@ -513,7 +514,33 @@ node /path/to/steve/scripts/acp-http-probe.mjs --url http://127.0.0.1:8890/acp -
 两个坑：
 
 - **别只拷 `dist/`**：产物是 ESM，需要同级的 `package.json`（`"type": "module"`）以及三个运行时依赖（pi 两个包 + ACP SDK，约 18 MB）。用 `npm pack` + `npm i -g` 就没这个问题。
-- **UI 页面随包走**：HTTP 模式的 `/` 由 `test-acp-jsonrpc.html` 提供，`files` 里已经包含它（`arch:test` 会检查，防止漏掉）。要发到 npm 得先把 `private` 改成 `false`。
+- **UI 页面随包走**：HTTP 模式的 `/` 由 `test-acp-jsonrpc.html` 提供，`files` 里已经包含它（`arch:test` 会检查，防止漏掉）。
+
+### 发布到 npm
+
+包名是 scoped 的 `@zhyoung/steve`（`steve` 这个无 scope 的名字在 npm 上已被占用），发布相关字段都已经填好：
+`license` / `repository` / `homepage` / `bugs` / `keywords` / `publishConfig.access=public`，以及
+`prepublishOnly: npm run build`（`files` 里只有构建产物 `dist`，不构建就会发一个空包）。
+
+```bash
+npm login --registry=https://registry.npmjs.org/   # 注意别登录到公司内网镜像上
+npm whoami --registry=https://registry.npmjs.org/  # 确认是 zhyoung
+npm run verify -- --fast      # 至少跑一遍（--fast 跳过需要 Chrome 的浏览器测试）
+npm publish --dry-run         # 先看会发什么（会跑 prepublishOnly → build）
+npm publish                   # access/registry 都由 publishConfig 定好，直接发
+npm view @zhyoung/steve --registry=https://registry.npmjs.org/   # 确认上线
+
+npm version patch && npm publish   # 之后每次发布
+```
+
+两个容易踩的点：
+
+- **registry**：`publishConfig.registry` 已经写死成公共 registry，所以就算本机 `~/.npmrc` 指向公司内网镜像（很常见），
+  `npm publish` 也不会发错地方。但 `npm login` / `npm whoami` **不受 publishConfig 影响**，必须自己带上 `--registry`。
+- **版本号**：同一个版本不能重复发布，第二次起要先 `npm version patch`。
+
+`arch:test` 有一条断言盯着「可发布」这件事（`private` 不能是 `true`、license/repository/prepublishOnly 必须在），
+免得以后不小心改回去。
 
 ### 自带的测试客户端
 
