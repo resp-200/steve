@@ -93,7 +93,7 @@ cwd 就是启动目录 —— `.steve/mcp.json` 与 `.steve/extensions/` 按 cwd
 ```bash
 npm run acp:serve -- --daemon
 # steve-acp-serve: 后台运行 pid=12345
-# steve-acp-serve: 日志 tail -f /Users/you/.steve/log/steve-acp-8891.log
+# steve-acp-serve: 日志 tail -f ~/.steve/log/steve-acp-8891.log
 
 tail -f ~/.steve/log/steve-acp-8891.log    # 服务日志
 npm run acp:serve -- --stop                # 停（SIGTERM，steve 自己优雅关闭）
@@ -195,8 +195,11 @@ IDEA 会把它自己的 MCP 配置随 `session/new` 传进来（`default_mcp_set
    从 Dock 启动、PATH 更窄的编辑器则不行。**最稳的写法是绝对路径**：
 
    ```jsonc
-   { "command": "/Users/you/.nvm/versions/node/vX/bin/node",
-     "args": ["/Users/you/.nvm/versions/node/vX/lib/node_modules/steve/dist/protocols/acp/main.js"] }
+   // GUI 应用的 PATH 可能很窄，写死两个绝对路径最稳。下面用占位符，按你的机器替换：
+   //   which node    → node 的绝对路径
+   //   npm root -g   → 全局 node_modules 目录（脚本在 <它>/steve/dist/protocols/acp/main.js）
+   { "command": "<which node 的输出>",
+     "args": ["<npm root -g 的输出>/steve/dist/protocols/acp/main.js"] }
    ```
 
    注意：只把 `command` 指向 `steve-acp` 软链**不够** —— 它的 shebang 是 `#!/usr/bin/env node`，`env` 还要能在 PATH 里找到 `node`。

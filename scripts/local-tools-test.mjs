@@ -105,11 +105,11 @@ async function toolChecks() {
 	const windows = { caseInsensitive: true, separator: "\\" };
 	check(
 		"isInside：Windows 大小写不敏感且用 \\ 作边界",
-		isInside("C:\\Users\\zz\\Project", "c:\\users\\zz\\project\\x.txt", windows) &&
-			!isInside("C:\\Users\\zz\\Project", "c:\\users\\zz\\project2\\x.txt", windows),
+		isInside("C:\\Users\\example\\Project", "c:\\users\\example\\project\\x.txt", windows) &&
+			!isInside("C:\\Users\\example\\Project", "c:\\users\\example\\project2\\x.txt", windows),
 	);
-	check("isInside：macOS 大小写不敏感（/ 边界）", isInside("/Users/zz/Project", "/users/zz/project/x.txt", { caseInsensitive: true }));
-	check("isInside：Linux 保持大小写敏感", !isInside("/home/zz/Project", "/home/zz/project/x.txt", posix));
+	check("isInside：macOS 大小写不敏感（/ 边界）", isInside("/Users/example/Project", "/users/example/project/x.txt", { caseInsensitive: true }));
+	check("isInside：Linux 保持大小写敏感", !isInside("/home/example/Project", "/home/example/project/x.txt", posix));
 	check("isInside：末尾分隔符不会放宽边界", isInside("/a/b/", "/a/b/c", posix) && !isInside("/a/b/", "/a/bc", posix));
 	check(
 		"resolveShell：POSIX 用 $SHELL -lc",

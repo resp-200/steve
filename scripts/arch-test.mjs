@@ -9,12 +9,13 @@
  *   2. 协议层 / 入口层零 pi 依赖；ACP SDK 只出现在协议层
  *   3. 只有 kernel/agent.ts 能装配 pi 的 Agent
  *   4. 运行时依赖白名单（ws 只能 optional）
- *   5. 发布卫生：.env 不入库、公开文件里没有内网域名/凭据/真实模型 id
+ *   5. 发布卫生：.env 不入库、公开文件里没有内网域名/凭据/真实模型 id/个人 home 路径
  *
  *   node scripts/arch-test.mjs
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -279,6 +280,12 @@ check(
 );
 check("没有 `.steve/` 下的文件被跟踪", steveTracked.length === 0, steveTracked.join(", "));
 
+// 文档 / 测试夹具里的 home 路径不许出现真名（macOS 用户名、公司机器名都是隐私）。
+// 占位符随便用；真路径请写成 ~ 或 $HOME，让人家自己替换。
+const PLACEHOLDER_USERS = new Set(["you", "user", "example", "yourname", "me"]);
+const HOME_PATH = /\/(?:Users|home)\/([A-Za-z0-9._-]+)/g;
+const homeLeaks = new Set();
+
 const FORBIDDEN = [
 	["zhuan", "spirit"].join(""), // 内网网关域名
 	["token", "hub"].join(""), // 内网网关名
@@ -298,8 +305,19 @@ for (const rel of tracked) {
 	for (const needle of FORBIDDEN) {
 		if (text.includes(needle)) leaked.push(`${rel}: ${needle}`);
 	}
+
+	// 本机 home 出现即视为泄漏；/Users/<非占位符> 这类真名同样算。
+	if (text.includes(homedir())) homeLeaks.add(`${rel}: ${homedir()}`);
+	for (const [match, name] of text.matchAll(HOME_PATH)) {
+		if (!PLACEHOLDER_USERS.has(name.toLowerCase())) homeLeaks.add(`${rel}: ${match}`);
+	}
 }
 check("公开文件里没有内网域名 / 凭据 / 真实模型 id", leaked.length === 0, leaked.slice(0, 5).join("; "));
+check(
+	"公开文件里没有个人 home 路径（本机 home 或非占位符用户名）",
+	homeLeaks.size === 0,
+	[...homeLeaks].slice(0, 5).join("; "),
+);
 
 /* ------------------------------------------------------------------ */
 
