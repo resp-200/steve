@@ -4,8 +4,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Model, ProviderId } from "@earendil-works/pi-ai";
 
-/** Parses one .env file into key/value pairs (no expansion, no interpolation). */
-function parseEnvFile(file: string): [string, string][] {
+/**
+ * Parses one .env file into key/value pairs (no expansion, no interpolation).
+ *
+ * Exported because `scripts/steve-acp-serve.mjs` reads `ACP_TOKEN` out of
+ * `~/.steve/.env` with exactly these rules — one parser, so the two can't drift.
+ */
+export function parseEnvFile(file: string): [string, string][] {
 	const entries: [string, string][] = [];
 	for (const rawLine of readFileSync(file, "utf8").split(/\r?\n/)) {
 		const line = rawLine.trim();

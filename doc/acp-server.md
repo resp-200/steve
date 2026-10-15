@@ -49,8 +49,9 @@ node dist/protocols/acp/main.js --port 8890 --allow-local-tools
 
 ### 2.1 一键启动脚本（远程 / 云）
 
-`scripts/steve-acp-serve.sh` 把上面那串参数固定下来，token 不用每次手敲。它同时是包里的第三个 bin，
-所以三种跑法等价：**装过就 `steve-acp-serve`**、仓库里 `npm run acp:serve`、或 `bash scripts/steve-acp-serve.sh`。
+`scripts/steve-acp-serve.mjs` 把上面那串参数固定下来，token 不用每次手敲。它同时是包里的第三个 bin，
+所以三种跑法等价：**装过就 `steve-acp-serve`**、仓库里 `npm run acp:serve`、或 `node scripts/steve-acp-serve.mjs`。
+用 Node 写而不是 bash —— Windows / macOS / Linux 行为一致，不需要 bash、`nohup` 或 `/dev/tcp`。
 
 ```bash
 # 只需一次：生成 token 并写进 ~/.steve/.env（steve 自己不读 ACP_TOKEN，是脚本读出来再 --token 传进去）
@@ -61,7 +62,7 @@ steve-acp-serve --daemon            # 后台：日志与 pidfile 落在 ~/.steve
 steve-acp-serve --stop              # 停掉 --daemon 起的那个实例（按端口）
 steve-acp-serve --help              # 本脚本的开关 + steve-acp 的完整参数表
 
-npm run acp:serve -- --daemon       # 在仓库里等价；bash scripts/steve-acp-serve.sh --daemon 也行
+npm run acp:serve -- --daemon       # 在仓库里等价；node scripts/steve-acp-serve.mjs --daemon 也行
 # → endpoint http://127.0.0.1:8891/acp · 页面 http://127.0.0.1:8891/
 ```
 
@@ -80,7 +81,7 @@ npm run acp:serve -- --daemon       # 在仓库里等价；bash scripts/steve-ac
 | `ACP_CORS` | 空 | 只在「页面与端点不同源」时需要，如 `*` |
 | `STEVE_ACP_LOG_DIR` | `~/.steve/log` | `--daemon` 的日志与 pidfile 目录 |
 
-额外参数原样透传给 `steve-acp`，且能覆盖上面的默认值（`bash scripts/steve-acp-serve.sh --port 9000` —— steve 后写的 flag 生效，摘要会跟着改）。
+额外参数原样透传给 `steve-acp`，且能覆盖上面的默认值（`node scripts/steve-acp-serve.mjs --port 9000` —— steve 后写的 flag 生效，摘要会跟着改）。
 缺 token、端口被占用都会先给人话提示再退出，不会静默起一个没有认证的服务。
 
 命令优先用 PATH 上的 `steve-acp`，没装则退回仓库的 `dist/protocols/acp/main.js`（先 `npm run build`）。
@@ -88,7 +89,8 @@ cwd 就是启动目录 —— `.steve/mcp.json` 与 `.steve/extensions/` 按 cwd
 
 #### 后台运行与日志
 
-`--daemon` 把服务 `nohup` 到后台，日志和 pidfile 按端口命名，多实例互不覆盖：
+`--daemon` 把服务脱离父进程丢到后台（Node `spawn({ detached: true })`，不是 `nohup`），
+日志和 pidfile 按端口命名，多实例互不覆盖：
 
 ```bash
 npm run acp:serve -- --daemon
@@ -96,7 +98,7 @@ npm run acp:serve -- --daemon
 # steve-acp-serve: 日志 tail -f ~/.steve/log/steve-acp-8891.log
 
 tail -f ~/.steve/log/steve-acp-8891.log    # 服务日志
-npm run acp:serve -- --stop                # 停（SIGTERM，steve 自己优雅关闭）
+npm run acp:serve -- --stop                # 停：POSIX 发 SIGTERM（steve 优雅关闭），Windows 用 taskkill /T
 ```
 
 | 文件 | 说明 |
@@ -109,8 +111,11 @@ npm run acp:serve -- --stop                # 停（SIGTERM，steve 自己优雅�
 - 后台模式默认 `ACP_QUIET=false`（前台仍默认安静），显式设 `ACP_QUIET` 则按你给的来。
 - 启动后等 1 秒确认进程还活着，立刻退出（配置错、端口被抢）就把日志末尾 20 行打出来并以 1 退出，不会留下假 pidfile。
 - 端口被占用时先报错再退出，所以重复 `--daemon` 不会起出第二个实例。
-- 日志是 `>>` 追加的，长期跑要自己轮转（Linux `logrotate`，或 `: > ~/.steve/log/steve-acp-8891.log` 手动清空）。
-- 真要开机自启 / 崩溃重启，还是交给 systemd（`launchd`）：用 `--foreground` 让进程待在**前台**，日志交给 journald，别用 `--daemon`。
+- 日志是追加写的，长期跑要自己轮转（Linux `logrotate`，或 `: > ~/.steve/log/steve-acp-8891.log` 手动清空）。
+- 真要开机自启 / 崩溃重启，交给系统服务：Linux `systemd`、macOS `launchd`、Windows `nssm` / `sc.exe`。
+  它们都用 `--foreground` 让进程待在**前台**，日志交给 journald / 事件日志，别用 `--daemon`。
+- Windows 上没有 `nohup` / SIGTERM 语义：`--daemon` 用 Node 的 detached spawn，`--stop` 用 `taskkill /T /F`
+  杀进程树（否则 MCP 子进程会留下）。
 
 ### 2.2 token 管什么、不管什么
 

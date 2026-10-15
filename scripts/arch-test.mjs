@@ -240,14 +240,15 @@ check(
 const EXPECTED_BINS = ["steve", "steve-acp", "steve-acp-serve"];
 const binEntries = Object.entries(pkg.bin ?? {});
 const binSource = (target) =>
-	target.endsWith(".sh") ? target : target.replace(/^dist\//, "src/").replace(/\.js$/, ".ts");
+	// dist/*.js 是构建产物 → 映射回 src/*.ts；其余（scripts/*.mjs）就是仓库里的文件本身。
+	target.startsWith("dist/") ? target.replace(/^dist\//, "src/").replace(/\.js$/, ".ts") : target;
 const missingBins = binEntries.filter(([, target]) => !existsSync(join(ROOT, binSource(target))));
 check(
 	"bin 提供 steve / steve-acp / steve-acp-serve，且都指向真实存在的入口",
 	EXPECTED_BINS.every((name) => name in (pkg.bin ?? {})) && missingBins.length === 0,
 	binEntries.map(([name, target]) => `${name} → ${target}`).join(", "),
 );
-const REQUIRED_FILES = ["dist", "test-acp-jsonrpc.html", "scripts/steve-acp-serve.sh"];
+const REQUIRED_FILES = ["dist", "test-acp-jsonrpc.html", "scripts/steve-acp-serve.mjs"];
 check(
 	"files 覆盖 dist / 测试页 / serve 脚本（装完 UI、ACP、一键启动都能用）",
 	REQUIRED_FILES.every((entry) => (pkg.files ?? []).includes(entry)),

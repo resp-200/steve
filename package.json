@@ -24,11 +24,11 @@
 	"bin": {
 		"steve": "dist/entries/cli.js",
 		"steve-acp": "dist/protocols/acp/main.js",
-		"steve-acp-serve": "scripts/steve-acp-serve.sh"
+		"steve-acp-serve": "scripts/steve-acp-serve.mjs"
 	},
 	"files": [
 		"dist",
-		"scripts/steve-acp-serve.sh",
+		"scripts/steve-acp-serve.mjs",
 		"web",
 		"test-acp-jsonrpc.html",
 		"mcp.example.json",
@@ -49,7 +49,7 @@
 		"acp:client": "node scripts/acp-client.mjs",
 		"acp:probe": "node scripts/acp-http-probe.mjs",
 		"acp:ui-test": "node scripts/acp-ui-test.mjs",
-		"acp:serve": "bash scripts/steve-acp-serve.sh",
+		"acp:serve": "node scripts/steve-acp-serve.mjs",
 		"plugins:test": "node scripts/plugin-test.mjs",
 		"tools:test": "node scripts/local-tools-test.mjs",
 		"sessions:test": "node scripts/session-test.mjs",
