@@ -62,6 +62,15 @@ die() {
 	exit 1
 }
 
+# 只影响打印：$HOME 前缀缩成 ~，免得截图 / 贴日志 / 报 bug 时带出用户名。
+# 内部照旧用绝对路径；指到 $HOME 外面（如 /etc/steve/steve.env）时原样显示，方便排查。
+tilde() {
+	case "$1" in
+		"$HOME"/*) printf '~%s' "${1#"$HOME"}" ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
 # ---- 脚本自己的开关：--daemon / --foreground / --stop 自己消化，其余原样透传 ----
 DAEMON=false
 STOP=false
@@ -96,20 +105,20 @@ fi
 # --help 要能在没有 token 的情况下看，所以放在 token 解析之前。
 if [ "$HELP" = "true" ]; then
 	cat <<EOF
-steve-acp-serve — 一键启动 steve 的 ACP HTTP 服务（token 取自 ${ENV_FILE} 的 ACP_TOKEN）
+steve-acp-serve — 一键启动 steve 的 ACP HTTP 服务（token 取自 $(tilde "$ENV_FILE") 的 ACP_TOKEN）
 
 用法
   steve-acp-serve [--daemon | --foreground] [--stop] [steve-acp 的参数…]
 
 本脚本自己的开关
-  --daemon, -d   后台运行；日志与 pidfile 写到 ${LOG_DIR}/steve-acp-<port>.{log,pid}
+  --daemon, -d   后台运行；日志与 pidfile 写到 $(tilde "$LOG_DIR")/steve-acp-<port>.{log,pid}
   --foreground   前台运行（默认；systemd / launchd 用这个）
   --stop         按 pidfile 停掉 --daemon 起的实例（SIGTERM，steve 自己优雅关闭）
   --help, -h     这段说明 + 下面 steve-acp 的完整参数表
 
 环境变量（默认值）
-  STEVE_ACP_ENV_FILE=${ENV_FILE}
-  STEVE_ACP_LOG_DIR=${LOG_DIR}
+  STEVE_ACP_ENV_FILE=$(tilde "$ENV_FILE")
+  STEVE_ACP_LOG_DIR=$(tilde "$LOG_DIR")
   ACP_TOKEN / ACP_HOST / ACP_PORT / ACP_PATH / ACP_SESSION_DIR
   ACP_PERMISSIONS / ACP_ALLOW_LOCAL_TOOLS / ACP_QUIET / ACP_CORS
 
@@ -158,13 +167,13 @@ if [ -z "$TOKEN" ]; then
 fi
 if [ -z "$TOKEN" ]; then
 	cat >&2 <<EOF
-steve-acp-serve: $ENV_FILE 里没有 ACP_TOKEN。
+steve-acp-serve: $(tilde "$ENV_FILE") 里没有 ACP_TOKEN。
 
 生成一个写进去（文件权限 600，避免被同机其它用户读走）：
-  umask 077 && printf 'ACP_TOKEN=%s\n' "\$(openssl rand -hex 32)" >> "$ENV_FILE"
+  umask 077 && printf 'ACP_TOKEN=%s\n' "\$(openssl rand -hex 32)" >> "$(tilde "$ENV_FILE")"
 
 或者临时用环境变量覆盖：
-  ACP_TOKEN=\$(openssl rand -hex 32) bash $0
+  ACP_TOKEN=\$(openssl rand -hex 32) bash $(tilde "$0")
 EOF
 	exit 1
 fi
@@ -177,7 +186,7 @@ case "$SESSION_DIR" in
 	"~") SESSION_DIR="$HOME" ;;
 	"~/"*) SESSION_DIR="$HOME/${SESSION_DIR#\~/}" ;;
 esac
-mkdir -p "$SESSION_DIR" || die "无法创建 session 目录：$SESSION_DIR"
+mkdir -p "$SESSION_DIR" || die "无法创建 session 目录：$(tilde "$SESSION_DIR")"
 
 ARGS=(
 	--transport http
@@ -220,11 +229,11 @@ PIDFILE="$LOG_DIR/steve-acp-$PORT.pid"
 LOG_FILE="$LOG_DIR/steve-acp-$PORT.log"
 
 if [ "$STOP" = "true" ]; then
-	[ -f "$PIDFILE" ] || die "没有 pidfile（${PIDFILE}）：这个端口不是用 --daemon 起的，或者已经停了"
+	[ -f "$PIDFILE" ] || die "没有 pidfile（$(tilde "$PIDFILE")）：这个端口不是用 --daemon 起的，或者已经停了"
 	pid="$(cat "$PIDFILE")"
 	if kill -0 "$pid" 2>/dev/null; then
 		kill "$pid" # SIGTERM：steve 自己会优雅关闭
-		printf 'steve-acp-serve: 已发送 SIGTERM 给 pid %s（日志 %s）\n' "$pid" "$LOG_FILE" >&2
+		printf 'steve-acp-serve: 已发送 SIGTERM 给 pid %s（日志 %s）\n' "$pid" "$(tilde "$LOG_FILE")" >&2
 	else
 		printf 'steve-acp-serve: pid %s 已经不在了，清掉 pidfile\n' "$pid" >&2
 	fi
@@ -235,19 +244,19 @@ fi
 # 端口占用是最常见的启动失败原因（上一次的实例还在跑），先给出人话提示。
 if (exec 3<>"/dev/tcp/$HOST/$PORT") 2>/dev/null; then
 	exec 3<&- 3>&-
-	die "$HOST:$PORT 已被占用（可能上一次的实例还在跑）；换端口：ACP_PORT=... 或 $0 --port ..."
+	die "$HOST:$PORT 已被占用（可能上一次的实例还在跑）；换端口：ACP_PORT=... 或 $(tilde "$0") --port ..."
 fi
 
 print_summary() {
 	printf 'steve-acp-serve: endpoint http://%s:%s%s\n' "$HOST" "$PORT" "$ENDPOINT_PATH"
 	printf 'steve-acp-serve: 测试页   http://%s:%s/\n' "$HOST" "$PORT"
 	printf 'steve-acp-serve: sessions %s · permissions %s · local-tools %s\n' \
-		"$SESSION_DIR" "$PERMISSIONS" "$ALLOW_LOCAL_TOOLS"
-	printf 'steve-acp-serve: token    %s…（来自 %s）\n' "${TOKEN:0:6}" "$ENV_FILE"
+		"$(tilde "$SESSION_DIR")" "$PERMISSIONS" "$ALLOW_LOCAL_TOOLS"
+	printf 'steve-acp-serve: token    %s…（来自 %s）\n' "${TOKEN:0:6}" "$(tilde "$ENV_FILE")"
 }
 
 if [ "$DAEMON" = "true" ]; then
-	mkdir -p "$LOG_DIR" || die "无法创建日志目录：$LOG_DIR"
+	mkdir -p "$LOG_DIR" || die "无法创建日志目录：$(tilde "$LOG_DIR")"
 	{
 		printf '\n=== %s 启动 %s:%s%s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$HOST" "$PORT" "$ENDPOINT_PATH"
 		print_summary
@@ -264,11 +273,11 @@ if [ "$DAEMON" = "true" ]; then
 	fi
 	print_summary >&2
 	printf 'steve-acp-serve: 后台运行 pid=%s\n' "$pid" >&2
-	printf 'steve-acp-serve: 日志 tail -f %s\n' "$LOG_FILE" >&2
+	printf 'steve-acp-serve: 日志 tail -f %s\n' "$(tilde "$LOG_FILE")" >&2
 	if [ -x "$SOURCE" ]; then
-		printf 'steve-acp-serve: 停止 %s --stop\n' "$0" >&2
+		printf 'steve-acp-serve: 停止 %s --stop\n' "$(tilde "$0")" >&2
 	else
-		printf 'steve-acp-serve: 停止 bash %s --stop\n' "$0" >&2
+		printf 'steve-acp-serve: 停止 bash %s --stop\n' "$(tilde "$0")" >&2
 	fi
 	exit 0
 fi
