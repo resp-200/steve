@@ -292,6 +292,7 @@ const FORBIDDEN = [
 	["token", "hub"].join(""), // 内网网关名
 	["sk_", "5694"].join(""), // 真实 key 片段
 	["deepseek", "-v4"].join(""), // 真实模型 id
+	["zhang", "haoyu"].join(""), // 真名（LICENSE 署名用 zhyoung）
 ];
 const leaked = [];
 for (const rel of tracked) {
@@ -313,7 +314,7 @@ for (const rel of tracked) {
 		if (!PLACEHOLDER_USERS.has(name.toLowerCase())) homeLeaks.add(`${rel}: ${match}`);
 	}
 }
-check("公开文件里没有内网域名 / 凭据 / 真实模型 id", leaked.length === 0, leaked.slice(0, 5).join("; "));
+check("公开文件里没有内网域名 / 凭据 / 真实模型 id / 真名", leaked.length === 0, leaked.slice(0, 5).join("; "));
 check(
 	"公开文件里没有个人 home 路径（本机 home 或非占位符用户名）",
 	homeLeaks.size === 0,
