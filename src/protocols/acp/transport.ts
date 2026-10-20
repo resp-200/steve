@@ -105,6 +105,11 @@ async function serveHttp(options: ServeAcpOptions, transport: Extract<AcpTranspo
 				response.writeHead(401, { "content-type": "text/plain" }).end("Unauthorized");
 				return;
 			}
+			// 反代（nginx 默认 proxy_buffering on + gzip）会攥着 SSE 的响应头不发，
+			// 直到上游吐出第一个字节；ACP 的 mailbox 在没消息时一个字节都不吐，于是
+			// 浏览器里 GET 永远卡在等响应头 —— 看起来像“用 token 连接就卡死”。
+			// 这个头让 nginx 对本端点关掉缓冲，不需要改服务器配置。
+			response.setHeader("X-Accel-Buffering", "no");
 			void acpHandler(request, response);
 			return;
 		}

@@ -136,6 +136,45 @@ npm run acp:serve -- --stop                # 停：POSIX 发 SIGTERM（steve 优
 - token 持有者≈该工作区的 root：真正的隔离靠容器 / 非 root / 只读挂载 / `--permissions ask`，不是靠 token。
   要多用户、要吊销、要限流，得在反代层做（OAuth / mTLS / Cloudflare Access 之类）。
 
+### 2.3 放在 nginx 后面：SSE 不能被缓冲
+
+ACP 的流式 HTTP 靠两条长连接的 `GET`（connection mailbox 与 session mailbox）推消息。
+nginx 默认 `proxy_buffering on`，会**攥着响应头不发**，直到上游吐出第一个字节；
+而 mailbox 在没有消息时一个字节都不吐。结果是浏览器 `initialize` 成功（普通 POST，有响应体），
+紧接着的 `GET` 永远停在等响应头 —— 症状就是「填了 token 点连接，然后一直转圈」。
+这跟 TLS / 证书无关，POST 能过就说明握手是好的。
+
+steve 自己会在 ACP 端点上回 `X-Accel-Buffering: no`（`transport.ts`），nginx 认这个头，
+所以**部署最新构建并重启服务**通常就够了。反代侧也显式关掉更稳妥：
+
+```nginx
+location /acp {
+    proxy_pass http://127.0.0.1:8891;
+    proxy_http_version 1.1;          # 1.0 不支持 chunked，nginx 会退化成整体缓冲
+    proxy_buffering off;             # 关键：别等响应体
+    proxy_cache off;
+    gzip off;                        # 压缩同样会推迟响应头
+    proxy_set_header Connection "";  # 保持 upstream keep-alive
+    proxy_read_timeout 3600s;        # mailbox 是长连接，默认 60s 会被掐断
+    proxy_send_timeout 3600s;
+}
+```
+
+自查一条命令（换成自己的 token）：
+
+```bash
+curl -sS -D - -o /dev/null -m 5 https://<host>/acp \
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}'
+# 拿到 acp-connection-id，再开 mailbox：
+curl -sS -D - -o /dev/null -m 5 https://<host>/acp \
+  -H 'authorization: Bearer <token>' -H 'accept: text/event-stream' \
+  -H 'Acp-Connection-Id: <上一步的 id>'
+```
+
+第二条应当**立刻**打印 `200` 与 `content-type: text/event-stream`（之后超时退出是正常的，mailbox 本来就空着）。
+如果它是 `0 bytes received`、一个头都没有，就是反代在缓冲。
+
 ### 全部参数
 
 | 参数 | 环境变量 | 默认 | 说明 |
