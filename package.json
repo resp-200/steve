@@ -1,6 +1,6 @@
 {
 	"name": "@zhyoung/steve",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"type": "module",
 	"description": "steve — a minimal streaming chat agent + ACP server built on @earendil-works/pi-agent-core and @earendil-works/pi-ai",
 	"license": "MIT",
