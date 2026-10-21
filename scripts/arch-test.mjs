@@ -255,6 +255,25 @@ check(
 	(pkg.files ?? []).join(", "),
 );
 
+// 版本号：`package.json` 是唯一来源，入口与协议层在运行时读它（之前 ACP 握手写死
+// 0.1.0，包已经 0.1.2 了还在自报旧版本）。这里挡住两件事：源码里再冒出第二个写死的
+// 版本号；以及 `--version` 没有真的打印 package.json 里的版本。
+const staleVersions = files
+	.filter(({ rel }) => rel !== "model/version.ts")
+	.filter(({ full }) => /\bversion\s*[:=]\s*["']\d+\.\d+\.\d+/.test(readFileSync(full, "utf8")))
+	.map(({ rel }) => rel);
+check("版本号只有 package.json 一处（没有写死的副本）", staleVersions.length === 0, staleVersions.join(", "));
+
+const cliEntry = join(ROOT, "dist/entries/cli.js");
+if (existsSync(cliEntry)) {
+	const printed = execFileSync(process.execPath, [cliEntry, "--version"], { encoding: "utf8" }).trim();
+	check(
+		`steve --version 打印 package.json 的版本（${pkg.version}）`,
+		printed === pkg.version,
+		`实际打印 ${printed || "(空)"}`,
+	);
+}
+
 /* ------------------------------------------------------------------ */
 /* 5. 发布卫生                                                          */
 /* ------------------------------------------------------------------ */

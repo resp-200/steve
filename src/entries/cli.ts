@@ -10,6 +10,7 @@ import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
 import { createSessionStore, isSessionId, sessionRecord } from "../features/session-store.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
+import { VERSION } from "../model/version.js";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { color, Renderer } from "./render.js";
@@ -28,6 +29,7 @@ Flags
   --session-dir  where transcripts live (default <cwd>/.steve/sessions)
   --no-sessions  do not read or write any transcript
   --help, -h     show this help
+  --version, -v  print the version and exit
 
 Anything else is sent to the model. Ctrl+C aborts a running answer;
 pressing it again while idle exits.
@@ -67,7 +69,7 @@ interface ReplContext {
 	printResumeHint: () => void;
 }
 
-type ParseResult = { options: CliOptions } | { error: string } | "help";
+type ParseResult = { options: CliOptions } | { error: string } | "help" | "version";
 
 /** A flag that takes a value must actually get one (`--resume --yes` is a mistake). */
 function valueFor(argv: string[], index: number, flag: string): string | { error: string } {
@@ -83,6 +85,7 @@ function parseArgv(argv: string[]): ParseResult {
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index] ?? "";
 		if (arg === "--help" || arg === "-h") return "help";
+		if (arg === "--version" || arg === "-v") return "version";
 		if (arg === "--read-only" || arg === "--readonly") {
 			options.readOnly = true;
 			continue;
@@ -340,6 +343,11 @@ async function main(): Promise<void> {
 	const argv = parseArgv(process.argv.slice(2));
 	if (argv === "help") {
 		process.stdout.write(`${HELP}\n`);
+		return;
+	}
+	// Bare version number, like `node --version`: scripts can compare it directly.
+	if (argv === "version") {
+		process.stdout.write(`${VERSION}\n`);
 		return;
 	}
 	if ("error" in argv) {

@@ -45,6 +45,7 @@ examples/extensions/*     三个示例插件（guard / git-status / turn-logger�
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
+src/model/version.ts      L5 版本号：唯一从 package.json 读取的地方（--version / ACP 握手 / MCP clientInfo）
 doc/*                    专题文档：模型接入 / ACP server / MCP / 插件（见 doc/README.md）
 mcp.example.json         MCP 配置模板（复制到 .steve/mcp.json，见「MCP 接入」）
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
@@ -78,6 +79,7 @@ mkdir -p .steve && cp .env.example .steve/.env   # 填 LLM_API_KEY / LLM_MODEL_I
 npm run dev               # 交互式对话
 npm run dev "现在几点？顺便算一下 128*37+15"   # 单次提问
 npm run dev -- --read-only      # 只读模式（默认写/执行前会在终端问 y/n）
+npm run dev -- --version         # 打印版本号（装好后即 steve --version）
 npm run build && npm start
 ```
 
@@ -471,7 +473,7 @@ npm i -g @zhyoung/steve       # 已发布的话，直接从 registry 装
 # 或者只在本机试用：npm link
 ```
 
-`bin` 三个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）。于是编辑器配置可以简单到：
+`bin` 三个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）。`steve --version`（`-v`）只打印版本号，便于脚本比对；`steve-acp --help` 的表头同样带版本。**版本号只有 `package.json` 一处**（`src/model/version.ts` 运行时读它），`--version`、ACP `initialize` 握手与 MCP `clientInfo` 都走这里，所以不会出现「包发了 0.1.2、握手还自报 0.1.0」这种走岔。于是编辑器配置可以简单到：
 
 ```jsonc
 // Zed settings.json
@@ -607,7 +609,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 35 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`（含无值/非法 id/未知 id/与 `--no-sessions` 冲突四种报错）、`/new` 清空、`--no-sessions` |
 | `npm run config:test` | 凭据来源 10 项：`.steve/.env` 查找链（安装目录 / `~/.steve` / `$PWD`）、真实环境变量优先、**裸 `.env` 被忽略**、引号与注释处理 |
-| `npm run arch:test` | 架构契约与发布卫生 16 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
+| `npm run arch:test` | 架构契约与发布卫生 20 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、版本号只有 `package.json` 一处且 `steve --version` 打印它、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
 | `npm run mcp:test` | MCP 与会话管理 41 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 

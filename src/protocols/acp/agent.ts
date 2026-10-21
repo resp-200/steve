@@ -7,6 +7,7 @@ import {
 	type Implementation,
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
+import { VERSION } from "../../model/version.js";
 import type { Logger } from "../../types.js";
 import { loadExtensions } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
@@ -17,7 +18,8 @@ import type { McpServerStatus } from "../../types.js";
 import { AcpSession, type PermissionMode } from "./session.js";
 
 export const AGENT_NAME = "steve";
-export const AGENT_VERSION = "0.1.0";
+/** Same source as `steve --version` (package.json), never a second constant. */
+export const AGENT_VERSION = VERSION;
 
 export interface AcpAgentOptions {
 	config: AppConfig;

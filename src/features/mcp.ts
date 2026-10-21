@@ -13,6 +13,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Type, type AgentTool } from "./contract.js";
 import type { AnnotatedTool } from "./tool-annotations.js";
 import type { Logger, McpServerStatus } from "../types.js";
+import { VERSION } from "../model/version.js";
 
 /** What an ACP client sends for a local MCP server. */
 export interface McpServerSpec {
@@ -70,7 +71,7 @@ interface PendingRequest {
 
 /** The MCP revision we speak; servers negotiate down if they must. */
 const PROTOCOL_VERSION = "2024-11-05";
-const CLIENT_INFO = { name: "steve", version: "0.1.0" };
+const CLIENT_INFO = { name: "steve", version: VERSION };
 
 function textOf(content: unknown): string {
 	if (!Array.isArray(content)) return "";
