@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Steve 聊天 —— 流式 Agent</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+:root {
+  --bg:#0f0f14; --panel:#16161e; --panel-2:#1c1c26; --text:#e8e8ed; --muted:#9090a0;
+  --accent:#6c5ce7; --accent-2:#00d2ff; --tool-bg:#12121a; --border:#2a2a3a;
+}
+body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); height:100vh; overflow:hidden; }
+.app { display:flex; height:100vh; }
+.sidebar { width:240px; background:var(--panel); border-right:1px solid var(--border); display:flex; flex-direction:column; overflow:hidden; }
+.sidebar-header { padding:14px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+.sidebar-header h2 { font-size:14px; color:var(--muted); font-weight:500; }
+.sidebar-header .icon { font-size:18px; }
+.session-list { flex:1; overflow-y:auto; padding:8px; }
+.session-item { padding:10px 12px; border-radius:8px; cursor:pointer; border:1px solid transparent; transition:background .15s; }
+.session-item:hover { background:var(--panel-2); }
+.session-item.active { background:var(--panel-2); border-color:var(--accent); }
+.session-item .title { font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.session-item .time { font-size:11px; color:var(--muted); }
+.session-item .badge { font-size:10px; color:var(--muted); padding:1px 6px; border-radius:4px; background:#1e1e2a; margin-left:6px; }
+.empty-state { color:var(--muted); text-align:center; padding:24px 12px; font-size:12px; }
+.empty-state .icon { font-size:32px; display:block; margin-bottom:8px; }
+.chat { flex:1; display:flex; flex-direction:column; background:var(--bg); min-width:0; }
+.chat-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.chat-header .status { font-size:12px; color:var(--muted); }
+.chat-header .status .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#2a9d8f; margin-right:6px; }
+.chat-header .status.offline .dot { background:#e76f51; }
+.tool-chips { display:flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
+.tool-chips .chip { padding:4px 10px; border-radius:999px; font-size:11px; background:var(--panel-2); color:var(--text); border:1px solid var(--border); cursor:pointer; }
+.tool-chips .chip.active { background:var(--accent); border-color:var(--accent); color:white; }
+.connection-wrap { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+.connection-wrap .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.connection-wrap .row label { font-size:12px; color:var(--muted); white-space:nowrap; }
+.connection-wrap input { padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font-size:13px; flex:1; min-width:120px; }
+.connection-wrap .send { padding:8px 16px; border:none; background:var(--accent); color:white; font-size:14px; cursor:pointer; }
+.connection-wrap .send:disabled { opacity:.5; cursor:not-allowed; }
+.connection-wrap .send.stop { background:#e76f51; }
+.chat-body { flex:1; display:flex; flex-direction:column; min-height:0; }
+.messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+.message { max-width:85%; padding:12px 14px; border-radius:12px; line-height:1.6; }
+.message.user { background:var(--accent); color:white; align-self:flex-end; border-bottom-right-radius:4px; }
+.message.assistant { background:var(--panel-2); color:var(--text); align-self:flex-start; border-bottom-left-radius:4px; }
+.message.system { background:var(--panel-2); color:var(--muted); align-self:flex-start; padding:8px 12px; border-radius:8px; font-size:11px; }
+.message.error { background:var(--panel-2); color:#ff7f7f; align-self:flex-start; padding:12px 14px; border-radius:12px; border:1px solid #ff7f7f; }
+.message .meta { font-size:11px; color:var(--muted); margin-bottom:6px; }
+.message .content { font-size:14px; white-space:pre-wrap; word-break:break-word; }
+.thinking { background:var(--panel-2); border-left:3px solid var(--accent-2); padding:10px 12px; border-radius:0 8px 8px 0; font-size:13px; color:var(--muted); max-width:85%; margin-bottom:12px; }
+.tool-call { background:var(--tool-bg); border-left:3px solid var(--accent-2); padding:10px 12px; border-radius:0 8px 8px 0; font-size:12px; margin-bottom:10px; white-space:pre-wrap; line-height:1.5; }
+.tool-call .title { color:var(--accent-2); font-weight:600; }
+.status-bar { padding:8px 16px; border-top:1px solid var(--border); font-size:11px; color:var(--muted); display:flex; gap:12px; flex-wrap:wrap; }
+.input-area { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--border); background:var(--panel); }
+.input-area input { flex:1; padding:10px 14px; border-radius:8px; border:1px solid var(--border); background:var(--panel-2); color:var(--text); font-size:14px; resize:none; min-height:44px; max-height:120px; }
+.input-area input:focus { outline:none; border-color:var(--accent); }
+.input-area .send { padding:10px 18px; border-radius:8px; border:none; background:var(--accent); color:white; font-size:14px; cursor:pointer; }
+.input-area .send:hover:not(:disabled) { background:#5845c8; }
+.input-area .send:disabled { opacity:.5; cursor:not-allowed; }
+.input-area .send .spinner { display:none; width:14px; height:14px; border:2px solid rgba(255,255,255,0.3); border-top-color:white; border-radius:50%; }
+.input-area .send.loading .spinner { display:block; animation:spin 1s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header"><span class="icon">🤖</span><h2>Steve</h2></div>
+    <div class="session-list" id="sessionList">
+      <div class="empty-state"><span class="icon">📄</span>没有会话<br/>(点击「+ 新建」)</div>
+    </div>
+  </aside>
+  <main class="chat">
+    <div class="chat-header">
+      <span class="status connection-status offline" id="statusBar"><span class="dot"></span> 待连接</span>
+      <div class="tool-chips">
+        <span class="chip active" data-tool="read" onclick="setTool('read')">read</span>
+        <span class="chip" data-tool="write" onclick="setTool('write')">write</span>
+        <span class="chip" data-tool="exec" onclick="setTool('exec')">exec</span>
+        <span class="chip" data-tool="search" onclick="setTool('search')">search</span>
+      </div>
+    </div>
+    <div class="connection-wrap" id="connectionWrap">
+      <div class="row">
+        <label for="endpoint">ACP 端点</label>
+        <input id="endpoint" value="https://underlying-ears-assistance-committees.trycloudflare.com/acp">
+        <label for="token">Token</label>
+        <input id="token" type="password" placeholder="Bearer ...（留空）">
+        <label for="cwd">Wd</label>
+        <input id="cwd" class="short" placeholder="/tmp">
+        <label for="resumeSessionId">Resume Session ID</label>
+        <input id="resumeSessionId" class="short" placeholder="session id">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button id="connectBtn" class="send" onclick="connect()">连接</button>
+          <button id="disconnectBtn" class="send" style="background:#e76f51;color:#fff;border:none;" onclick="disconnect()">断开</button>
+          <button id="stopBtn" class="send" style="background:#8a6d00;color:#fff;border:none;" onclick="stopCurrent()" disabled>停止</button>
+        </div>
+      </div>
+    </div>
+    <div class="chat-body">
+      <div class="messages" id="messages"></div>
+    </div>
+    <div class="input-area">
+      <input id="input" placeholder="输入消息给 steve... (输入 / 触发本地上下文工具)" maxlength="2000" autofocus>
+      <button class="send" id="sendBtn" onclick="sendMessage()">
+        <span class="spinner"></span><span class="label">发送</span>
+      </button>
+    </div>
+    <div class="status-bar">
+      <span>使用 <a href="https://github.com/nousresearch/steve" target="_blank" style="color:var(--accent);text-decoration:none;">steve</a> + @earendil-works/pi-agent-core / pi-ai</span>
+      <span>MCP / ACP v1 · Streamable HTTP</span>
+      <span id="statusCount">0 条消息</span>
+    </div>
+  </main>
+</div>
+<script type="module">
+const messagesEl = document.getElementById('messages');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+const statusBar = document.getElementById('statusBar');
+const sessionList = document.getElementById('sessionList');
+const connectionWrap = document.getElementById('connectionWrap');
+const endpointInput = document.getElementById('endpoint');
+const tokenInput = document.getElementById('token');
+const cwdInput = document.getElementById('cwd');
+const resumeSessionIdInput = document.getElementById('resumeSessionId');
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+let sessionId = null;
+let connection = null;
+let assistantStream = null;
+let isTyping = false;
+let messageId = 0;
+let hiddenTools = new Set();
+
+function setTool(name) {
+  if (hiddenTools.has(name)) hiddenTools.delete(name); else hiddenTools.add(name);
+  document.querySelectorAll('.tool-chips .chip').forEach(c => c.classList.toggle('active', c.dataset.tool === name || (!hiddenTools.has(name) && name === 'read')));
+  updateHiddenNote();
+}
+function updateHiddenNote() {
+  if (hiddenTools.size === 0) return;
+  const n = document.createElement('div'); n.className = 'notice'; n.textContent = '已隐藏工具：' + Array.from(hiddenTools).join('、');
+  const wrap = document.querySelector('.connection-wrap');
+  if (wrap) {
+    const hint = document.createElement('div'); hint.className='notice'; hint.style.cssText='font-size:11px;color:#a06a00;padding:6px 0;margin-top:6px;';
+    hint.textContent = '隐藏工具：' + Array.from(hiddenTools).join('、');
+    wrap.parentNode.insertBefore(hint, wrap.nextSibling);
+  }
+}
+function addMessage(role, content, meta='', kind='assistant') {
+  const el = document.createElement('div'); el.className = `message ${role} ${kind} fade-in`;
+  const metaEl = meta ? `<div class="meta"><span class="who">${meta}</span></div>` : '';
+  const contentEl = `<div class="content">${typeof content === 'string' ? content : content}</div>`;
+  el.innerHTML = metaEl + contentEl; messagesEl.appendChild(el); messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+function addThinking(text) {
+  const el = document.createElement('div'); el.className='thinking'; el.textContent='思考中：'+text; messagesEl.appendChild(el); messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+function addToolCall(name, args, result, isError) {
+  const el = document.createElement('div'); el.className='tool-call';
+  el.innerHTML = `<div class="title">🛠️ ${name}</div><pre>${JSON.stringify(args,null,2)}</pre><div class="meta" style="color:#7ec699;font-size:11px;">返回: ${JSON.stringify(result,null,2)}</div>`;
+  messagesEl.appendChild(el); messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+function setStatus(text, type) {
+  const el = statusBar; el.className=`connection-status ${type||''}`; el.textContent=text;
+}
+async function connect() {
+  const endpoint = endpointInput.value.trim();
+  const token = tokenInput.value.trim();
+  if (!endpoint) { setStatus('请输入 ACP 端点','offline'); alert('请输入 ACP 端点，例如：http://127.0.0.1:8890/acp'); return; }
+  setStatus('连接中…','busy'); sendBtn.disabled=true; disconnectBtn.disabled=true; stopBtn.disabled=true; stopBtn.textContent='等待响应';
+  try {
+    connection = new AcpHttpClient(endpoint.replace(/\/$/,''), { token: token ? { Authorization: `Bearer ${token}` } : {} });
+    const initResult = await connection.initialize({ capabilities: { stream: true, root: true }, clientInfo: { name: 'steve-chat', version: '0.1.0' } });
+    if (!initResult) throw new Error('initialize 无响应');
+    const connId = initResult['acme.clients.connect'].id;
+    const sessionNewUrl = `${endpoint.replace(/\/$/,'')}?Acp-Connection-Id=${connId}`;
+    const sessionNewResult = await connection.createSession(sessionNewUrl, { cwd: cwdInput.value.trim() || '/', tags: [] });
+    if (!sessionNewResult) throw new Error('createSession 无响应');
+    sessionId = sessionNewResult['acme.sessions.create'].headers['Acp-Session-Id'];
+    setStatus('已连接','success');
+    messagesEl.innerHTML='';
+    addMessage('system','连接成功。现在可以发送消息。','system','system');
+    if (resumeSessionIdInput.value.trim()) { setStatus('恢复会话: '+resumeSessionIdInput.value.trim()); }
+    sendBtn.disabled=false; disconnectBtn.disabled=false; stopBtn.disabled=false; stopBtn.textContent='停止';
+  } catch (err) {
+    setStatus('连接失败: '+err.message,'offline'); disconnectBtn.disabled=true; stopBtn.disabled=true; stopBtn.textContent='等待响应';
+    alert('连接失败: '+err.message);
+  }
+}
+async function disconnect() {
+  if (!connection) return;
+  await connection.close().catch(()=>{});
+  sessionId=null; connection=null; setStatus('未连接','offline'); sendBtn.disabled=false; disconnectBtn.disabled=true; stopBtn.disabled=true; stopBtn.textContent='停止';
+}
+async function stopCurrent() {
+  if (connection && sessionId) await connection.cancel(sessionId).catch(()=>{});
+  setStatus('已停止本轮','offline');
+}
+async function sendMessage() {
+  const text = input.value.trim(); if (!text || isTyping) return;
+  input.value=''; isTyping=true; sendBtn.disabled=true; stopBtn.disabled=false; stopBtn.textContent='停止';
+  addMessage('user',text); messageId++;
+  try {
+    const sessionPromptUrl = sessionId ? `${sessionId}/prompt` : null;
+    if (!sessionPromptUrl) throw new Error('Session 尚未创建');
+    const body = JSON.stringify({ method:'session/prompt', params:{ prompt:[{ type:'text', text }], stream:true } });
+    const response = await fetch(sessionPromptUrl, { method:'POST', headers:{'Content-Type':'application/json','Acp-Session-Id':sessionId}, body });
+    if (!response.ok) { const t=await response.text(); throw new Error(`请求失败: ${response.status} ${text}`); }
+    const reader = response.body.getReader(); const decoder=new TextDecoder(); let buffer='';
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buffer += decoder.decode(value, { stream:true });
+      const lines = buffer.split('\n'); buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (line.startsWith(':')) continue;
+        if (line === '') continue;
+        try { const event=JSON.parse(line); handleEvent(event); } catch (e) {}
+      }
+    }
+    if (buffer.trim()) { try { const event=JSON.parse(buffer); handleEvent(event); } catch(e){} }
+  } catch (err) { addMessage('error','发送失败: '+err.message); setStatus('错误: '+err.message,'error'); }
+  finally { isTyping=false; sendBtn.disabled=false; sendBtn.classList.remove('loading'); stopBtn.disabled=true; stopBtn.textContent='停止'; }
+}
+function handleEvent(event) {
+  const method = event.method;
+  if (method === 'acme.sessions.update') {
+    const sessionId = event.params?.sessionId; if (sessionId && sessionId !== this?.sessionId) return;
+    const content = event.params?.content; if (content && typeof content === 'string') addMessage('assistant', content, undefined, 'assistant');
+    const toolCalls = event.params?.toolCalls; if (toolCalls && Array.isArray(toolCalls)) {
+      for (const tc of toolCalls) {
+        if (hiddenTools.has(tc.name)) { addToolCall(tc.name, tc.arguments, { blocked:'已被用户隐藏' }, true); continue; }
+        addToolCall(tc.name, tc.arguments);
+      }
+    }
+    if (event.params?.permission !== undefined) {
+      const btn = prompt('权限请求:', event.params.permission);
+      if (btn === 'allow') {}
+    }
+  }
+  if (method === 'acme.sessions.update' && event.params?.stopReason === 'stop') {
+    setStatus('已完成',''); isTyping=false; sendBtn.disabled=false; sendBtn.classList.remove('loading'); stopBtn.disabled=true; stopBtn.textContent='停止';
+  }
+  if (method === 'acme.sessions.update' && event.params?.toolResult !== undefined) {
+    const tr = event.params.toolResult; addMessage('system', `工具 ${tr.tool} 结果: ${tr.result}`, '', 'system');
+  }
+}
+window.connect = connect; window.sendMessage = sendMessage; window.disconnect = disconnect; window.stopCurrent = stopCurrent;
+</script>
+</body>
+</html>

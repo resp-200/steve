@@ -36,6 +36,7 @@ const UI_FILES = new Map<string, { file: string; type: string; inject?: boolean 
 	["/index.html", { file: "test-acp-jsonrpc.html", type: "text/html; charset=utf-8", inject: true }],
 	["/test-acp-jsonrpc.html", { file: "test-acp-jsonrpc.html", type: "text/html; charset=utf-8", inject: true }],
 	["/acp-http-client.js", { file: "web/acp-http-client.js", type: "text/javascript; charset=utf-8" }],
+	["/chat", { file: "web/chat.html", type: "text/html; charset=utf-8", inject: true }],
 ]);
 
 /**
