@@ -20,7 +20,7 @@ Commands
   /exit, /quit   leave
   /plugins       list loaded plugins (hooks, tools, commands)
   /help          the full command list — provided by the session-commands plugin,
-                 so it also works in editors and cannot go stale here
+                 so it also works in ACP clients and cannot go stale here
 
 Flags
   --read-only    no write_file / edit_file / run_command (so no approval prompts)

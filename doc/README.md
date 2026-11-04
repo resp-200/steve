@@ -3,7 +3,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [model-integration.md](./model-integration.md) | 如何把 steve 接到不同的模型 / 网关上，以及每个环境变量参数的含义 |
-| [acp-server.md](./acp-server.md) | ACP 服务端：启动参数、编辑器接入、线协议（Streamable HTTP）、工具与权限、持久化、排查 |
+| [acp-server.md](./acp-server.md) | ACP 服务端：启动参数、客户端接入（编辑器 / CLI / 桌面与 Web）、线协议（Streamable HTTP）、工具与权限、持久化、排查 |
 | [mcp.md](./mcp.md) | MCP 接入：三种来源与优先级、`.steve/mcp.json`、工具映射、连接时机、`/mcp`、没实现什么 |
 | [plugins.md](./plugins.md) | 插件开发：发现位置、`pi.ctx`、四类钩子、三类贡献、失败语义、什么时候该写成插件 |
 
@@ -28,7 +28,7 @@ LLM_BASE_URL="<端点根地址>"      # Anthropic 形如 https://host/anthropic�
 | 想做的事 | 看哪篇 |
 | --- | --- |
 | 换模型 / 网关、搞清楚每个环境变量 | [model-integration.md](./model-integration.md) |
-| 让编辑器（IDEA / Zed）连上 | [acp-server.md](./acp-server.md) §2–3 |
+| 让编辑器 / CLI / 桌面应用等 ACP 客户端连上 | [acp-server.md](./acp-server.md) §2–3 |
 | 远程 / 云端访问（一键启动、token、反代） | [acp-server.md](./acp-server.md) §2.1–2.2 |
 | 接一个 MCP server | [mcp.md](./mcp.md) §2–3 |
 | 加工具 / 加斜杠命令 / 挂钩子 | [plugins.md](./plugins.md) |

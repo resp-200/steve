@@ -22,7 +22,7 @@
  * Three deliberate rules:
  *
  *   1. **Plugin declarations win.** A server declared in code (`registerMcpServer`)
- *      or by the editor (`session/new`) takes precedence over a config file, and a
+ *      or by the client (`session/new`) takes precedence over a config file, and a
  *      project file beats the global one. The loser shows up in `/mcp` as
  *      `skipped`, with the reason.
  *   2. **No `${ENV}` interpolation.** A config file that reads the environment is

@@ -3,7 +3,7 @@
  *
  * The policy lives here so every front end shares one implementation. Asking the
  * *user* stays the caller's job (the ACP layer forwards the question to the
- * editor), which keeps this module free of transport details.
+ * client), which keeps this module free of transport details.
  */
 import type { BeforeToolCallContext, BeforeToolCallResult } from "./contract.js";
 
@@ -40,7 +40,7 @@ export interface PermissionGateOptions {
 	 * evaluated per call, which is how the runtime asks its own tool registry.
 	 */
 	requires: Iterable<string> | (() => Iterable<string>);
-	/** Asks the user, e.g. by sending `session/request_permission` to the editor. */
+	/** Asks the user, e.g. by sending `session/request_permission` to the client. */
 	ask: (request: PermissionRequest) => Promise<PermissionDecision>;
 	/**
 	 * Optional: summarise what the call is about to change. The result is handed to

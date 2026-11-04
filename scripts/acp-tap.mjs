@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * ACP wire tap: sits between an editor and the agent and records both directions.
+ * ACP wire tap: sits between a client and the agent and records both directions.
  *
- * Editors only forward the agent's stderr, which says nothing about what the
+ * Clients only forward the agent's stderr, which says nothing about what the
  * *client* sent — so integration bugs ("it hangs at Starting …") are hard to pin
- * down. Point the editor at this file instead of the agent and the whole JSON-RPC
+ * down. Point the client at this file instead of the agent and the whole JSON-RPC
  * conversation lands in a log:
  *
- *   // ~/.jetbrains/acp.json (or Zed's settings.json)
+ *   // ~/.jetbrains/acp.json
  *   { "agent_servers": { "steve": {
  *       "command": "node",
  *       "args": ["/path/to/steve/scripts/acp-tap.mjs"] } } }
@@ -18,7 +18,7 @@
  *   STEVE_ACP_TAP          log file            (default: <cwd>/.steve/acp-tap.log)
  *
  * stdout stays protocol-pure: only the log and the agent's own stderr are used
- * for output. Remember to point the editor back at the agent when you are done.
+ * for output. Remember to point the client back at the agent when you are done.
  */
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";

@@ -9,7 +9,7 @@
  *
  * `access` is a ladder, and each level adds tools on top of the previous one:
  *
- *   none   → nothing (an editor session that did not pass `--allow-local-tools`)
+ *   none   → nothing (an ACP session that did not pass `--allow-local-tools`)
  *   read   → read_file / glob / grep
  *   write  → + write_file / edit_file        (still gated by the permission gate)
  *   exec   → + run_command                   (still gated by the permission gate)

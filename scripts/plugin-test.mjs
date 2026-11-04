@@ -2,9 +2,9 @@
 // Verifies the extension layer end to end.
 //
 //   A. host (in-process, against dist): discovery, loading, hook chains, isolation
-//   B. ACP (spawned server + real client): plugins reach an editor — commands are
+//   B. ACP (spawned server + real client): plugins reach a client — commands are
 //      announced, `/command` runs locally, a blocking `tool_call` hook stops a
-//      dangerous call before the editor is even asked, and the plugin tool lands
+//      dangerous call before the client is even asked, and the plugin tool lands
 //      in the session's tool list.
 //
 //   npm run build && node scripts/plugin-test.mjs

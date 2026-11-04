@@ -39,7 +39,7 @@ const UI_FILES = new Map<string, { file: string; type: string; inject?: boolean 
 ]);
 
 /**
- * Serves ACP over stdio (how editors launch agents) or Streamable HTTP plus
+ * Serves ACP over stdio (how clients launch agents) or Streamable HTTP plus
  * WebSocket (`--port`, for clients that connect over the network).
  */
 export async function serveAcp(options: ServeAcpOptions): Promise<void> {

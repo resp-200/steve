@@ -48,7 +48,7 @@ export function sessionCommands(pi: ExtensionAPI): void {
 		run: () => {
 			const servers = pi.ctx.session.mcp;
 			if (servers.length === 0) {
-				return "No MCP servers configured. A plugin can declare one with registerMcpServer(); an editor can send mcpServers in session/new.";
+				return "No MCP servers configured. A plugin can declare one with registerMcpServer(); an ACP client can send mcpServers in session/new.";
 			}
 			return servers
 				.map((server) => {

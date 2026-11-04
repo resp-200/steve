@@ -18,7 +18,7 @@ server 的来源有三个，工具以 `mcp__<server>__<tool>` 命名进工具表
 | 来源 | 怎么声明 | `/mcp` 里的 `source` |
 | --- | --- | --- |
 | **插件** | `pi.registerMcpServer({ name, command, args, env, timeoutMs })` | `plugin` |
-| **ACP 客户端** | 编辑器在 `session/new` / `session/load` 里传 `mcpServers` | `client` |
+| **ACP 客户端** | 客户端在 `session/new` / `session/load` 里传 `mcpServers` | `client` |
 | **项目配置** | `<cwd>/.steve/mcp.json` | `project` |
 | **全局配置** | `~/.steve/mcp.json` | `global` |
 
@@ -105,7 +105,7 @@ export default function (pi) {
 | 命名 | `mcp__<server>__<tool>`（`/tools` 能看到；避免与核心工具撞名） |
 | 参数 schema | MCP 的 `inputSchema`（JSON Schema）**原样**当 `parameters` 用；没有 schema 时退化为 `{}` |
 | 权限 | **一律 `permission: "ask"`**：MCP server 能做的事和它自己一样多 |
-| 呈现 | `metadata: { kind: "other", title: "<server>: <tool>" }`，所以编辑器的工具卡片用它渲染 |
+| 呈现 | `metadata: { kind: "other", title: "<server>: <tool>" }`，所以客户端的工具卡片用它渲染 |
 | 调用 | `tools/call`；`isError: true` 的结果**抛出**，变成 `isError` 工具结果回灌给模型 |
 | 非文本结果 | `image` / `resource` 内容块摘要成 `[image image/png]` / `[resource <uri>]` |
 
@@ -113,7 +113,7 @@ export default function (pi) {
 
 ## 6. 连接时机与生命周期
 
-这是踩过坑的地方（编辑器会杀慢进程）：
+这是踩过坑的地方（客户端会杀慢进程）：
 
 ```
 session/new ──▶ 立即返回（不 await MCP）
@@ -123,11 +123,11 @@ session/new ──▶ 立即返回（不 await MCP）
                       └─ server C 失败 → 只记日志，状态标 failed
 ```
 
-- **`session/new` 不等 MCP**：编辑器对初始化有超时（IDEA 超时会报 `Failed to initialize ACP process`，`exit code 143`）。
+- **`session/new` 不等 MCP**：客户端对初始化有超时（IDEA 超时会报 `Failed to initialize ACP process`，`exit code 143`）。
   实测：加了 `SLOW_INIT_MS=1500` 的慢 server，`session/new` 仍然是 **22ms**。
 - **每个 server 一连上就挂载**：一个慢 server（`npx` 冷启动）不会拖住其它 server 的工具。
   副作用：**第一个问题可能还没有 MCP 工具**，从第二个问题起就有。
-- **子进程 cwd = 会话 cwd**：编辑器从别处启动 ACP server 时，`args: ["."]`、相对脚本路径仍指向项目目录。
+- **子进程 cwd = 会话 cwd**：客户端从别处启动 ACP server 时，`args: ["."]`、相对脚本路径仍指向项目目录。
 - **超时**：每个请求默认 20s（`timeoutMs` 可覆盖，`registerMcpServer({ timeoutMs })` 每 server 可调）。
 - **关闭**：会话 dispose / `session/delete` / CLI 退出时关闭子进程（SIGTERM，1s 后 SIGKILL）。
 - **错误信息带 stderr 末行**：server 挂掉时把它的 stderr 最后一行并进错误，所以 `/mcp` 能直接告诉你原因。
@@ -136,7 +136,7 @@ session/new ──▶ 立即返回（不 await MCP）
 
 ## 7. `/mcp` 怎么看
 
-CLI 与编辑器里都有这个命令（内置插件 `session-commands` 提供）：
+CLI 与 ACP 客户端里都有这个命令（内置插件 `session-commands` 提供）：
 
 ```
 $ /mcp

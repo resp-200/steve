@@ -20,7 +20,7 @@ import { client as createClientApp, ndJsonStream, PROTOCOL_VERSION } from "@agen
 import { createHttpStream } from "@agentclientprotocol/sdk/experimental/http-client";
 import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
 
-// Absolute, so the client can be run from any directory (an editor spawns the
+// Absolute, so the client can be run from any directory (a client spawns the
 // agent from its own cwd, and `session/new` carries the project directory).
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 

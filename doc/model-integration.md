@@ -33,7 +33,7 @@ Anthropic 协议的 baseUrl 不能填成 `.../v1`），否则会 404。
 
 | 顺序 | 路径 | 用途 |
 | --- | --- | --- |
-| 1 | `<安装目录>/.steve/.env` | 编辑器从别的 cwd 拉起 ACP server 时的兜底 |
+| 1 | `<安装目录>/.steve/.env` | 客户端从别的 cwd 拉起 ACP server 时的兜底 |
 | 2 | `~/.steve/.env` | 全局，对所有项目生效 |
 | 3 | `$PWD/.steve/.env` | **推荐**，每个项目自己的网关/模型 |
 

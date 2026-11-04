@@ -46,7 +46,7 @@ export interface AcpSessionOptions {
 	client: AgentContext;
 	clientCapabilities: ClientCapabilities;
 	permissionMode: PermissionMode;
-	/** Register local read/write/exec tools when the editor does not provide them. */
+	/** Register local read/write/exec tools when the client does not provide them. */
 	allowLocalTools?: boolean;
 	/** Plugins loaded for this session. */
 	extensions: ExtensionHost;
@@ -106,7 +106,7 @@ export class AcpSession {
 		});
 
 		// Local tools (when the front end allows them) come from the built-in plugin;
-		// the runtime drops a plugin tool whose name the editor already provides.
+		// the runtime drops a plugin tool whose name the client already provides.
 		const tools = [...clientTools];
 
 		this.runtime = createAgentRuntime({
@@ -147,7 +147,7 @@ export class AcpSession {
 			throw RequestError.invalidParams(undefined, "Prompt contained no usable content");
 		}
 
-		// Editors forward the agent's stderr into their own logs, so these lines are
+		// Clients forward the agent's stderr into their own logs, so these lines are
 		// how "the client never sent a prompt" is told apart from "we never answered".
 		this.options.logger(
 			`session/prompt: ${this.id} ${request.prompt.length} block(s)${images.length > 0 ? `, ${images.length} image(s)` : ""}`,
@@ -274,7 +274,7 @@ export class AcpSession {
 	}
 
 	/**
-	 * Attaches one MCP server that settled after `session/new` returned. Editors kill
+	 * Attaches one MCP server that settled after `session/new` returned. Clients kill
 	 * an agent whose `session/new` is slow (IDEA: exit code 143), so connections run
 	 * in the background — and each server is attached as soon as it is up, so one
 	 * slow server (npx cold start) does not hold back the others.
@@ -314,9 +314,9 @@ export class AcpSession {
 		const roots = [this.cwd, ...this.options.additionalDirectories];
 		return [
 			this.options.config.systemPrompt,
-			`You are connected to a code editor through the Agent Client Protocol. The session working directory is ${this.cwd}.`,
+			`You are connected to an ACP client (an editor, a terminal, or an app) through the Agent Client Protocol. The session working directory is ${this.cwd}.`,
 			`Workspace roots you may touch with file tools: ${roots.join(", ")}.`,
-			"File and terminal tools require absolute paths; the editor asks the user for permission before writes and commands.",
+			"File and terminal tools require absolute paths; the client asks the user for permission before writes and commands.",
 		].join("\n");
 	}
 
@@ -330,7 +330,7 @@ export class AcpSession {
 		this.usage.thoughtTokens = (this.usage.thoughtTokens ?? 0) + usage.reasoning;
 	}
 
-	/** Forwards a permission question to the editor and reports back the decision. */
+	/** Forwards a permission question to the client and reports back the decision. */
 	private async askPermission(request: PermissionRequest): Promise<PermissionDecision> {
 		const response = await this.options.client.request("session/request_permission", {
 			sessionId: this.id,

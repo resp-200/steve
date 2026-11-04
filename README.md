@@ -7,7 +7,7 @@
 - 支持三种线上协议，切换只改 `.env`：
   `anthropic-messages`、`openai-completions`、`openai-responses`
 - 失败自动重试，并把失败轮次从上下文里剔除后再重试
-- 通过 **ACP（Agent Client Protocol）** 把同一个 Agent 暴露给编辑器客户端（Zed 等）：stdio + Streamable HTTP/WebSocket 两种传输
+- 通过 **ACP（Agent Client Protocol）** 把同一个 Agent 暴露给任意 ACP 客户端（编辑器、终端/TUI、桌面与 Web 应用、聊天机器人等都算）：stdio + Streamable HTTP/WebSocket 两种传输
 - 零运行时依赖（pi 两个包 + ACP SDK），另带一个离线 mock server 和 ACP 客户端脚本方便本地验证
 - 工程约定可机检：`npm run arch:test` 查架构契约与发布卫生，`npm run verify` 一键跑全套回归（见文末「约定与规范」）
 
@@ -104,12 +104,12 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 | 位置 | 用途 |
 | --- | --- |
-| `<安装目录>/.steve/.env` | 编辑器从别的 cwd 拉起 ACP server 时的兜底 |
+| `<安装目录>/.steve/.env` | 客户端从别的 cwd 拉起 ACP server 时的兜底 |
 | `~/.steve/.env` | 全局，对所有项目生效 |
 | `$PWD/.steve/.env` | **推荐** |
 
 专题文档都在 [`doc/`](doc/README.md)：**[模型接入](doc/model-integration.md)**（每个变量的含义、三种协议、常见配方）、
-**[ACP server](doc/acp-server.md)**（编辑器接入、线协议、排查）、**[MCP](doc/mcp.md)**（来源与优先级、`/mcp`、没实现什么）、
+**[ACP server](doc/acp-server.md)**（客户端接入、线协议、排查）、**[MCP](doc/mcp.md)**（来源与优先级、`/mcp`、没实现什么）、
 **[插件](doc/plugins.md)**（API、钩子、失败语义、判据）。
 
 > 旧的写法（项目根目录或安装目录下的裸 `.env`）**已不再读取** —— 留着不会报错，只是被忽略；缺变量时的报错信息会直接指向 `.steve/.env`（`config:test` 有断言盯着这件事）。
@@ -148,7 +148,7 @@ Resume this session with:
 | `--resume` 与 `--no-sessions` 同时给 | `cannot be combined`，退出码 **2** |
 | id 合法但找不到 | `no session "<id>" in <dir>` + 列出已有会话，退出码 **1** |
 
-`/exit` `/quit` `/plugins` 由 CLI 自己实现（host 级）；`/help` `/new` `/tools` `/model` `/stats` `/mcp` 由 `session-commands` 插件提供 —— 所以终端与编辑器里行为一致，CLI 的 `/help` 也不会像以前那样过期（它现在就是插件生成的命令列表）。流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
+`/exit` `/quit` `/plugins` 由 CLI 自己实现（host 级）；`/help` `/new` `/tools` `/model` `/stats` `/mcp` 由 `session-commands` 插件提供 —— 所以终端与 ACP 客户端里行为一致，CLI 的 `/help` 也不会像以前那样过期（它现在就是插件生成的命令列表）。流式输出时按 `Ctrl+C` 中断本轮，空闲时退出。
 
 `/mcp` 列出当前配置的 MCP server（来源、传输、命令行、连上的工具，或失败原因）：
 
@@ -217,7 +217,7 @@ runtime.subscribe((event) => {
 
 `src/features/runtime.ts` 在 `prompt()` 之后检查最后一条 assistant 消息：如果 `stopReason` 是 `error` 且这一轮没跑过工具，就把这轮消息整体回滚再重试（网关 429/502 很常见）；**取消（aborted）不重试**，那是用户的意图。「空内容且失败」的 `transformContext` 过滤放在 `src/kernel/agent.ts`。
 
-这套重试是协议无关的，因此 CLI 与编辑器行为一致：`npm run acp:ui-test` 的第 17 项断言就是让 mock 先注入两次 429，再验证客户端只看到成功那一轮。
+这套重试是协议无关的，因此 CLI 与 ACP 客户端行为一致：`npm run acp:ui-test` 的第 17 项断言就是让 mock 先注入两次 429，再验证客户端只看到成功那一轮。
 
 ## 本地文件与命令工具
 
@@ -235,9 +235,9 @@ runtime.subscribe((event) => {
 审批不是盲批：功能层会算出**将要发生什么**（`src/features/change-preview.ts`），两端各取所需——
 
 - CLI 打印 `--- / +++` 形式的 diff（改动行绿/红）；
-- ACP 把预览放进 `session/request_permission`：`toolCall.title` 是一行摘要，`toolCall.content` 是 `{ type: "diff", path, oldText, newText }`，编辑器可直接渲染（内置测试页就会把 diff 画在授权卡片上）。
+- ACP 把预览放进 `session/request_permission`：`toolCall.title` 是一行摘要，`toolCall.content` 是 `{ type: "diff", path, oldText, newText }`，客户端可直接渲染（内置测试页就会把 diff 画在授权卡片上）。
 
-预览读取“改动前内容”的后端与工具一致：本地工具读磁盘，ACP 走编辑器的 `fs/read_text_file`；读不到就当新建处理。预览失败不会阻塞审批，只会退化成一行说明。
+预览读取“改动前内容”的后端与工具一致：本地工具读磁盘，ACP 走客户端的 `fs/read_text_file`；读不到就当新建处理。预览失败不会阻塞审批，只会退化成一行说明。
 
 安全边界（都有断言覆盖，见 `npm run tools:test`）：
 
@@ -254,7 +254,7 @@ npm run dev -- --yes            # 自动批准所有写/执行（危险，慎用
 npm run dev -- --read-only      # 只注册读工具，没有审批提示
 ```
 
-ACP 侧沿用编辑器的授权弹窗；只有客户端**没有**声明 `fs`/`terminal` 能力时，才可用 `--allow-local-tools` 让会话回退到本地工具（默认关闭，避免编辑器里的 agent 绕过沙箱改本机文件）。同名工具不会重复注册：客户端提供了就用客户端的。
+ACP 侧沿用客户端提供的授权弹窗；只有客户端**没有**声明 `fs`/`terminal` 能力时，才可用 `--allow-local-tools` 让会话回退到本地工具（默认关闭，避免客户端环境里的 agent 绕过沙箱改本机文件）。同名工具不会重复注册：客户端提供了就用客户端的。
 
 ## 跨平台
 
@@ -368,11 +368,11 @@ mkdir -p .steve && cp mcp.example.json .steve/mcp.json
 }
 ```
 
-三条规则：**同名时插件/编辑器声明优先**（配置里那条在 `/mcp` 里显示为 `skipped` 并说明原因）；**项目级优先于全局**；**坏文件、坏条目只记日志跳过**，不影响会话。
+三条规则：**同名时插件/客户端声明优先**（配置里那条在 `/mcp` 里显示为 `skipped` 并说明原因）；**项目级优先于全局**；**坏文件、坏条目只记日志跳过**，不影响会话。
 
-server 进程**在会话的 cwd 里启动**，所以 `args: ["."]`、相对脚本路径都指向你当前的项目（编辑器从别处启动 ACP server 时也一样）。
+server 进程**在会话的 cwd 里启动**，所以 `args: ["."]`、相对脚本路径都指向你当前的项目（客户端从别处启动 ACP server 时也一样）。
 
-**2. 插件里声明** —— 终端与编辑器都生效，需要读环境变量或用条件逻辑时用它（完整示例：`examples/extensions/mcp-server.mjs`）：
+**2. 插件里声明** —— 终端与 ACP 客户端都生效，需要读环境变量或用条件逻辑时用它（完整示例：`examples/extensions/mcp-server.mjs`）：
 
 ```js
 // .steve/extensions/mcp-server.mjs
@@ -387,7 +387,7 @@ export default function (pi) {
 }
 ```
 
-**3. 客户端在 `session/new` 里传（ACP）** —— 编辑器把它自己的 MCP 配置随会话送进来，`/mcp` 里来源标成 `client`。终端里没有客户端，所以 CLI 只有前两条路。
+**3. 客户端在 `session/new` 里传（ACP）** —— ACP 客户端把它自己的 MCP 配置随会话送进来，`/mcp` 里来源标成 `client`。终端里没有客户端，所以 CLI 只有前两条路。
 
 接入后核心负责这些事：
 
@@ -396,7 +396,7 @@ export default function (pi) {
 | 命名 | 工具叫 `mcp__<server>__<tool>`（`/tools` 能看到），MCP 的 `inputSchema` 直接当参数 schema 用 |
 | 权限 | **一律先问**（MCP server 能做的事和它自己一样多），拒绝就是一次 `isError` 工具结果 |
 | 失败隔离 | 连不上只记日志并跳过，不影响会话；`/mcp` 会写出原因（含 server 的 stderr 末行） |
-| 连接时机 | **`session/new` 不会被 MCP 阻塞**：后台连接，**每个 server 一连上就挂到会话**（编辑器对初始化有超时，IDEA 等不及会杀进程：`exit code 143`）。所以第一个问题可能还没有 MCP 工具，`/mcp` 里能看到它陆续就绪 |
+| 连接时机 | **`session/new` 不会被 MCP 阻塞**：后台连接，**每个 server 一连上就挂到会话**（客户端对初始化有超时，IDEA 等不及会杀进程：`exit code 143`）。所以第一个问题可能还没有 MCP 工具，`/mcp` 里能看到它陆续就绪 |
 | 生命周期 | 会话结束 / `session/delete` 时关掉子进程 |
 
 排查顺序：`/mcp` 看状态 → 看 `[mcp <name>] ...` 日志里 server 自己的输出 → 手动跑一遍 `command + args` 确认它能起来。
@@ -407,7 +407,7 @@ export default function (pi) {
 | `failed — MCP initialize timed out` | `npx -y` 首次下载太慢 → 加 `timeoutMs`，或先 `npm i -g` |
 | `unsupported — transport "http"` | 只实现了 stdio |
 | `skipped — the plugin declaration wins` | 同名 server 在插件/mcp.json 里各声明了一次，按优先级只连一个 |
-| 编辑器报 `Failed to initialize ACP process` / 进程被 SIGTERM（143） | 初始化太慢被杀：升级到会后台连 MCP 的版本（现在 `session/new` 约 20ms 返回）；或先把慢 server（`npx -y ...`）预热 |
+| 客户端报 `Failed to initialize ACP process` / 进程被 SIGTERM（143） | 初始化太慢被杀：升级到会后台连 MCP 的版本（现在 `session/new` 约 20ms 返回）；或先把慢 server（`npx -y ...`）预热 |
 | `[extensions] failed to load ...` | `registerMcpServer` 校验失败（缺 name/command）会让整个插件加载报错 |
 | `[mcp.json] ...: missing "command"` | mcp.json 的条目缺 command（stdio 必需），该条被跳过 |
 
@@ -415,13 +415,20 @@ export default function (pi) {
 
 三条设计约束：
 
-- **插件只说功能层的词汇**，不吐协议专属事件，所以同一个插件在两端行为一致：`/git-status` 在终端是斜杠命令，在编辑器里由 `available_commands_update` 播报、由 ACP 本地执行。
+- **插件只说功能层的词汇**，不吐协议专属事件，所以同一个插件在两端行为一致：`/git-status` 在终端是斜杠命令，在 ACP 客户端里由 `available_commands_update` 播报、由 ACP 本地执行。
 - **隔离**：加载期抛错的插件被记录并跳过；钩子抛错只写日志，不会中断 agent 循环（`npm run plugins:test` 有专门断言）。
 - **不是 pi 扩展的兼容层**：pi 的扩展由 `pi-coding-agent` 的 extension runner 加载，本仓库刻意不依赖它；这里的 API 只是「pi 风格」（同名 `on(...)`、`ctx.hasUI`），因此不保证能直接跑 pi 的扩展文件。
 
-## ACP：把 Agent 暴露给编辑器客户端
+## ACP：把 Agent 暴露给 ACP 客户端
 
-`src/protocols/acp/` 是一个基于 [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk) 的 ACP **服务端**（agent 侧）：编辑器（Zed 等）作为 client 启动/连接它，就能拿 pi 当后端对话。
+`src/protocols/acp/` 是一个基于 [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk) 的 ACP **服务端**（agent 侧）：客户端作为 client 启动/连接它，就能拿 pi 当后端对话。
+
+**客户端不限于编辑器**。ACP 生态里既有编辑器/IDE（IDEA、VS Code 扩展、Neovim、Emacs 等），也有终端/TUI 客户端、桌面与 Web 应用、移动端、聊天机器人桥（Slack / Telegram / 飞书）和笔记本内核。steve 只实现 agent 侧，对客户端类型没有假设；真正的差异在 `initialize` 里**声明的能力**：
+
+- 声明了 `fs` / `terminal` 的客户端，文件与命令工具由**客户端**执行（改的是编辑器里的缓冲区/它的终端）；
+- 没声明的（多数 TUI、桥接机器人、自建 Web UI），会话里就没有这些工具 —— 需要本地能力时加 `--allow-local-tools` 回退到本机实现。
+
+所以下面出现的「客户端配置」以 IDEA 为例，其他客户端照同样的 `agent_servers` 约定填即可。
 
 ```
 src/protocols/acp/main.ts      CLI：--transport stdio|http、--port、--token、--permissions、--ui、--cors
@@ -439,7 +446,7 @@ test-acp-jsonrpc.html    浏览器测试页：连接、对话、原始 JSON-RPC 
 
 ```bash
 npm run build
-npm run acp                                   # stdio（编辑器默认方式）
+npm run acp                                   # stdio（客户端默认方式）
 npm run acp -- --port 8890 --token secret     # TCP 端口：Streamable HTTP + WebSocket
 npm run acp -- --port 8890 --cors "*"          # 额外允许跨域浏览器调用（默认关闭，见下）
 npm run acp -- --port 8890 --allow-local-tools  # 客户端没有 fs/terminal 能力时回退到本地工具
@@ -447,10 +454,12 @@ npm run acp -- --port 8890 --allow-local-tools  # 客户端没有 fs/terminal �
 
 `--port` 模式下默认还会在 `/` 提供内置的浏览器测试页（`--no-ui` 关闭）。
 
-Zed 的 `settings.json`：
+客户端侧的配置（以 IDEA 的 `~/.jetbrains/acp.json` 为例）：
 
 ```jsonc
+// ~/.jetbrains/acp.json
 {
+  "default_mcp_settings": {},
   "agent_servers": {
     "steve": {
       "command": "node",
@@ -473,10 +482,10 @@ npm i -g @zhyoung/steve       # 已发布的话，直接从 registry 装
 # 或者只在本机试用：npm link
 ```
 
-`bin` 三个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）。`steve --version`（`-v`）只打印版本号，便于脚本比对；`steve-acp --help` 的表头同样带版本。**版本号只有 `package.json` 一处**（`src/model/version.ts` 运行时读它），`--version`、ACP `initialize` 握手与 MCP `clientInfo` 都走这里，所以不会出现「包发了 0.1.2、握手还自报 0.1.0」这种走岔。于是编辑器配置可以简单到：
+`bin` 三个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）。`steve --version`（`-v`）只打印版本号，便于脚本比对；`steve-acp --help` 的表头同样带版本。**版本号只有 `package.json` 一处**（`src/model/version.ts` 运行时读它），`--version`、ACP `initialize` 握手与 MCP `clientInfo` 都走这里，所以不会出现「包发了 0.1.2、握手还自报 0.1.0」这种走岔。于是客户端配置可以简单到：
 
 ```jsonc
-// Zed settings.json
+// ~/.jetbrains/acp.json
 {
   "agent_servers": {
     "steve": {
@@ -494,11 +503,11 @@ npm i -g @zhyoung/steve       # 已发布的话，直接从 registry 装
 | --- | --- |
 | `~/.steve/.env` | 装成全局命令后，任何项目、任何 cwd 都能用（推荐） |
 | `<会话 cwd>/.steve/.env` | 每个项目自己的网关/模型 |
-| 编辑器 `env` 块 | 只想在编辑器里用某套凭据 |
+| 客户端 `env` 块 | 只想在某个客户端里用某套凭据 |
 
 ACP 的 `session/new` 会带上项目目录，所以 MCP（`.steve/mcp.json`）与插件（`.steve/extensions/`）也跟着**项目**走，不是跟着安装目录走。
 
-HTTP / WebSocket 模式（编辑器支持远程连接时用）：
+HTTP / WebSocket 模式（客户端支持远程连接时用）：
 
 ```bash
 steve-acp --port 8890 --token secret --cors "*"   # 端点 http://127.0.0.1:8890/acp，页面 http://127.0.0.1:8890/
@@ -558,12 +567,12 @@ npm run mock &                                        # 离线：不消耗真实
 LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic npm run acp:client -- "现在几点了？"
 ```
 
-### 抓编辑器与 agent 之间的流量
+### 抓客户端与 agent 之间的流量
 
-编辑器只会把 agent 的 stderr 转出来，看不到客户端发了什么 —— 排查「编辑器里一直卡在 Starting…」时，把编辑器指到探针上，双向 JSON-RPC 都会落盘：
+客户端只会把 agent 的 stderr 转出来，看不到自己发了什么 —— 排查「客户端里一直卡在 Starting…」时，把客户端指到探针上，双向 JSON-RPC 都会落盘：
 
 ```jsonc
-// ~/.jetbrains/acp.json（Zed 则是 settings.json 的 agent_servers）
+// ~/.jetbrains/acp.json
 { "agent_servers": { "steve": { "command": "node",
     "args": ["/path/to/steve/scripts/acp-tap.mjs"] } } }
 ```
@@ -572,7 +581,7 @@ LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://127.0.0.1:8899/anthropic 
 tail -f <项目>/.steve/acp-tap.log      # → client / ← agent，一行一条消息
 ```
 
-可选环境变量：`STEVE_ACP_TARGET`（默认 `steve-acp`）、`STEVE_ACP_TARGET_ARGS`、`STEVE_ACP_TAP`。看完记得把编辑器指回 agent。
+可选环境变量：`STEVE_ACP_TARGET`（默认 `steve-acp`）、`STEVE_ACP_TARGET_ARGS`、`STEVE_ACP_TAP`。看完记得把客户端指回 agent。
 
 ### 浏览器测试页 `test-acp-jsonrpc.html`
 
@@ -601,7 +610,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 
 | 脚本 | 作用 |
 | --- | --- |
-| `npm run acp:client` | 完整 ACP client，走 **stdio** 或 `--http` / `--ws`，可在真编辑器之外验证服务端 |
+| `npm run acp:client` | 完整 ACP client，走 **stdio** 或 `--http` / `--ws`，可在编辑器等真实客户端之外验证服务端 |
 | `npm run acp:probe` | Node 版 HTTP client（import 浏览器同一份 `web/acp-http-client.js`），带真实的 fs/terminal 回调 |
 | `npm run acp:ui-test` | 用 headless Chrome + CDP 驱动 **真实测试页**（`http://` 或 `file://` 都行），17 项断言覆盖流式输出、授权/拒绝、虚拟 FS、取消、429 重试等 |
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
@@ -637,12 +646,12 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 几个刻意设计：
 
 - **客户端能力决定工具集**：`initialize` 里客户端没声明 `fs` / `terminal` 能力，对应的 `read_file` / `run_command` 就不会注册，模型看不到也用不了。
-- **权限交给编辑器**：`write_file` / `run_command` 默认走 `session/request_permission`（`--permissions allow` 可关闭），UI 上是标准的 ACP 授权弹窗。「总是允许」只记在当前 session 的闸门里，不会串到别的会话。
-- **重试与协议无关**：429/5xx 的回滚重试在功能层，所以编辑器里也能吃到（客户端看不到失败轮）；取消不会被重试。
+- **权限交给客户端**：`write_file` / `run_command` 默认走 `session/request_permission`（`--permissions allow` 可关闭），UI 上是标准的 ACP 授权弹窗。「总是允许」只记在当前 session 的闸门里，不会串到别的会话。
+- **重试与协议无关**：429/5xx 的回滚重试在功能层，所以 ACP 客户端里也能吃到（客户端看不到失败轮）；取消不会被重试。
 - **每条连接独立**：HTTP/WS 传输下每个连接有自己的 `AgentApp` 和 session 表，session 之间不串上下文。
 - **stdout 只走协议**：stdio 模式下所有日志都写到 stderr，`--quiet` 可只留错误。
 - **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/mcp` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
-- **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）；**CLI 与 ACP 共用同一个 store 与文件格式**（`features/session-store.ts` 的 `sessionRecord()` 是唯一的记录装配处），所以终端里也能续聊。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，编辑器重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
+- **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）；**CLI 与 ACP 共用同一个 store 与文件格式**（`features/session-store.ts` 的 `sessionRecord()` 是唯一的记录装配处），所以终端里也能续聊。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，客户端重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
 - **会话管理**：`session/list`（可按 `cwd` 过滤，返回 `sessionId`/`cwd`/`updatedAt`）与 `session/delete`（先 dispose 活会话——顺带 abort 并关掉它的 MCP 子进程——再删文件）。两者都在 initialize 的 `sessionCapabilities` 里声明。
 - **MCP 透传**：来源有两个 —— ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`，以及插件用 `registerMcpServer()` 声明的（**这是 CLI 侧唯一入口**，终端里没有客户端可传）。两者都连（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表；`/mcp` 会列出每个 server 的来源（`plugin` / `client`）、传输、命令行与工具，连不上的把原因也列出来，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
 
@@ -661,7 +670,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 横向边只有两条：`features/runtime.ts → extensions/*`（必须 `import type`）、`extensions/* → features/{contract,events,tool-annotations}.ts` | 插件宿主必须能被功能层调用；插件只能用「契约文件」里的词汇，不能碰运行时实现 | `arch:test` |
 | `protocols/` 与 `entries/` 零 `@earendil-works/*` | 协议层与入口层不认识 pi；换掉 pi 时这两层不用动 | `arch:test` |
 | `@agentclientprotocol/sdk` 只出现在 `protocols/` | ACP 只是「一种」协议实现，不能渗进功能层 | `arch:test` |
-| `new Agent({ ... })` 只允许出现在 `kernel/agent.ts` | 「接 pi 的位置」只有一处，CLI 与编辑器行为天然一致 | `arch:test` |
+| `new Agent({ ... })` 只允许出现在 `kernel/agent.ts` | 「接 pi 的位置」只有一处，CLI 与 ACP 客户端行为天然一致 | `arch:test` |
 | `src/types.ts` 零依赖 | 它是跨层共享类型，不能变成隐性依赖源 | `arch:test` |
 | 协议层拿工具/类型只走 `features/contract.ts` | 类型也走契约，别各自 `import` pi | 约定 |
 | **pi 只出现在 `model/`、`kernel/`、`features/contract.ts`** | 换掉 pi 时改动面就这三处 | `arch:test` |
@@ -794,14 +803,14 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | MCP 实现留在核心、由插件声明 | 子进程生命周期必须被保证（会话结束要关干净） | 插件只能声明，不能自己实现传输 |
 | 会话持久化留在核心 | 「存哪里 / 存不存」是引导决策，丢历史不可接受 | 插件无法替换存储实现 |
 | 工具声明化（permission / metadata / describe） | 协议层不该认识具体工具名；MCP 与插件工具也需要审批预览 | 多一层注册表；工具不声明就没有好看的工具卡片 |
-| 重试放功能层 | 协议无关，编辑器与终端行为一致；取消不重试 | 功能层要处理回滚与上下文净化 |
+| 重试放功能层 | 协议无关，ACP 客户端与终端行为一致；取消不重试 | 功能层要处理回滚与上下文净化 |
 | 路径收敛放核心 | 这是安全边界，插件只能加约束不能放宽 | 工具无法自行定义「越界」 |
-| `--allow-local-tools` 默认关 | 编辑器里的 agent 不该悄悄绕过编辑器沙箱改本机文件 | 客户端没有 fs/terminal 能力时需要显式开启 |
+| `--allow-local-tools` 默认关 | 客户端里的 agent 不该悄悄绕过客户端沙箱改本机文件 | 客户端没有 fs/terminal 能力时需要显式开启 |
 | 本地工具是 **Tier 1 内置插件** | 判据 ①②：变体真实存在（只读/编辑器/组织版），且两个入口各装配一遍 | 默认能力依赖插件加载 → 内置插件失败要响，并有 `builtins: false` 的测试兜住 |
 | 同名工具默认拒绝、替换要显式 `override` | 插件化后客户端工具与本地工具同名，必须有明确语义，不能靠加载顺序 | 想替换的插件要显式声明（待实现） |
 | 纯函数库不做插件 | 没有变体、装配不重复、不在边界上 → 插件化只增加间接层 | 调用方直接 import |
 | CLI 也持久化会话（与 ACP 同一 store 与文件格式） | 能力不对称会让"终端里聊完就没了"显得像 bug；共用一个 store 后两端行为一致 | CLI 多三个 flag；`/new` 之后也要落盘（否则续期会把刚丢弃的历史接回来） |
-| CLI **显式续期**（`--resume <id>`），不自动接上次上下文 | 自动续聊不可预期：想开一个干净会话还得先删文件，而且"为什么模型记得上次的事"很难解释。ACP 那边由编辑器管理会话，终端这边把选择权交给用户 | 每次运行多一个 id 要记（退出时打印，可复制） |
+| CLI **显式续期**（`--resume <id>`），不自动接上次上下文 | 自动续聊不可预期：想开一个干净会话还得先删文件，而且"为什么模型记得上次的事"很难解释。ACP 那边由客户端管理会话，终端这边把选择权交给用户 | 每次运行多一个 id 要记（退出时打印，可复制） |
 | 凭据只认 `.steve/.env`（不再兼容裸 `.env`） | 一种形状最容易解释：本地配置都在 gitignore 的 `.steve/` 里；旧写法留着只是被忽略，不会造成"为什么这个 key 不生效"的困惑 | 已有裸 `.env` 的人要搬一次（错误信息会指路） |
 | 前端只**发布策略**，不装配能力 | 装配代码重复就是插件化的信号：`features/session-policy.ts`（策略形状 + 模型信息）与 `extensions/discovery.ts`（插件路径/发现开关）都是"一份实现、两个前端调用" | 前端多一层间接调用（换来单一真相） |
 | 插件命令只有一个实现（在插件里） | CLI 曾同时实现 `/new`、`/help`，导致插件的同名命令在终端里永远不生效、`/help` 两端不一致且会过期 | CLI 的 `/help` 走插件；host 级只留 `/exit` `/quit` `/plugins` |
@@ -828,6 +837,6 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 5c | ~~CLI 会话持久化 + 显式续期~~ | 已完成：每次运行新 id、退出打印 `steve --resume <id>`、`--resume` 恢复；与 ACP 共用 `sessionRecord()` 与同一份 store | ✅ 已做 |
 | 5 | 插件影响 system prompt 的契约（`contributePrompt`：限长、顺序、能否覆盖） | 先定契约再实现：这是提示词注入面 | 待定 |
 | 6 | 能力补齐：MCP `http` 传输、`session/fork`、`session/resume` | 功能缺口，不涉及分层 | 待定 |
-| 7 | 真机验证：Zed（IDEA 已实测）、Windows | 跨平台一节标注为"未在真机验证" | 待做 |
+| 7 | 真机验证：Windows | 跨平台一节标注为"未在真机验证" | 待做 |
 
 不做清单（避免反复讨论）：权限闸门、路径收敛、截断、会话存储、MCP 客户端实现、ACP 客户端工具 —— 见「决策记录」的理由。

@@ -4,7 +4,7 @@
  * ACP clients hand us `mcpServers` on `session/new` / `session/load`; we connect
  * to each of them, list their tools, and expose them as ordinary agent tools so
  * the model can call them. Only the **stdio** transport is implemented (that is
- * what editors send for local servers); `http`/`sse`/`acp` transports are
+ * what clients send for local servers); `http`/`sse`/`acp` transports are
  * reported as unsupported instead of silently ignored.
  *
  * Zero dependencies: MCP's stdio framing is newline-delimited JSON-RPC 2.0.
@@ -51,7 +51,7 @@ export interface McpConnectOptions {
 	logger?: Logger;
 	/**
 	 * Working directory for the server process. Without it a server inherits the
-	 * directory steve was launched from — wrong for editors, which spawn the ACP
+	 * directory steve was launched from — wrong for clients, which spawn the ACP
 	 * server elsewhere while the session belongs to a project.
 	 */
 	cwd?: string;
@@ -244,7 +244,7 @@ export async function connectMcpServer(server: McpServerSpec, options: McpConnec
 }
 
 /**
- * Explicit declarations (plugin code, the editor) beat config files, and a
+ * Explicit declarations (plugin code, the client) beat config files, and a
  * project config file beats the global one. Names must be unique after this:
  * two servers with one name would produce colliding `mcp__<server>__<tool>` tools.
  */

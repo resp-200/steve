@@ -34,7 +34,7 @@ export interface ExtensionContext {
 	/** No front end hands interactive UI to plugins yet (pi's `hasUI: false` in print mode). */
 	readonly hasUI: false;
 	log(message: string): void;
-	/** Runs a command locally (not in an editor's terminal). */
+	/** Runs a command locally (not in a client's terminal). */
 	exec(command: string, args?: string[], options?: { cwd?: string; timeoutMs?: number }): Promise<{ stdout: string; stderr: string; code: number }>;
 	/**
 	 * Read-only session introspection plus `reset()`. Filled in by the runtime

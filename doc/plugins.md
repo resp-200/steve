@@ -34,7 +34,7 @@ export default function myPlugin(pi) {
 
 - 目录发现只收 `.mjs` / `.js`，按文件名排序；显式路径排在发现结果之前。
 - 重名去重（同一个文件不会加载两次）。
-- 编辑器场景：插件跟着**会话 cwd** 走，不跟安装目录走。
+- ACP 客户端场景：插件跟着**会话 cwd** 走，不跟安装目录走。
 
 ---
 
@@ -47,7 +47,7 @@ export default function myPlugin(pi) {
 | `ctx.sessionId` | `string?` | 会话 id（CLI/ACP 都有） |
 | `ctx.hasUI` | `false` | 目前没有前端把交互 UI 交给插件（保留字段） |
 | `ctx.log` | `(msg) => void` | 写日志（两端都走 stderr，带 `[plugin <file>]` 前缀；stdio 模式下 stdout 只走协议） |
-| `ctx.exec` | `(cmd, args?, opts?) => Promise<{stdout,stderr,code}>` | 跑命令（不进编辑器的终端） |
+| `ctx.exec` | `(cmd, args?, opts?) => Promise<{stdout,stderr,code}>` | 跑命令（不进客户端的终端） |
 | `ctx.workspace` | `WorkspacePolicy` | **只读策略**：`{ roots, access, shell? }`，见 §5 |
 | `ctx.session` | `SessionAccessors` | 运行时内省，见下 |
 
@@ -93,14 +93,14 @@ pi.registerMcpServer({ name, command, args?, env?, timeoutMs?, type? });
 
 | 注解 | 作用 |
 | --- | --- |
-| `permission: "ask"` | 执行前让权限闸门问用户（CLI 终端 y/n、编辑器弹窗） |
+| `permission: "ask"` | 执行前让权限闸门问用户（CLI 终端 y/n、ACP 客户端弹窗） |
 | `metadata: { kind, title }` | 客户端怎么呈现（`kind` 是 ACP 的 `read`/`edit`/`execute`/`other`，`title` 可为函数） |
-| `describe: (args) => ToolChangePreview` | **审批预览**：返回 `{ summary, text?, file? }`（`file` 是 `{ path, oldText?, newText? }`），CLI 打印 diff、编辑器渲染 diff 卡片 |
+| `describe: (args) => ToolChangePreview` | **审批预览**：返回 `{ summary, text?, file? }`（`file` 是 `{ path, oldText?, newText? }`），CLI 打印 diff、ACP 客户端渲染 diff 卡片 |
 
 `execute` 返回 `content`（回灌给模型）+ `details`（给 UI / 日志）；抛错会被转成 `isError` 工具结果。
 
 命令的返回值会作为消息发回给用户（CLI 打印、ACP 变成 `agent_message_chunk`）。插件命令在两端都可用：
-CLI 里输入 `/name`，编辑器里由 `available_commands_update` 播报、会话本地执行。
+CLI 里输入 `/name`，ACP 客户端里由 `available_commands_update` 播报、会话本地执行。
 
 ---
 
@@ -177,7 +177,7 @@ tool "read_file" from a plugin ignored: already provided by the front end
 
 | 插件 | 贡献 |
 | --- | --- |
-| `session-commands.ts` | `/help` `/new` `/tools` `/stats` `/model` `/mcp`（CLI 与编辑器共用） |
+| `session-commands.ts` | `/help` `/new` `/tools` `/stats` `/model` `/mcp`（CLI 与 ACP 客户端共用） |
 | `local-tools.ts` | 6 个本地工具，按 `ctx.workspace.access` 注册 |
 | `demo-tools.ts` | `get_current_time`（演示用） |
 | `mcp-config.ts` | 读 `.steve/mcp.json`（项目 + 全局） |
@@ -214,7 +214,7 @@ cp examples/extensions/git-status.mjs .steve/extensions/
 | 工具注册了但模型不调用 | 检查 `description` 是否说清用途；`/tools` 确认它在表里 |
 | 工具没有审批弹窗 | 少了 `permission: "ask"`；注意**核心闸门只看声明**，插件不能绕过它 |
 | 工具卡片只有名字、没有好看标题 | 加 `metadata: { kind, title }`；协议层不认识工具名，不会兜底 |
-| 审批卡片没有 diff | 加 `describe: (args) => ({ summary, text })`（或 `file`），核心会把它交给 CLI/编辑器渲染 |
+| 审批卡片没有 diff | 加 `describe: (args) => ({ summary, text })`（或 `file`），核心会把它交给 CLI/客户端渲染 |
 | 插件命令在 CLI 里没反应 | 用 `/plugins` 看是否注册成功；名字不要与 host 级命令冲突（`/exit` `/quit` `/plugins` 由 CLI 自己实现） |
 | 钩子抛错但对话没断 | 这是设计：只记日志。去 stderr 找 `[plugin <file>]` |
 

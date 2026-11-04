@@ -29,14 +29,14 @@ Transport
   --no-sessions              keep sessions ephemeral (no persistence, no session/load)
 
 Behaviour
-  --permissions <ask|allow>  ask the editor before write/run tools (default ask)
+  --permissions <ask|allow>  ask the client before write/run tools (default ask)
   --quiet                    only log warnings and errors
   --help                     show this help
 
 Environment
   ACP_TRANSPORT, ACP_PORT, ACP_HOST, ACP_PATH, ACP_TOKEN, ACP_PERMISSIONS, ACP_CORS, ACP_UI
 
-Editors normally launch this over stdio:
+Editors and other ACP clients normally launch this over stdio:
   { "command": "node", "args": ["dist/protocols/acp/main.js"] }
 `.trim();
 

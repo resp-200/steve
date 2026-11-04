@@ -123,7 +123,7 @@ async function mcpClientChecks() {
 		broken.servers.map((server) => `${server.name}:${server.status}`).join(",") === "nope:failed,http-only:unsupported,second:connected",
 		broken.servers.map((server) => `${server.name}:${server.status}`).join(","),
 	);
-	// Servers must start in the session's cwd: editors launch the ACP server from
+	// Servers must start in the session's cwd: clients launch the ACP server from
 	// somewhere else, and `args: ["."]` has to mean "the project".
 	const cwdProbeDir = mkdtempSync(join(tmpdir(), "steve-mcp-cwd-"));
 	const cwdProbe = await connectMcpServers(
@@ -289,7 +289,7 @@ async function acpChecks() {
 		// no longer keeps a fallback table of tool names.
 		check("MCP 工具走权限确认，卡片用工具声明的标题", permissions.includes("mock: echo"), permissions.join(" | ").slice(0, 90));
 
-		// `/mcp` is a plugin command, so it also has to work through the editor.
+		// `/mcp` is a plugin command, so it also has to work through the client.
 		const mcpText = () =>
 			updates
 				.filter((update) => update.sessionUpdate === "agent_message_chunk")
@@ -304,7 +304,7 @@ async function acpChecks() {
 		);
 		check("命令列表里播报了 /mcp", announced.includes("mcp"), announced.join(","));
 
-		// A slow MCP server must not delay `session/new`: editors kill the agent when
+		// A slow MCP server must not delay `session/new`: clients kill the agent when
 		// initialization is slow (IDEA reports exit code 143 and "Failed to initialize").
 		const slowStart = Date.now();
 		const slowSession = await client.newSession({

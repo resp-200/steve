@@ -38,7 +38,7 @@ function readFileTool(context: AcpToolContext): AnnotatedTool<typeof ReadFilePar
 	return {
 		name: "read_file",
 		label: "Read file",
-		description: "Read a UTF-8 text file through the editor. Paths must be absolute.",
+		description: "Read a UTF-8 text file through the client. Paths must be absolute.",
 		metadata: { kind: "read", title: (args) => `Read ${(args as { path?: string })?.path ?? "file"}` },
 		parameters: ReadFileParams,
 		execute: async (_toolCallId, params: Static<typeof ReadFileParams>) => {
@@ -60,7 +60,7 @@ function writeFileTool(context: AcpToolContext): AnnotatedTool<typeof WriteFileP
 	return {
 		name: "write_file",
 		label: "Write file",
-		description: "Create or overwrite a UTF-8 text file through the editor. Paths must be absolute.",
+		description: "Create or overwrite a UTF-8 text file through the client. Paths must be absolute.",
 		permission: "ask",
 		metadata: { kind: "edit", title: (args) => `Write ${(args as { path?: string })?.path ?? "file"}` },
 		// The tool describes its own change (like the core tools do): the protocol
@@ -142,7 +142,7 @@ function runCommandTool(context: AcpToolContext): AnnotatedTool<typeof RunComman
 	};
 }
 
-/** Builds the tools the connected editor actually supports. */
+/** Builds the tools the connected client actually supports. */
 export function createAcpTools(context: AcpToolContext): AgentTool<any>[] {
 	// Array literals are covariant, which keeps each tool's parameter types intact
 	// while still returning the heterogeneous list the agent wants.

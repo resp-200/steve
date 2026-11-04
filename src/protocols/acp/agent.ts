@@ -152,7 +152,7 @@ export function createAcpAgentApp(options: AcpAgentOptions): AgentApp {
 				// session setup as failed and retries forever).
 				announceLater(session);
 				// Not awaited on purpose: a slow MCP server (npx cold start) must not
-				// delay the response, or editors time out and kill the agent.
+				// delay the response, or clients time out and kill the agent.
 				connectMcpInBackground([...clientServers, ...extensions.mcpServers], ctx.params.cwd, id, session);
 				options.logger(
 					`session/new: ${id} cwd=${session.cwd} tools=${session.toolNames.join(",")}${extensions.files.length > 0 ? ` plugins=${extensions.files.length}` : ""}`,

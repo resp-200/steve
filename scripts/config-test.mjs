@@ -111,7 +111,7 @@ try {
 	const overridden = resolve(project, home, { LLM_API_KEY: "from-process-env" });
 	check("真实环境变量优先于所有文件", overridden.key === "from-process-env", overridden.key);
 
-	// 7. the install directory's own files are the fallback: editors spawn the ACP
+	// 7. the install directory's own files are the fallback: clients spawn the ACP
 	//    server from another cwd, so the project's .steve/.env must still be found.
 	const candidates = resolve(bare, home).files;
 	check(

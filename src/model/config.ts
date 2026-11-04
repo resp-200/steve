@@ -183,7 +183,7 @@ function packageRoot(): string {
 }
 
 export function loadConfig(): AppConfig {
-	// Several places, lowest priority first: the install directory (so editors that
+	// Several places, lowest priority first: the install directory (so clients that
 	// spawn the ACP server from another cwd still find credentials), the global
 	// ~/.steve/.env, then the working directory.
 	loadEnvFiles(envFileCandidates());

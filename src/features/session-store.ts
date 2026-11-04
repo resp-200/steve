@@ -1,5 +1,5 @@
 /**
- * Session persistence: transcripts on disk, so an editor can resume a session
+ * Session persistence: transcripts on disk, so a client can resume a session
  * after a restart (`session/load`).
  *
  * Files are plain JSON under `<dir>/<id>.json`. Writes go to a temp file and are

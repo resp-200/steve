@@ -3,7 +3,7 @@
  *
  * Kept apart from the tools so both backends can share it — the local tools read
  * the previous content from disk, while the ACP session reads it through the
- * editor's `fs/read_text_file`. Same summary, same diff, either way.
+ * client's `fs/read_text_file`. Same summary, same diff, either way.
  */
 import type { ToolChangePreview } from "./permissions.js";
 

@@ -1,6 +1,6 @@
 # steve ACP Server 指南
 
-本文说明 steve 作为 **ACP（Agent Client Protocol）服务端**怎么启动、编辑器怎么接、线上协议长什么样。
+本文说明 steve 作为 **ACP（Agent Client Protocol）服务端**怎么启动、客户端怎么接、线上协议长什么样。
 所有结论都对应源码：`src/protocols/acp/*`、`web/acp-http-client.js`，并在这台机器上实测过（IDEA 2025.3、内置测试页、Node 客户端）。
 
 ---
@@ -8,7 +8,7 @@
 ## 1. 数据流
 
 ```
-编辑器（client）                      steve（agent）
+客户端（client）                      steve（agent）
   │  stdio / Streamable HTTP / WS          │
   ├─ initialize ──────────────────────────▶ 记录 clientCapabilities（fs / terminal）
   ├─ session/new ─────────────────────────▶ 建 AgentRuntime：工具集、策略、插件、MCP
@@ -32,7 +32,7 @@
 ```bash
 npm run build
 
-# 编辑器默认方式：stdio
+# 客户端默认方式：stdio
 node dist/protocols/acp/main.js
 
 # TCP 端口：Streamable HTTP + WebSocket（--port 一给，transport 自动变 http）
@@ -199,18 +199,33 @@ curl -sS -D - -o /dev/null -m 5 https://<host>/acp \
 
 ---
 
-## 3. 编辑器接入
+## 3. 客户端接入
+
+**ACP 客户端不止编辑器。** 官方 Clients 清单里除了编辑器/IDE，还有终端/TUI、桌面与 Web 应用、移动端、
+聊天机器人桥（Slack / Telegram / 飞书等）和笔记本内核：
+
+| 形态 | 例子（不穷举，见 [agentclientprotocol.com/get-started/clients](https://agentclientprotocol.com/get-started/clients)） |
+| --- | --- |
+| 编辑器 / IDE | IDEA、VS Code 扩展、Neovim 插件、Emacs `agent-shell`、Sublime、Qt Creator |
+| 终端 / TUI | acpx、Toad、Raven、Intelligent Terminal |
+| 桌面 / Web | ACP UI、AionUi、DeepChat、自建 Web 前端（本仓库的 `test-acp-jsonrpc.html` 就是一个） |
+| 移动 / 聊天机器人 | Agmente、Slack / Telegram / Discord / 飞书 桥 |
+| 笔记本 / 数据工具 | marimo、Jupyter kernel |
+
+它们唯一的共同要求是实现 ACP **client 侧**（`initialize` + `session/*`，`fs/*` / `terminal/*` 可选）。
+所以 steve 这边不做客户端类型假设：能接上与否只看它是否说 ACP，以及 `initialize` 里**声明了哪些能力** ——
+形态与能力没有对应关系。反例就在下面：IDEA 2025.3 是编辑器，但 `terminal=false`，会话里默认没有 `run_command`。
 
 ### 3.1 IDEA 2025.3（实测）
 
-IDEA 的"添加自定义智能体"打开的是 **`~/.jetbrains/acp.json`**（不是 Zed 的 settings.json）：
+IDEA 的"添加自定义智能体"打开的是 **`~/.jetbrains/acp.json`**：
 
 ```jsonc
 {
   "default_mcp_settings": {},
   "agent_servers": {
     "steve": {
-      "command": "steve-acp",     // 或用绝对路径，见 §3.3
+      "command": "steve-acp",     // 或用绝对路径，见 §3.2
       "args": []
     }
   }
@@ -219,21 +234,7 @@ IDEA 的"添加自定义智能体"打开的是 **`~/.jetbrains/acp.json`**（不
 
 IDEA 会把它自己的 MCP 配置随 `session/new` 传进来（`default_mcp_settings` 为空时就是不带）。
 
-### 3.2 Zed
-
-```jsonc
-// ~/.config/zed/settings.json
-{
-  "agent_servers": {
-    "steve": {
-      "command": "node",
-      "args": ["/绝对路径/steve/dist/protocols/acp/main.js"]
-    }
-  }
-}
-```
-
-### 3.3 编辑器里的两个坑（都踩过）
+### 3.2 客户端侧的两个坑（都踩过）
 
 1. **PATH**：GUI 应用的 PATH 与终端不同。IDEA 读登录 shell 的 PATH（含 nvm 的 bin），所以 `command: "steve-acp"` 能用；
    从 Dock 启动、PATH 更窄的编辑器则不行。**最稳的写法是绝对路径**：
@@ -248,12 +249,12 @@ IDEA 会把它自己的 MCP 配置随 `session/new` 传进来（`default_mcp_set
 
    注意：只把 `command` 指向 `steve-acp` 软链**不够** —— 它的 shebang 是 `#!/usr/bin/env node`，`env` 还要能在 PATH 里找到 `node`。
 
-2. **初始化超时**：编辑器对 `session/new` 有超时，超了就杀进程（IDEA 报 `Failed to initialize ACP process … exit code 143`）。
+2. **初始化超时**：客户端对 `session/new` 有超时，超了就杀进程（IDEA 报 `Failed to initialize ACP process … exit code 143`）。
    所以 steve **不在 `session/new` 里等 MCP**（见 §8），响应通常 < 30ms。
 
-### 3.4 凭据从哪来
+### 3.3 凭据从哪来
 
-编辑器不必在配置里写 key。按优先级（低 → 高）：`<安装目录>/.steve/.env` → `~/.steve/.env` → `$PWD/.steve/.env`，
+客户端不必在配置里写 key。按优先级（低 → 高）：`<安装目录>/.steve/.env` → `~/.steve/.env` → `$PWD/.steve/.env`，
 真实环境变量永远最优先。详见 [`model-integration.md`](./model-integration.md#2-配置文件的位置与优先级)。
 
 ---
@@ -320,7 +321,7 @@ Access-Control-Allow-Private-Network: true
 `promptCapabilities.image: false` 是因为 `buildModel()` 目前固定 `input: ["text"]`（见 model-integration.md §4.3）——
 模型不支持图片时，图片会被丢掉而不是报错。
 
-**一条顺序约束**（曾经导致编辑器一直卡在 `Starting …`）：`session/new` 的**响应必须先于**该会话的
+**一条顺序约束**（曾经导致客户端一直卡在 `Starting …`）：`session/new` 的**响应必须先于**该会话的
 `session/update`。客户端收到一个"未知 session 的更新"会把整次会话初始化当成失败并反复重试。
 实现上是 `setImmediate` 播报命令列表（`announceLater()`），`arch:test` 也有断言盯着这条。
 
@@ -336,12 +337,12 @@ Access-Control-Allow-Private-Network: true
 | **插件工具** | 插件 `registerTool()` | 由插件决定 |
 
 同名时**客户端工具优先**，本地插件那条被丢弃并记日志（`tool "read_file" from a plugin ignored: …`）。
-所以 `--allow-local-tools` 的效果是"补上编辑器没有的工具"，而不是替换。
+所以 `--allow-local-tools` 的效果是"补上客户端没有的工具"，而不是替换。
 
 权限：
 
-- 写/执行类工具**默认先问**（`--permissions allow` 可关）。问题以 `session/request_permission` 发给编辑器，
-  `toolCall.title` 是一行摘要，`toolCall.content` 可能带 `{ type: "diff", path, oldText, newText }`，编辑器可直接渲染。
+- 写/执行类工具**默认先问**（`--permissions allow` 可关）。问题以 `session/request_permission` 发给客户端，
+  `toolCall.title` 是一行摘要，`toolCall.content` 可能带 `{ type: "diff", path, oldText, newText }`，客户端可直接渲染。
 - 拒绝 → 闸门返回 `{ block: true }` → 变成一次 `isError` 工具结果回灌给模型（模型可以自己换招）。
 - "总是允许"只记在当前会话的闸门里，不跨会话。
 
@@ -350,7 +351,7 @@ Access-Control-Allow-Private-Network: true
 ## 7. 会话持久化
 
 每个会话的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--no-sessions` 关闭）。
-`session/load` 会读回它、回放给客户端、并把该会话重新挂上（编辑器重启后能接着聊）。
+`session/load` 会读回它、回放给客户端、并把该会话重新挂上（客户端重启后能接着聊）。
 
 - 文件格式与 CLI 共用（`features/session-store.ts` 的 `sessionRecord()` 是唯一的记录装配处）。
 - 写入是"临时文件 + rename"，崩溃不会留下半个 transcript。
@@ -371,13 +372,13 @@ Access-Control-Allow-Private-Network: true
 
 | 工具 | 用途 |
 | --- | --- |
-| `npm run acp:client -- "问题"` | 完整 ACP 客户端（stdio / `--http` / `--ws`），可在真编辑器之外验证；**可从任意目录运行** |
+| `npm run acp:client -- "问题"` | 完整 ACP 客户端（stdio / `--http` / `--ws`），可在编辑器等真实客户端之外验证；**可从任意目录运行** |
 | `npm run acp:probe -- --url http://127.0.0.1:8890/acp "run ls"` | Node 版 HTTP 客户端（与测试页共用 `web/acp-http-client.js`） |
 | `npm run acp:ui-test -- --url http://127.0.0.1:8890/` | headless Chrome 驱动真实测试页（`http://` 与 `file://` 都支持） |
-| `scripts/acp-tap.mjs` | **协议探针**：夹在编辑器与 agent 之间，把双向 JSON-RPC 写进文件（排查"编辑器到底发了什么"） |
+| `scripts/acp-tap.mjs` | **协议探针**：夹在客户端与 agent 之间，把双向 JSON-RPC 写进文件（排查"客户端到底发了什么"） |
 | 测试页 `/` | 浏览器里手动连、看原始 JSON-RPC 日志、模拟 client 能力 |
 
-抓包探针的用法（编辑器只转 agent 的 stderr，看不到客户端方向）：
+抓包探针的用法（客户端只会转 agent 的 stderr，看不到客户端方向）：
 
 ```jsonc
 // ~/.jetbrains/acp.json 临时改成
@@ -396,14 +397,14 @@ tail -f <项目>/.steve/acp-tap.log      # → client / ← agent，一行一条
 | 现象 | 原因 / 处理 |
 | --- | --- |
 | `Failed to initialize ACP process` / 进程被 SIGTERM（143） | 初始化太慢被杀。升级到会后台连 MCP 的版本；或把慢 server（`npx -y …`）预装/预热 |
-| 一直卡在 `Starting <agent>…`，日志里只有 `session/new` 没有 `session/prompt` | 客户端没把消息发出来：换新会话（配置变更后 IDEA 会提示"请开始新的聊天"），必要时重启编辑器；用探针确认 |
+| 一直卡在 `Starting <agent>…`，日志里只有 `session/new` 没有 `session/prompt` | 客户端没把消息发出来：换新会话（配置变更后 IDEA 会提示"请开始新的聊天"），必要时重启客户端；用探针确认 |
 | `session/new` 的响应先于/后于 `session/update` 顺序错乱 | 已修（`announceLater()`）；`arch:test` 有断言 |
 | HTTP **401** | `--token` 配了但请求没带 `Authorization: Bearer` |
 | HTTP **400**（带 `params.sessionId` 的请求） | 少了 `Acp-Session-Id` 头（先 `GET` 开该会话的 SSE） |
 | HTTP **409** | 同一连接开了第二条连接级 SSE |
 | 浏览器里连不上（`file://` 或跨域） | 服务端要 `--cors "*"`；私网访问还需要 `Allow-Private-Network`（已自动补） |
 | `unsupported — transport "http"` | MCP 只实现了 stdio |
-| 编辑器里没有 `run_command` | 客户端没声明 `terminal` 能力（IDEA 2025.3 就是 `terminal=false`）；需要本机执行就加 `--allow-local-tools` |
+| 客户端里没有 `run_command` | 客户端没声明 `terminal` 能力（IDEA 2025.3 就是 `terminal=false`）；需要本机执行就加 `--allow-local-tools` |
 
 ---
 
