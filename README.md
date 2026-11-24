@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
 | L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
-| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计；会话状态 = 可追加事件日志（`stream-log.ts`）+ 折叠（`state-fold.ts`） |
+| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计；会话状态 = 可追加事件日志（`stream-log.ts`）+ 折叠（`state-fold.ts`）；`projection.ts` 决定每类受众能看到什么 |
 | L3′ 拓展 | `src/extensions/` | 插件宿主 + **内置插件**（会话命令就住在这里）；一切能力都通过插件贡献 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
 | L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
@@ -27,13 +27,14 @@
 ```
 src/types.ts             跨层共享类型（Logger 等，零依赖）
 src/entries/cli.ts       L1 CLI：REPL / 单次提问 / slash 命令 / Ctrl+C 中断
-src/entries/render.ts    L1 归一化事件 -> 终端渲染（文本、thinking、工具调用、失败）
+src/entries/render.ts    L1 投影后事件 -> 终端渲染（按受众决定显示多少）
 src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content / tool-call）
 src/features/runtime.ts  L3 会话运行时：agent 装配、工具表、reset、统计
 src/features/retry.ts    L3 失败重试与回滚：一轮 prompt 的重试循环（退避、未跑工具才重试）
 src/features/normalize.ts L3 事件归一化：pi 事件 -> 功能层词表、transcript 摘要
 src/features/stream-log.ts L3 事件日志：append/read/subscribe/轮转/订阅（会话状态的唯一真相）
 src/features/state-fold.ts L3 状态折叠：事件 -> 消息 / 状态摘要（回放、分叉、续期都走它）
+src/features/projection.ts L3 事件投影：同一事件流按受众（user / full / audit / internal）收窄，隐藏思考与原始工具 I/O
 src/features/session-store.ts L3 会话存储：JSONL 为准 + 过渡期 `<id>.json` 兼容产物
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
@@ -52,7 +53,7 @@ src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / 
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
 src/model/version.ts      L5 版本号：唯一从 package.json 读取的地方（--version / ACP 握手 / MCP clientInfo）
 doc/*                    专题文档：模型接入 / ACP server / MCP / 插件（见 doc/README.md）
-docs/personal-agent.md   技术方案：把 steve 改造成 Personal Agent（事件驱动 / 异步 ReAct / 状态分离 / 投影 / 主动 Watch）—— 设计稿；S0 拆文件 / S0′ 架构断言 / S1 事件日志 + 兼容层已落地
+docs/personal-agent.md   技术方案：把 steve 改造成 Personal Agent（事件驱动 / 异步 ReAct / 状态分离 / 投影 / 主动 Watch）—— 设计稿；S0 拆文件 / S0′ 架构断言 / S1 事件日志 + 兼容层 / S2 事件投影已落地
 mcp.example.json         MCP 配置模板（复制到 .steve/mcp.json，见「MCP 接入」）
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
 test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
@@ -260,7 +261,10 @@ npm run dev                     # 默认：写/执行前在终端问 y/n（非�
 npm run dev -- --resume 9f3a1c7e  # 续上次的会话（id 在退出时打印）
 npm run dev -- --yes            # 自动批准所有写/执行（危险，慎用）
 npm run dev -- --read-only      # 只注册读工具，没有审批提示
+npm run dev -- --audience full  # 显示 thinking 与原始工具参数/输出（默认 user 只给摘要）
 ```
+
+终端默认用 `user` 受众投影（`features/projection.ts`）：模型思考、工具参数原文与工具输出原文都不上屏，只留 `tool › read_file` 这样的标题与一行结果摘要；`--audience full` 恢复成改造前的完整视图，`--audience audit` 另外把原始事件追加到 `<cwd>/.steve/audit.jsonl`。ACP 端固定 `full`，客户端行为逐条不变。
 
 ACP 侧沿用客户端提供的授权弹窗；只有客户端**没有**声明 `fs`/`terminal` 能力时，才可用 `--allow-local-tools` 让会话回退到本地工具（默认关闭，避免客户端环境里的 agent 绕过沙箱改本机文件）。同名工具不会重复注册：客户端提供了就用客户端的。
 
@@ -626,6 +630,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
 | `npm run sessions:test` | 会话持久化 35 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`（含无值/非法 id/未知 id/与 `--no-sessions` 冲突四种报错）、`/new` 清空、`--no-sessions` |
 | `npm run streams:test` | 事件日志 51 项断言：append/read/seq 连续性、`fromSeq` 增量、订阅补历史与取消、轮转跨文件、崩溃撕裂行跳过与续写、fork 独立编号、超限事件截断后折叠跳过，以及兼容层双写/旧 json 回退/两条读路径折叠一致 |
+| `npm run projections:test` | 事件投影 39 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
 | `npm run config:test` | 凭据来源 10 项：`.steve/.env` 查找链（安装目录 / `~/.steve` / `$PWD`）、真实环境变量优先、**裸 `.env` 被忽略**、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 25 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、版本号只有 `package.json` 一处且 `steve --version` 打印它、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
@@ -789,6 +794,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | `npm run mcp:test` | 8894 | 8892 |
 | `npm run sessions:test` | 8896 | 8895 |
 | `npm run streams:test` | — | — |
+| `npm run projections:test` | — | — |
 
 ### 8. 提交与发布
 

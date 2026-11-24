@@ -23,6 +23,7 @@ import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
 import { diffContent } from "./tool-call.js";
 import { createAcpTools } from "./tools.js";
 import { createAcpPublisher, type AcpPublisher } from "./publish.js";
+import { DEFAULT_POLICIES, project, type ProjectionHooks, type ProjectionPolicy } from "../../features/projection.js";
 
 export type PermissionMode = "ask" | "allow";
 
@@ -54,6 +55,12 @@ export interface AcpSessionOptions {
 	store?: SessionStore;
 	/** A stored transcript to resume instead of starting empty. */
 	restore?: StoredSession;
+	/**
+	 * How much of the internal event stream this client may see. Defaults to
+	 * `full` — clients that predate projection must see exactly what they saw
+	 * before (thinking chunks, raw tool arguments and output).
+	 */
+	projection?: ProjectionPolicy;
 	/** Tools contributed by MCP servers the client asked for. */
 	/** Configured MCP servers with their status, for the `/mcp` command. */
 	mcpServers?: McpServerStatus[];
@@ -136,7 +143,18 @@ export class AcpSession {
 			titleFor: (toolName, args) => this.titleFor(toolName, args),
 			logger: options.logger,
 		});
-		this.unsubscribe = this.runtime.subscribe((event) => this.publisher.publish(event));
+		const projection = options.projection ?? DEFAULT_POLICIES.full;
+		const projectionHooks: ProjectionHooks = {
+			kindFor: (toolName) => this.kindFor(toolName),
+			titleFor: (toolName, args) => this.titleFor(toolName, args),
+		};
+		this.unsubscribe = this.runtime.subscribe((event) => {
+			for (const projected of project(event, projection, projectionHooks)) {
+				// ACP clients consume the raw stream; summaries are for the terminal
+				// and future HTTP consumers, so a `user` projection is a no-op here.
+				if (projected.audience !== "user") this.publisher.publishEvent(projected.event);
+			}
+		});
 	}
 
 	/* ------------------------------- prompting ------------------------------ */

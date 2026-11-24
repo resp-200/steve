@@ -8,9 +8,11 @@ import { connectMcpServers } from "../features/mcp.js";
 import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
 import { createSessionStore, isSessionId, sessionRecord } from "../features/session-store.js";
+import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "../features/projection.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
 import { VERSION } from "../model/version.js";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { color, Renderer } from "./render.js";
@@ -25,6 +27,8 @@ Commands
 Flags
   --read-only    no write_file / edit_file / run_command (so no approval prompts)
   --yes, -y      approve every write/exec without asking
+  --audience <user|full|audit>  how much internal detail the terminal shows
+                 (default: user — no thinking, no raw tool arguments or output)
   --resume <id>  continue a previous session (the id is printed on exit)
   --session-dir  where transcripts live (default <cwd>/.steve/sessions)
   --no-sessions  do not read or write any transcript
@@ -51,6 +55,8 @@ interface CliOptions {
 	sessionDir?: string;
 	/** `--no-sessions`: nothing is read or written. */
 	noSessions: boolean;
+	/** What the terminal is allowed to see: `--audience`. */
+	audience: Audience;
 	/** One-shot prompt (everything that was not a flag). */
 	prompt: string;
 }
@@ -79,7 +85,13 @@ function valueFor(argv: string[], index: number, flag: string): string | { error
 }
 
 function parseArgv(argv: string[]): ParseResult {
-	const options: CliOptions = { readOnly: false, autoApprove: false, noSessions: false, prompt: "" };
+	const options: CliOptions = {
+		readOnly: false,
+		autoApprove: false,
+		noSessions: false,
+		audience: "user",
+		prompt: "",
+	};
 	const rest: string[] = [];
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -96,6 +108,16 @@ function parseArgv(argv: string[]): ParseResult {
 		}
 		if (arg === "--no-sessions") {
 			options.noSessions = true;
+			continue;
+		}
+		if (arg === "--audience") {
+			const value = valueFor(argv, index, "--audience");
+			if (typeof value !== "string") return value;
+			if (value !== "user" && value !== "full" && value !== "audit") {
+				return { error: `--audience must be user, full or audit (got "${value}")` };
+			}
+			options.audience = value;
+			index += 1;
 			continue;
 		}
 		if (arg === "--resume") {
@@ -185,6 +207,12 @@ function banner(context: ReplContext): void {
 		: options.autoApprove
 			? color.yellow("writes + commands auto-approved (--yes)")
 			: color.dim("writes + commands ask first");
+	const view =
+		options.audience === "user"
+			? color.dim("user (internal detail hidden · --audience full to show it)")
+			: options.audience === "audit"
+				? color.yellow("audit (raw events also appended to .steve/audit.jsonl)")
+				: color.yellow("full (thinking + raw tool arguments and output)");
 
 	process.stdout.write(
 		[
@@ -195,6 +223,7 @@ function banner(context: ReplContext): void {
 			`${color.dim("cwd     ")} ${process.cwd()}`,
 			`${color.dim("tools   ")} ${context.chat.toolNames.join(", ")}`,
 			`${color.dim("access  ")} ${access}`,
+			`${color.dim("view    ")} ${view}`,
 			`${color.dim("session ")} ${sessionState}`,
 			`${color.dim("hint    ")} /help for commands, /exit to quit`,
 			"",
@@ -471,8 +500,21 @@ async function main(): Promise<void> {
 		process.stdout.write(`\n${color.dim("Resume this session with:")}\n  ${color.bold(`steve --resume ${sessionId}`)}\n`);
 	};
 
+	// Projection is where "what the terminal may see" is decided (personal agent
+	// §4.5): the default `user` audience hides thinking and raw tool I/O, while
+	// `--audience full` reproduces the pre-projection view exactly.
+	const policy = DEFAULT_POLICIES[parsed.audience];
+	const auditFile = parsed.audience === "audit" ? join(cwd, ".steve", "audit.jsonl") : undefined;
+	if (auditFile) mkdirSync(join(cwd, ".steve"), { recursive: true });
+	const hooks: ProjectionHooks = {
+		kindFor: (toolName) => chat.toolRegistry().kindFor(toolName),
+		titleFor: (toolName, args) => chat.toolRegistry().titleFor(toolName, args),
+	};
 	const renderer = new Renderer();
-	chat.subscribe((event) => renderer.handle(event));
+	chat.subscribe((event) => {
+		if (auditFile) appendFileSync(auditFile, `${JSON.stringify(event)}\n`);
+		for (const projected of project(event, policy, hooks)) renderer.handle(projected);
+	});
 
 	if (parsed.prompt) {
 		await runOneShot(chat, parsed.prompt);

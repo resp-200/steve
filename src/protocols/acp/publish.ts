@@ -6,7 +6,7 @@
  * update vocabulary, so the two concerns can change independently.
  */
 import type { SessionUpdate, ToolKind } from "@agentclientprotocol/sdk";
-import type { AgentRuntimeEvent, TranscriptEntry } from "../../features/events.js";
+import type { StreamEventBody, TranscriptEntry } from "../../features/events.js";
 import type { Logger } from "../../types.js";
 import { locationsFromArgs } from "./content.js";
 import { toolCallContent } from "./tool-call.js";
@@ -24,14 +24,15 @@ export interface AcpPublisherOptions {
 export interface AcpPublisher {
 	send(update: SessionUpdate): Promise<void>;
 	/** Fire-and-forget: a failed notification must not break the agent loop. */
-	publish(event: AgentRuntimeEvent): void;
-	publishEvent(event: AgentRuntimeEvent): Promise<void>;
+	publish(event: StreamEventBody): void;
+	/** Events the client has no representation for are ignored. */
+	publishEvent(event: StreamEventBody): Promise<void>;
 	/** Replays a stored transcript to the client (used by `session/load`). */
 	replay(entries: TranscriptEntry[]): Promise<void>;
 }
 
 export function createAcpPublisher(options: AcpPublisherOptions): AcpPublisher {
-	const publishEvent = async (event: AgentRuntimeEvent): Promise<void> => {
+	const publishEvent = async (event: StreamEventBody): Promise<void> => {
 		switch (event.type) {
 			case "text_delta":
 				await options.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: event.text } });
@@ -74,7 +75,8 @@ export function createAcpPublisher(options: AcpPublisherOptions): AcpPublisher {
 				break;
 
 			default:
-				// turn_start / turn_end carry nothing the client needs.
+				// turn_start / turn_end and stream-lifecycle events carry nothing the
+				// client needs; projection decides what reaches this layer at all.
 				break;
 		}
 	};
