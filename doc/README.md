@@ -6,6 +6,7 @@
 | [acp-server.md](./acp-server.md) | ACP 服务端：启动参数、客户端接入（编辑器 / CLI / 桌面与 Web）、线协议（Streamable HTTP）、工具与权限、持久化、排查 |
 | [mcp.md](./mcp.md) | MCP 接入：三种来源与优先级、`.steve/mcp.json`、工具映射、连接时机、`/mcp`、没实现什么 |
 | [plugins.md](./plugins.md) | 插件开发：发现位置、`pi.ctx`、四类钩子、三类贡献、失败语义、什么时候该写成插件 |
+| [../docs/personal-agent.md](../docs/personal-agent.md) | 技术方案（设计稿，未实施）：把 steve 改造成 Personal Agent——事件总线、异步 worker、状态折叠、按受众投影、主动 Watch |
 
 项目整体说明（分层、约定与规范、测试、发布）在主 [README](../README.md)。
 

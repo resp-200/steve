@@ -47,6 +47,7 @@ src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / 
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
 src/model/version.ts      L5 版本号：唯一从 package.json 读取的地方（--version / ACP 握手 / MCP clientInfo）
 doc/*                    专题文档：模型接入 / ACP server / MCP / 插件（见 doc/README.md）
+docs/personal-agent.md   技术方案：把 steve 改造成 Personal Agent（事件驱动 / 异步 ReAct / 状态分离 / 投影 / 主动 Watch）—— 设计稿，未实施
 mcp.example.json         MCP 配置模板（复制到 .steve/mcp.json，见「MCP 接入」）
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
 test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
@@ -107,6 +108,8 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `<安装目录>/.steve/.env` | 客户端从别的 cwd 拉起 ACP server 时的兜底 |
 | `~/.steve/.env` | 全局，对所有项目生效 |
 | `$PWD/.steve/.env` | **推荐** |
+
+设计稿：[`docs/personal-agent.md`](docs/personal-agent.md)（把 steve 改造成 Personal Agent 的技术方案，含阶段划分与兼容矩阵；当前未实施）。
 
 专题文档都在 [`doc/`](doc/README.md)：**[模型接入](doc/model-integration.md)**（每个变量的含义、三种协议、常见配方）、
 **[ACP server](doc/acp-server.md)**（客户端接入、线协议、排查）、**[MCP](doc/mcp.md)**（来源与优先级、`/mcp`、没实现什么）、
