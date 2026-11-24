@@ -12,22 +12,14 @@
  * difference between what the agent internally knows and what a person needs to
  * see while it works.
  */
-import type { StreamEventBody, TurnStopReason, TurnUsage } from "./events.js";
+import type { Audience, ProjectionPolicy, StreamEventBody, TurnStopReason, TurnUsage } from "./events.js";
 
-/** Who is reading the stream. */
-export type Audience = "internal" | "user" | "audit" | "full";
-
-export interface ProjectionPolicy {
-	audience: Audience;
-	/** Keep a thinking placeholder (so the UI can show "thinking…") or drop it entirely. */
-	thinking: "drop" | "placeholder";
-	/** How a finished tool call is summarized: one line, or a truncated raw dump. */
-	toolOutput: "summary" | "truncated";
-	/** Character budget for the tool summary; 240 matches the renderer's default. */
-	toolOutputChars: number;
-	/** Include the tool's structured details (diffs, lists) when it reported any. */
-	details: boolean;
-}
+/**
+ * The policy types live in the event vocabulary so `features/environment.ts` can
+ * embed a snapshot of them without importing this module (contract files stay
+ * free of runtime implementations, see `scripts/arch-test.mjs` 3c).
+ */
+export type { Audience, ProjectionPolicy } from "./events.js";
 
 const FULL: ProjectionPolicy = {
 	audience: "full",

@@ -58,6 +58,26 @@ export type AgentRuntimeEvent =
 /** 一次运行的模式：前台（人正等着）或后台（触发器/排队）。 */
 export type RunMode = "foreground" | "background";
 
+/**
+ * 事件流的读者。投影策略写在事件词表里（而不是 `projection.ts`），
+ * 这样环境快照（§4.4 的 `EnvironmentSnapshot.projection`）也能引用它，
+ * 而 `environment.ts` 仍保持为纯契约、不 import 运行时实现。
+ */
+export type Audience = "internal" | "user" | "audit" | "full";
+
+/** 某个受众能看到多少内部细节（§4.5）。 */
+export interface ProjectionPolicy {
+	audience: Audience;
+	/** Keep a thinking placeholder (so the UI can show "thinking…") or drop it entirely. */
+	thinking: "drop" | "placeholder";
+	/** How a finished tool call is summarized: one line, or a truncated raw dump. */
+	toolOutput: "summary" | "truncated";
+	/** Character budget for the tool summary; 240 matches the renderer's default. */
+	toolOutputChars: number;
+	/** Include the tool's structured details (diffs, lists) when it reported any. */
+	details: boolean;
+}
+
 /** 一次运行结束时的结果，足以重建 UI 状态。 */
 export interface RunOutcome {
 	stopReason: TurnStopReason;

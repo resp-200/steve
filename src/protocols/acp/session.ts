@@ -24,6 +24,8 @@ import { diffContent } from "./tool-call.js";
 import { createAcpTools } from "./tools.js";
 import { createAcpPublisher, type AcpPublisher } from "./publish.js";
 import { DEFAULT_POLICIES, project, type ProjectionHooks, type ProjectionPolicy } from "../../features/projection.js";
+import { snapshotEnvironment, type EnvironmentSnapshot } from "../../features/environment.js";
+import { modelInfo, workspacePolicy } from "../../features/session-policy.js";
 
 export type PermissionMode = "ask" | "allow";
 
@@ -99,12 +101,15 @@ export class AcpSession {
 	private disposed = false;
 	/** Closers for MCP servers that were attached after the session started. */
 	private readonly mcpClosers: (() => Promise<void>)[] = [];
+	/** What this session's run is allowed to see and do; plain, serializable data. */
+	readonly environment: EnvironmentSnapshot;
 
 	constructor(options: AcpSessionOptions) {
 		this.options = options;
 		this.id = options.id;
 		this.cwd = options.cwd;
 		this.supportsImages = options.config.model.input.includes("image");
+		const projection = options.projection ?? DEFAULT_POLICIES.full;
 
 		const clientTools = createAcpTools({
 			sessionId: options.id,
@@ -136,6 +141,27 @@ export class AcpSession {
 			this.runtime.restore(options.restore.messages);
 			this.accountUsage(options.restore.usage as TurnUsage | undefined);
 		}
+		// One written-down environment per session (personal agent §4.4). The
+		// workspace roots and model are the same values plugins were loaded with,
+		// so the snapshot cannot drift from what the session actually allows.
+		this.environment = snapshotEnvironment({
+			cwd: this.cwd,
+			workspace: workspacePolicy({
+				cwd: this.cwd,
+				additionalDirectories: options.additionalDirectories,
+				access: options.allowLocalTools ? "exec" : "none",
+			}),
+			model: modelInfo(options.config),
+			tools: this.runtime.toolNames.map((name) => ({
+				name,
+				permissionRequired: this.runtime.toolRegistry().permissionRequired().includes(name),
+				...(this.kindFor(name) ? { kind: this.kindFor(name) } : {}),
+			})),
+			permissionMode: options.permissionMode,
+			plugins: options.extensions.files,
+			projection,
+			mode: "foreground",
+		});
 		this.publisher = createAcpPublisher({
 			sessionId: this.id,
 			send: (update) => this.options.client.notify("session/update", { sessionId: this.id, update }),
@@ -143,13 +169,12 @@ export class AcpSession {
 			titleFor: (toolName, args) => this.titleFor(toolName, args),
 			logger: options.logger,
 		});
-		const projection = options.projection ?? DEFAULT_POLICIES.full;
 		const projectionHooks: ProjectionHooks = {
 			kindFor: (toolName) => this.kindFor(toolName),
 			titleFor: (toolName, args) => this.titleFor(toolName, args),
 		};
 		this.unsubscribe = this.runtime.subscribe((event) => {
-			for (const projected of project(event, projection, projectionHooks)) {
+			for (const projected of project(event, this.environment.projection, projectionHooks)) {
 				// ACP clients consume the raw stream; summaries are for the terminal
 				// and future HTTP consumers, so a `user` projection is a no-op here.
 				if (projected.audience !== "user") this.publisher.publishEvent(projected.event);

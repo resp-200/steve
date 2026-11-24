@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
 | L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
-| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计；会话状态 = 可追加事件日志（`stream-log.ts`）+ 折叠（`state-fold.ts`）；`projection.ts` 决定每类受众能看到什么 |
+| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计；会话状态 = 可追加事件日志（`stream-log.ts`）+ 折叠（`state-fold.ts`）；`projection.ts` 决定每类受众能看到什么；`environment.ts` 把一次运行的外部条件落成可序列化快照 |
 | L3′ 拓展 | `src/extensions/` | 插件宿主 + **内置插件**（会话命令就住在这里）；一切能力都通过插件贡献 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
 | L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
@@ -35,6 +35,7 @@ src/features/normalize.ts L3 事件归一化：pi 事件 -> 功能层词表、tr
 src/features/stream-log.ts L3 事件日志：append/read/subscribe/轮转/订阅（会话状态的唯一真相）
 src/features/state-fold.ts L3 状态折叠：事件 -> 消息 / 状态摘要（回放、分叉、续期都走它）
 src/features/projection.ts L3 事件投影：同一事件流按受众（user / full / audit / internal）收窄，隐藏思考与原始工具 I/O
+src/features/environment.ts L3 环境快照：一次运行的外部条件（cwd/roots/工具/权限/模型/投影）落成可序列化数据
 src/features/session-store.ts L3 会话存储：JSONL 为准 + 过渡期 `<id>.json` 兼容产物
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
@@ -631,6 +632,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run sessions:test` | 会话持久化 35 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`（含无值/非法 id/未知 id/与 `--no-sessions` 冲突四种报错）、`/new` 清空、`--no-sessions` |
 | `npm run streams:test` | 事件日志 51 项断言：append/read/seq 连续性、`fromSeq` 增量、订阅补历史与取消、轮转跨文件、崩溃撕裂行跳过与续写、fork 独立编号、超限事件截断后折叠跳过，以及兼容层双写/旧 json 回退/两条读路径折叠一致 |
 | `npm run projections:test` | 事件投影 39 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
+| `npm run environments:test` | 环境快照 25 项断言：JSON 往返与 `structuredClone` 无损、快照里没有函数/运行时对象、roots 去重与顺序、tools 排序去重与权限/kind 透传、plugins 排序去重、投影与 workspace 的深拷贝隔离、CLI 与 ACP 两入口同策略产出相同快照 |
 | `npm run config:test` | 凭据来源 10 项：`.steve/.env` 查找链（安装目录 / `~/.steve` / `$PWD`）、真实环境变量优先、**裸 `.env` 被忽略**、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 25 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、版本号只有 `package.json` 一处且 `steve --version` 打印它、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
@@ -795,6 +797,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | `npm run sessions:test` | 8896 | 8895 |
 | `npm run streams:test` | — | — |
 | `npm run projections:test` | — | — |
+| `npm run environments:test` | — | — |
 
 ### 8. 提交与发布
 

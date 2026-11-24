@@ -56,6 +56,7 @@
 		"sessions:test": "node scripts/session-test.mjs",
 		"streams:test": "node scripts/stream-log-test.mjs",
 		"projections:test": "node scripts/projection-test.mjs",
+		"environments:test": "node scripts/environment-test.mjs",
 		"config:test": "node scripts/config-test.mjs",
 		"mcp:test": "node scripts/mcp-test.mjs",
 		"arch:test": "node scripts/arch-test.mjs",

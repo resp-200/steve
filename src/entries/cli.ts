@@ -8,6 +8,7 @@ import { connectMcpServers } from "../features/mcp.js";
 import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
 import { createSessionStore, isSessionId, sessionRecord } from "../features/session-store.js";
+import { snapshotEnvironment } from "../features/environment.js";
 import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "../features/projection.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
@@ -438,14 +439,17 @@ async function main(): Promise<void> {
 			? `${sessionId} · resumed ${stored.messages.length} message(s)`
 			: sessionId
 		: "off (--no-sessions)";
+	// The front end publishes policy; the local-tools plugin reads it. The same
+	// workspace/model pair feeds the environment snapshot once tools exist.
+	const workspace = workspacePolicy({ cwd, access: parsed.readOnly ? "read" : "exec" });
+	const model = modelInfo(config);
 	const extensions = await loadExtensions({
 		cwd,
 		mode: "cli",
 		paths: pluginPaths(),
 		discover: discoveryEnabled(),
-		// The front end publishes policy; the local-tools plugin reads it.
-		workspace: workspacePolicy({ cwd, access: parsed.readOnly ? "read" : "exec" }),
-		model: modelInfo(config),
+		workspace,
+		model,
 		log: (message) => process.stderr.write(`${color.dim(message)}\n`),
 	});
 
@@ -461,6 +465,7 @@ async function main(): Promise<void> {
 		await Promise.all(mcp.connections.map((connection) => connection.close()));
 	};
 
+	const permissionMode = parsed.autoApprove ? "allow" : "ask";
 	const chat = createAgentRuntime({
 		config,
 		tools: catalog,
@@ -469,7 +474,7 @@ async function main(): Promise<void> {
 		logger: pluginLog,
 		// Tools declare their own approval requirement and preview.
 		permissions: {
-			mode: parsed.autoApprove ? "allow" : "ask",
+			mode: permissionMode,
 			ask: (request) => askPermission(request, parsed),
 		},
 	});
@@ -500,11 +505,28 @@ async function main(): Promise<void> {
 		process.stdout.write(`\n${color.dim("Resume this session with:")}\n  ${color.bold(`steve --resume ${sessionId}`)}\n`);
 	};
 
+	// The environment snapshot is the single written-down answer to "what was
+	// allowed during this run" (personal agent §4.4). Projection comes from it
+	// too, so the terminal and `/env` can never disagree about the audience.
+	const environment = snapshotEnvironment({
+		cwd,
+		workspace,
+		model,
+		tools: chat.toolNames.map((name) => ({
+			name,
+			permissionRequired: chat.toolRegistry().permissionRequired().includes(name),
+			...(chat.toolRegistry().kindFor(name) ? { kind: chat.toolRegistry().kindFor(name) } : {}),
+		})),
+		permissionMode,
+		plugins: extensions.files,
+		projection: DEFAULT_POLICIES[parsed.audience],
+	});
+
 	// Projection is where "what the terminal may see" is decided (personal agent
 	// §4.5): the default `user` audience hides thinking and raw tool I/O, while
 	// `--audience full` reproduces the pre-projection view exactly.
-	const policy = DEFAULT_POLICIES[parsed.audience];
-	const auditFile = parsed.audience === "audit" ? join(cwd, ".steve", "audit.jsonl") : undefined;
+	const policy = environment.projection;
+	const auditFile = policy.audience === "audit" ? join(cwd, ".steve", "audit.jsonl") : undefined;
 	if (auditFile) mkdirSync(join(cwd, ".steve"), { recursive: true });
 	const hooks: ProjectionHooks = {
 		kindFor: (toolName) => chat.toolRegistry().kindFor(toolName),
