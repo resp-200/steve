@@ -670,7 +670,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 规则 | 为什么 | 检查 |
 | --- | --- | --- |
 | 只允许上层 import 下层，禁止反向 | 反向依赖意味着内核/功能层知道协议，换个协议就得改内核 | `arch:test` |
-| 横向边只有两条：`features/runtime.ts → extensions/*`（必须 `import type`）、`extensions/* → features/{contract,events,tool-annotations}.ts` | 插件宿主必须能被功能层调用；插件只能用「契约文件」里的词汇，不能碰运行时实现 | `arch:test` |
+| 横向边只有两条：`features/{runtime,worker}.ts → extensions/*`（必须 `import type`）、`extensions/* → features/{contract,events,tool-annotations,trigger,environment}.ts`（或它自己的能力实现，如 `local-tools.ts`） | 插件宿主必须能被功能层调用；插件只能用「契约文件」里的词汇，不能碰运行时实现 | `arch:test` |
 | `protocols/` 与 `entries/` 零 `@earendil-works/*` | 协议层与入口层不认识 pi；换掉 pi 时这两层不用动 | `arch:test` |
 | `@agentclientprotocol/sdk` 只出现在 `protocols/` | ACP 只是「一种」协议实现，不能渗进功能层 | `arch:test` |
 | `new Agent({ ... })` 只允许出现在 `kernel/agent.ts` | 「接 pi 的位置」只有一处，CLI 与 ACP 客户端行为天然一致 | `arch:test` |
@@ -683,7 +683,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 
 四条对应的「实现约定」：
 
-- **契约文件**：`features/contract.ts`（TypeBox / `AgentTool`）、`features/events.ts`（事件词表）、`features/tool-annotations.ts`（工具声明）、`extensions/api.ts`（插件契约）——它们是层与层之间唯一的词汇表。
+- **契约文件**：`features/contract.ts`（TypeBox / `AgentTool`）、`features/events.ts`（事件词表）、`features/tool-annotations.ts`（工具声明）、`extensions/api.ts`（插件契约）——它们是层与层之间唯一的词汇表。personal agent 阶段新增 `features/trigger.ts`（触发器 spec）与 `features/environment.ts`（环境快照）两个纯类型 + 纯函数契约：插件要注册触发器、要读环境，但不能拿到功能层的运行时装配。
 - **事件词表是唯一的对外语言**：协议层与入口层只说 `features/events.ts` 里那套事件，不吐 pi 的原始事件，也不吐 ACP 专属事件。
 - **内核是唯一的装配点**：`createKernelAgent()` 负责 systemPrompt、工具表、hooks 组合（含内置失败轮过滤 + 插件 `transformContext` 的顺序）。
 - **错误编码进流**：`StreamFn` 不 throw，见下文第 5 节。

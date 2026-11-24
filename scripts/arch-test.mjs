@@ -53,10 +53,12 @@ const LAYERS = {
 /** src/types.ts 是跨层共享类型，必须零依赖。 */
 const SHARED = new Set(["types.ts"]);
 
-/** 功能层 → 拓展层：只允许 runtime.ts 这一条，且必须是 `import type`。 */
-const LATERAL_TO_EXTENSIONS = "features/runtime.ts";
-/** 拓展层 → 功能层：只允许这几个契约文件（工具契约 / 事件词表 / 工具声明）。 */
-const CONTRACTS_FOR_EXTENSIONS = new Set(["contract.ts", "events.ts", "tool-annotations.ts"]);
+/** 功能层 → 拓展层：只允许这两个文件（worker 需要 attachSession 等钩子），且必须是 `import type`。 */
+const LATERAL_TO_EXTENSIONS = new Set(["features/runtime.ts", "features/worker.ts"]);
+/** 拓展层 → 功能层：只允许这几个契约文件（工具契约 / 事件词表 / 工具声明 / 触发器与环境快照）。 */
+const CONTRACTS_FOR_EXTENSIONS = new Set(["contract.ts", "events.ts", "tool-annotations.ts", "trigger.ts", "environment.ts"]);
+/** 运行时依赖白名单（功能层与协议层只许用这些第三方包 + node 内置）。 */
+const RUNTIME_DEPS = ["@agentclientprotocol/sdk", "@earendil-works/pi-agent-core", "@earendil-works/pi-ai"];
 
 function walk(dir) {
 	const out = [];
@@ -128,7 +130,7 @@ for (const { full, rel } of files) {
 
 		// 向上依赖：只放行两条列明的横向例外
 		const targetDir = targetRel.includes("/") ? targetRel.slice(0, targetRel.lastIndexOf("/")) : "";
-		if (rel === LATERAL_TO_EXTENSIONS && targetDir === "extensions" && isTypeOnly) continue;
+		if (LATERAL_TO_EXTENSIONS.has(rel) && targetDir === "extensions" && isTypeOnly) continue;
 		if (dir === "extensions" && targetDir === "features" && CONTRACTS_FOR_EXTENSIONS.has(targetRel.split("/").pop())) continue;
 		violations.push(`${rel} → ${targetRel}（L${layer} 依赖了上层的 L${targetLayer}）`);
 	}
@@ -205,11 +207,133 @@ check(
 );
 
 /* ------------------------------------------------------------------ */
+/* 3c. personal agent 新模块落位 + 新横向边（S0′；文件存在才校验）          */
+/* ------------------------------------------------------------------ */
+
+// §3.2 是新模块的唯一落位表：同名模块出现在别处，说明有人绕开了约定目录。
+const PLANNED_MODULES = [
+	"features/stream-log.ts",
+	"features/state-fold.ts",
+	"features/projection.ts",
+	"features/environment.ts",
+	"features/worker.ts",
+	"features/trigger.ts",
+	"extensions/builtin/watch-config.ts",
+	"protocols/http/events.ts",
+	"entries/serve.ts",
+];
+/** `events.ts` 在 features/ 已有同名的合法模块，只按层内目录判。 */
+const AMBIGUOUS_BASENAMES = new Set(["events.ts"]);
+const misplacedModules = [];
+for (const expected of PLANNED_MODULES) {
+	const basename = expected.split("/").pop();
+	const expectedLayer = expected.split("/")[0];
+	for (const { rel } of files) {
+		if (rel === expected || rel.split("/").pop() !== basename) continue;
+		const sameLayer = rel.split("/")[0] === expectedLayer;
+		if (sameLayer || !AMBIGUOUS_BASENAMES.has(basename)) misplacedModules.push(`${rel}（应在 ${expected}）`);
+	}
+}
+check(
+	"新模块落在约定目录（§3.2 落位表；文件存在才校验）",
+	misplacedModules.length === 0,
+	misplacedModules.slice(0, 5).join("; "),
+);
+
+/** 把相对 import 解析成 src 内的路径（ESM 写 `.js`，磁盘上是 `.ts`）。 */
+const resolveImport = (fromRel, spec) => {
+	const dir = fromRel.includes("/") ? fromRel.slice(0, fromRel.lastIndexOf("/")) : "";
+	const parts = `${dir ? `${dir}/` : ""}${spec}`.split("/");
+	const stack = [];
+	for (const part of parts) {
+		if (part === "." || part === "") continue;
+		if (part === "..") stack.pop();
+		else stack.push(part);
+	}
+	const resolved = stack.join("/");
+	return fileByRel.has(resolved) ? resolved : resolved.replace(/\.js$/, ".ts");
+};
+
+// 两条新增横向边：功能层只 runtime/worker 能摸插件宿主（且只 import type），
+// 插件只许引用纯契约文件 —— 否则「换个协议只改协议层」就不再成立。
+const badLateralToExtensions = [];
+const badLateralToFeatures = [];
+const MODULE_IMPL_BLOCKLIST = new Set(["runtime.ts", "stream-log.ts", "session-store.ts", "worker.ts", "projection.ts", "state-fold.ts"]);
+for (const { full, rel } of files) {
+	if (!rel.startsWith("features/") && !rel.startsWith("extensions/")) continue;
+	for (const match of readFileSync(full, "utf8").matchAll(IMPORT_RE)) {
+		const spec = match[2];
+		if (!spec.startsWith(".")) continue;
+		const targetRel = resolveImport(rel, spec);
+		if (!fileByRel.has(targetRel)) continue;
+		const targetDir = targetRel.includes("/") ? targetRel.slice(0, targetRel.lastIndexOf("/")) : "";
+		if (rel.startsWith("features/") && targetDir === "extensions") {
+			if (!LATERAL_TO_EXTENSIONS.has(rel) || !match[1]) {
+				badLateralToExtensions.push(`${rel} → ${targetRel}${match[1] ? "" : "（缺 import type）"}`);
+			}
+		}
+		if (rel.startsWith("extensions/") && targetDir === "features") {
+			// 契约文件随便用；能力实现只允许被它自己的插件引用（local-tools 这类豁免）。
+			const targetName = targetRel.split("/").pop().replace(/\.ts$/, "");
+			const allowed =
+				CONTRACTS_FOR_EXTENSIONS.has(targetRel.split("/").pop()) ||
+				(CAPABILITY_IMPORTERS[targetName]?.includes(rel) ?? false);
+			if (!allowed) badLateralToFeatures.push(`${rel} → ${targetRel}`);
+		}
+	}
+}
+check(
+	"横向边：features 只有 runtime.ts / worker.ts 能 import 插件宿主（且 import type）",
+	badLateralToExtensions.length === 0,
+	badLateralToExtensions.slice(0, 5).join("; "),
+);
+check(
+	"横向边：插件只能 import 契约文件（contract / events / tool-annotations / trigger / environment）",
+	badLateralToFeatures.length === 0,
+	badLateralToFeatures.slice(0, 5).join("; "),
+);
+
+// 新增的 trigger.ts / environment.ts 是给插件看的契约：只许纯类型 + 纯函数，
+// 一旦它们 import 运行时实现，插件就等于拿到「功能层内部装配」的入口。
+const impureContracts = [];
+for (const rel of ["features/trigger.ts", "features/environment.ts"]) {
+	const full = fileByRel.get(rel);
+	if (!full) continue;
+	for (const match of readFileSync(full, "utf8").matchAll(IMPORT_RE)) {
+		const spec = match[2];
+		if (!spec.startsWith(".")) continue;
+		const targetRel = resolveImport(rel, spec);
+		if (MODULE_IMPL_BLOCKLIST.has(targetRel.split("/").pop())) impureContracts.push(`${rel} → ${targetRel}`);
+	}
+}
+check(
+	"trigger.ts / environment.ts 是纯契约（不 import 运行时实现）",
+	impureContracts.length === 0,
+	impureContracts.slice(0, 5).join("; "),
+);
+
+// 新模块同样受依赖白名单约束（node 内置可以用，ws 只能 optional）。
+const unexpectedImports = [];
+for (const expected of PLANNED_MODULES) {
+	const full = fileByRel.get(expected);
+	if (!full) continue;
+	for (const match of readFileSync(full, "utf8").matchAll(IMPORT_RE)) {
+		const spec = match[2];
+		if (spec.startsWith(".") || spec.startsWith("node:") || spec === "ws" || RUNTIME_DEPS.includes(spec)) continue;
+		unexpectedImports.push(`${expected} → ${spec}`);
+	}
+}
+check(
+	"新模块不引入白名单之外的依赖（只有 pi 两个包 / ACP SDK / node 内置）",
+	unexpectedImports.length === 0,
+	unexpectedImports.slice(0, 5).join("; "),
+);
+
+/* ------------------------------------------------------------------ */
 /* 4. 运行时依赖白名单                                                   */
 /* ------------------------------------------------------------------ */
 
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-const RUNTIME_DEPS = ["@agentclientprotocol/sdk", "@earendil-works/pi-agent-core", "@earendil-works/pi-ai"];
 const extraDeps = Object.keys(pkg.dependencies ?? {}).filter((name) => !RUNTIME_DEPS.includes(name));
 const optionalDeps = Object.keys(pkg.optionalDependencies ?? {});
 check("运行时依赖只有 pi 两个包 + ACP SDK", extraDeps.length === 0, extraDeps.join(", "));
