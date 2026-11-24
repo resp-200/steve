@@ -69,6 +69,7 @@ run("配置（.env 链）", "node", ["scripts/config-test.mjs"]);
 run("本地工具", "node", ["scripts/local-tools-test.mjs"]);
 run("插件", "node", ["scripts/plugin-test.mjs"]);
 run("会话持久化", "node", ["scripts/session-test.mjs"]);
+run("事件日志（stream-log + 兼容层）", "node", ["scripts/stream-log-test.mjs"]);
 run("MCP", "node", ["scripts/mcp-test.mjs"]);
 
 if (!fast) {

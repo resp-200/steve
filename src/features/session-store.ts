@@ -1,15 +1,29 @@
 /**
- * Session persistence: transcripts on disk, so a client can resume a session
- * after a restart (`session/load`).
+ * Session persistence for clients that resume after a restart (`session/load`,
+ * `--resume`).
  *
- * Files are plain JSON under `<dir>/<id>.json`. Writes go to a temp file and are
- * renamed into place, so a crash never leaves a half-written transcript behind.
- * Every failure is logged and swallowed — losing history must never break a
- * running session.
+ * Since personal agent S1 the source of truth is the append-only event log
+ * (`features/stream-log.ts`): `save` diffs the transcript against the log and
+ * appends the new messages as events; `load` folds the stream back into a
+ * transcript. `<dir>/<id>.json` is still written during the transition, so every
+ * reader of the old format keeps working (it will stop being written after S5).
+ *
+ * Failure policy: the log is truth — an append failure is rethrown. The legacy
+ * JSON artifact is a convenience — its failures are logged and swallowed,
+ * because losing history must never break a running session.
  */
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Logger } from "../types.js";
+import type { PromptImage, StreamEvent, TurnUsage } from "./events.js";
+import { foldStatus, foldTranscript } from "./state-fold.js";
+import {
+	createStreamLog,
+	isStreamId,
+	type AppendedEvents,
+	type StreamEventInput,
+	type StreamLog,
+} from "./stream-log.js";
 
 export interface StoredSession {
 	id: string;
@@ -26,6 +40,19 @@ export interface SessionSummary {
 	id: string;
 	cwd: string;
 	updatedAt: string;
+}
+
+export interface SessionStoreOptions {
+	/** Directory the legacy `<id>.json` transcripts live in. */
+	dir: string;
+	/**
+	 * Directory the event streams live in. Defaults to the sibling `streams/`
+	 * directory, so `.steve/sessions` → `.steve/streams`.
+	 */
+	streamsDir?: string;
+	logger?: Logger;
+	rotateBytes?: number;
+	maxEventBytes?: number;
 }
 
 export interface SessionStore {
@@ -72,22 +99,89 @@ export function isSessionId(id: unknown): id is string {
 	return typeof id === "string" && SAFE_ID.test(id);
 }
 
-export function createSessionStore(options: { dir: string; logger?: Logger }): SessionStore {
+const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
+/** A run id has no meaning for a transcript saved by a front end, not by the worker. */
+const COMPAT_RUN_ID = "compat";
+
+interface CachedStream {
+	events: StreamEvent[];
+	/** Transcript as folded from `events` (what load() would return). */
+	messages: unknown[];
+	/** Some event was truncated, so the fold may be missing content: rewrite on next save. */
+	truncated: boolean;
+}
+
+/** Splits pi's message content into the text and images the event vocabulary carries. */
+function splitContent(content: unknown): { text: string; images: PromptImage[] } {
+	const images: PromptImage[] = [];
+	if (typeof content === "string") return { text: content, images };
+	let text = "";
+	if (Array.isArray(content)) {
+		for (const block of content) {
+			if (!isObject(block)) continue;
+			if (block.type === "text" && typeof block.text === "string") text += block.text;
+			else if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") {
+				images.push({ mimeType: block.mimeType, data: block.data });
+			}
+		}
+	}
+	return { text, images };
+}
+
+/** One transcript message → the events that reproduce it in the log. */
+function messageToEvents(message: unknown): StreamEventInput[] {
+	if (!isObject(message)) return [];
+	const timestamp = typeof message.timestamp === "number" ? { ts: message.timestamp } : {};
+
+	switch (message.role) {
+		case "user": {
+			const { text, images } = splitContent(message.content);
+			return [{ type: "user.message", text, ...(images.length > 0 ? { images } : {}), ...timestamp }];
+		}
+		case "assistant":
+			return [{ type: "run.turn.settled", runId: COMPAT_RUN_ID, message, ...timestamp }];
+		case "toolResult": {
+			const { text, images } = splitContent(message.content);
+			return [
+				{
+					type: "tool_end",
+					id: typeof message.toolCallId === "string" ? message.toolCallId : "",
+					name: typeof message.toolName === "string" ? message.toolName : "",
+					isError: message.isError === true,
+					text,
+					...(message.details !== undefined ? { details: message.details } : {}),
+					...(images.length > 0 ? { images } : {}),
+					...timestamp,
+				},
+			];
+		}
+		default:
+			return [];
+	}
+}
+
+export function createSessionStore(options: SessionStoreOptions): SessionStore {
 	const logger = options.logger ?? ((): void => {});
-	const fileFor = (id: string): string => join(options.dir, `${id}.json`);
+	const dir = options.dir;
+	const streamsDir = options.streamsDir ?? resolve(dir, "..", "streams");
+	const log: StreamLog = createStreamLog({
+		dir: streamsDir,
+		logger,
+		rotateBytes: options.rotateBytes,
+		maxEventBytes: options.maxEventBytes,
+	});
+	const cache = new Map<string, CachedStream>();
+
+	const fileFor = (id: string): string => join(dir, `${id}.json`);
 
 	const validId = (id: string): boolean => isSessionId(id);
 
-	const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-	async function save(session: StoredSession): Promise<void> {
-		if (!validId(session.id)) {
-			logger(`[sessions] refusing to save ${JSON.stringify(session.id)}: not a session id`);
-			return;
-		}
-
+	async function writeLegacy(session: StoredSession): Promise<void> {
 		try {
-			await mkdir(options.dir, { recursive: true });
+			await mkdir(dir, { recursive: true });
 			const target = fileFor(session.id);
 			const temporary = `${target}.${process.pid}.tmp`;
 			await writeFile(temporary, `${JSON.stringify(session, null, 2)}\n`, "utf8");
@@ -97,12 +191,7 @@ export function createSessionStore(options: { dir: string; logger?: Logger }): S
 		}
 	}
 
-	async function load(id: string): Promise<StoredSession | undefined> {
-		if (!validId(id)) {
-			logger(`[sessions] refusing to load ${JSON.stringify(id)}: not a session id`);
-			return undefined;
-		}
-
+	async function loadLegacy(id: string): Promise<StoredSession | undefined> {
 		try {
 			const parsed = JSON.parse(await readFile(fileFor(id), "utf8")) as StoredSession;
 			if (typeof parsed?.id !== "string" || !Array.isArray(parsed.messages)) throw new Error("malformed transcript");
@@ -115,22 +204,146 @@ export function createSessionStore(options: { dir: string; logger?: Logger }): S
 		}
 	}
 
-	async function list(): Promise<SessionSummary[]> {
-		let entries: string[];
-		try {
-			entries = await readdir(options.dir);
-		} catch {
-			return [];
+	function cachedFor(id: string, events: StreamEvent[]): CachedStream {
+		const cached: CachedStream = {
+			events,
+			messages: foldTranscript(events) as unknown[],
+			truncated: events.some((event) => event.truncated === true),
+		};
+		cache.set(id, cached);
+		return cached;
+	}
+
+	async function readCached(id: string): Promise<CachedStream> {
+		const cached = cache.get(id);
+		if (cached !== undefined) return cached;
+		return cachedFor(id, await log.read(id));
+	}
+
+	/** Appends the messages the log has not seen yet (and rebuilds the stream on truncation). */
+	async function appendToStream(session: StoredSession): Promise<void> {
+		const id = session.id;
+		const incoming = session.messages;
+		let cached = await readCached(id);
+
+		// A truncation (/new, reset) or a truncated event means the log no longer
+		// matches the transcript: rebuild it from scratch rather than diffing.
+		if (incoming.length < cached.messages.length || cached.truncated) {
+			await log.remove(id);
+			cache.delete(id);
+			cached = { events: [], messages: [], truncated: false };
 		}
 
-		const summaries: SessionSummary[] = [];
+		const inputs: StreamEventInput[] = [];
+		if (cached.events.length === 0) {
+			const createdAt = Date.parse(session.createdAt);
+			inputs.push({
+				type: "stream.created",
+				streamId: id,
+				cwd: session.cwd,
+				...(Number.isFinite(createdAt) ? { ts: createdAt } : {}),
+			});
+		}
+		for (const message of incoming.slice(cached.messages.length)) inputs.push(...messageToEvents(message));
+		if (inputs.length === 0) return;
+
+		const appended: AppendedEvents = await log.append(id, inputs);
+		cached.events.push(...appended.events);
+		cached.messages = incoming.slice();
+		cached.truncated = false;
+		cache.set(id, cached);
+	}
+
+	async function save(session: StoredSession): Promise<void> {
+		if (!validId(session.id)) {
+			logger(`[sessions] refusing to save ${JSON.stringify(session.id)}: not a session id`);
+			return;
+		}
+
+		// The legacy artifact first: it is the read path every front end still uses.
+		await writeLegacy(session);
+
+		if (!Array.isArray(session.messages)) {
+			logger(`[sessions] could not save ${session.id}: malformed transcript`);
+			return;
+		}
+
+		try {
+			await appendToStream(session);
+		} catch (error) {
+			// The log is truth: a failed append must reach the caller. The legacy
+			// file above means the session is still resumable, but the stream is
+			// now behind and the caller should know.
+			logger(`[sessions] could not append stream for ${session.id}: ${describe(error)}`);
+			throw error;
+		}
+	}
+
+	function fromStream(id: string, events: StreamEvent[]): StoredSession {
+		const status = foldStatus(events);
+		const created = events.find(
+			(event): event is Extract<StreamEvent, { type: "stream.created" }> => event.type === "stream.created",
+		);
+		const createdAt = status?.createdAt ?? events[0]?.ts ?? Date.now();
+		const updatedAt = status?.updatedAt ?? createdAt;
+		return {
+			id,
+			cwd: created?.cwd ?? process.cwd(),
+			createdAt: new Date(createdAt).toISOString(),
+			updatedAt: new Date(updatedAt).toISOString(),
+			messages: foldTranscript(events) as unknown[],
+			...(status !== undefined ? { usage: status.usage as TurnUsage } : {}),
+		};
+	}
+
+	async function load(id: string): Promise<StoredSession | undefined> {
+		if (!validId(id)) {
+			logger(`[sessions] refusing to load ${JSON.stringify(id)}: not a session id`);
+			return undefined;
+		}
+
+		let events: StreamEvent[] = [];
+		if (isStreamId(id)) {
+			try {
+				events = await log.read(id);
+			} catch (error) {
+				logger(`[sessions] could not load ${id}: ${describe(error)}`);
+			}
+		}
+		if (events.length > 0) {
+			cachedFor(id, events);
+			return fromStream(id, events);
+		}
+
+		// Transition: sessions written before S1 only have the JSON artifact.
+		return loadLegacy(id);
+	}
+
+	async function list(): Promise<SessionSummary[]> {
+		const summaries = new Map<string, SessionSummary>();
+		for (const stream of await log.listStreams()) {
+			summaries.set(stream.streamId, {
+				id: stream.streamId,
+				cwd: stream.cwd,
+				updatedAt: new Date(stream.updatedAt).toISOString(),
+			});
+		}
+
+		let entries: string[] = [];
+		try {
+			entries = await readdir(dir);
+		} catch {
+			// No legacy directory yet: streams are enough.
+		}
 		for (const entry of entries) {
 			if (!entry.endsWith(".json")) continue;
-			const session = await load(entry.slice(0, -".json".length));
-			if (session) summaries.push({ id: session.id, cwd: session.cwd, updatedAt: session.updatedAt });
+			const id = entry.slice(0, -".json".length);
+			if (!validId(id) || summaries.has(id)) continue;
+			const session = await loadLegacy(id);
+			if (session !== undefined) summaries.set(id, { id: session.id, cwd: session.cwd, updatedAt: session.updatedAt });
 		}
 
-		return summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+		return [...summaries.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	}
 
 	async function remove(id: string): Promise<void> {
@@ -139,6 +352,14 @@ export function createSessionStore(options: { dir: string; logger?: Logger }): S
 			return;
 		}
 
+		cache.delete(id);
+		if (isStreamId(id)) {
+			try {
+				await log.remove(id);
+			} catch (error) {
+				logger(`[sessions] could not remove ${id}: ${describe(error)}`);
+			}
+		}
 		try {
 			await rm(fileFor(id), { force: true });
 		} catch (error) {
@@ -146,5 +367,5 @@ export function createSessionStore(options: { dir: string; logger?: Logger }): S
 		}
 	}
 
-	return { dir: options.dir, save, load, list, remove };
+	return { dir, save, load, list, remove };
 }
