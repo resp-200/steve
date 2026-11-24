@@ -4,13 +4,12 @@ import {
 	type ClientCapabilities,
 	type PromptRequest,
 	type PromptResponse,
-	type SessionUpdate,
 	type StopReason,
 	type ToolKind,
 	type Usage,
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
-import type { AgentRuntimeEvent, TurnStopReason, TurnUsage } from "../../features/events.js";
+import type { TurnStopReason, TurnUsage } from "../../features/events.js";
 import type { ExtensionHost } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
 import { readFile } from "node:fs/promises";
@@ -21,8 +20,9 @@ import type { PermissionDecision, PermissionRequest, ToolChangePreview } from ".
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
 import type { Logger, McpServerStatus } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
-import { diffContent, toolCallContent } from "./tool-call.js";
+import { diffContent } from "./tool-call.js";
 import { createAcpTools } from "./tools.js";
+import { createAcpPublisher, type AcpPublisher } from "./publish.js";
 
 export type PermissionMode = "ask" | "allow";
 
@@ -76,6 +76,7 @@ export class AcpSession {
 
 	private readonly options: AcpSessionOptions;
 	private readonly runtime: AgentRuntime;
+	private readonly publisher: AcpPublisher;
 	private readonly supportsImages: boolean;
 	private readonly unsubscribe: () => void;
 	private readonly createdAt: string;
@@ -128,7 +129,14 @@ export class AcpSession {
 			this.runtime.restore(options.restore.messages);
 			this.accountUsage(options.restore.usage as TurnUsage | undefined);
 		}
-		this.unsubscribe = this.runtime.subscribe((event) => this.publish(event));
+		this.publisher = createAcpPublisher({
+			sessionId: this.id,
+			send: (update) => this.options.client.notify("session/update", { sessionId: this.id, update }),
+			kindFor: (toolName) => this.kindFor(toolName),
+			titleFor: (toolName, args) => this.titleFor(toolName, args),
+			logger: options.logger,
+		});
+		this.unsubscribe = this.runtime.subscribe((event) => this.publisher.publish(event));
 	}
 
 	/* ------------------------------- prompting ------------------------------ */
@@ -162,7 +170,7 @@ export class AcpSession {
 				this.options.logger(`session/prompt: ${this.id} running /${name} locally`);
 				const output = await this.runtime.runCommand(name, args);
 				if (output) {
-					await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
+					await this.publisher.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
 				}
 				return { stopReason: "end_turn", usage: { ...this.usage } };
 			}
@@ -183,7 +191,7 @@ export class AcpSession {
 		if (result.failed && result.errorMessage) {
 			// Surface provider failures inside the transcript instead of failing the
 			// whole JSON-RPC request, so the client keeps its history.
-			await this.send({
+			await this.publisher.send({
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text: `⚠️ ${result.errorMessage}` },
 			});
@@ -191,7 +199,7 @@ export class AcpSession {
 
 		if (result.contextTokens > 0) {
 			this.accountUsage(result.usage);
-			await this.send({
+			await this.publisher.send({
 				sessionUpdate: "usage_update",
 				used: result.contextTokens,
 				size: this.options.config.model.contextWindow,
@@ -224,38 +232,7 @@ export class AcpSession {
 
 	/** Replays a stored transcript to the client (used by `session/load`). */
 	async replay(): Promise<void> {
-		for (const entry of this.runtime.transcript()) {
-			if (entry.role === "user") {
-				const suffix = entry.images > 0 ? `\n[${entry.images} image(s)]` : "";
-				await this.send({ sessionUpdate: "user_message_chunk", content: { type: "text", text: `${entry.text}${suffix}` } });
-				continue;
-			}
-
-			if (entry.role === "assistant") {
-				if (entry.thinking) await this.send({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: entry.thinking } });
-				if (entry.text) await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: entry.text } });
-				for (const call of entry.toolCalls) {
-					await this.send({
-						sessionUpdate: "tool_call",
-						toolCallId: call.id,
-						title: this.titleFor(call.name, call.args),
-						name: call.name,
-						kind: this.kindFor(call.name),
-						status: "in_progress",
-						rawInput: call.args,
-						locations: locationsFromArgs(call.args),
-					});
-				}
-				continue;
-			}
-
-			await this.send({
-				sessionUpdate: "tool_call_update",
-				toolCallId: entry.toolCallId,
-				status: entry.isError ? "failed" : "completed",
-				content: toolCallContent(entry.text, undefined),
-			});
-		}
+		await this.publisher.replay(this.runtime.transcript());
 	}
 
 
@@ -263,7 +240,7 @@ export class AcpSession {
 		// Built-in commands are plugins too, so this is just the command registry.
 		const commands = this.runtime.commands.map((command) => ({ name: command.name, description: command.description }));
 
-		await this.send({
+		await this.publisher.send({
 			sessionUpdate: "available_commands_update",
 			availableCommands: commands,
 		});
@@ -371,63 +348,5 @@ export class AcpSession {
 
 	private titleFor(toolName: string, args: unknown): string {
 		return this.runtime.toolRegistry().titleFor(toolName, args) ?? toolName;
-	}
-
-	private send(update: SessionUpdate): Promise<void> {
-		return this.options.client.notify("session/update", { sessionId: this.id, update });
-	}
-
-	private publish(event: AgentRuntimeEvent): void {
-		void this.publishEvent(event).catch((error: unknown) => {
-			this.options.logger(`session ${this.id}: failed to send update: ${String(error)}`);
-		});
-	}
-
-	private async publishEvent(event: AgentRuntimeEvent): Promise<void> {
-		switch (event.type) {
-			case "text_delta":
-				await this.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: event.text } });
-				break;
-
-			case "thinking_delta":
-				await this.send({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: event.text } });
-				break;
-
-			case "tool_start":
-				await this.send({
-					sessionUpdate: "tool_call",
-					toolCallId: event.id,
-					title: this.titleFor(event.name, event.args),
-					name: event.name,
-					kind: this.kindFor(event.name),
-					status: "in_progress",
-					rawInput: event.args,
-					locations: locationsFromArgs(event.args),
-				});
-				break;
-
-			case "tool_update":
-				await this.send({
-					sessionUpdate: "tool_call_update",
-					toolCallId: event.id,
-					status: "in_progress",
-					content: toolCallContent(event.text, undefined),
-				});
-				break;
-
-			case "tool_end":
-				await this.send({
-					sessionUpdate: "tool_call_update",
-					toolCallId: event.id,
-					status: event.isError ? "failed" : "completed",
-					content: toolCallContent(event.text, event.details, event.images),
-					rawOutput: event.details ?? null,
-				});
-				break;
-
-			default:
-				// turn_start / turn_end carry nothing the client needs.
-				break;
-		}
 	}
 }

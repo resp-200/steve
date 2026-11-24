@@ -1,9 +1,10 @@
 /**
  * Session runtime: one pi agent plus the behaviour every front end shares.
  *
- * Event normalisation, failure retries with transcript rollback, cancellation and
- * counters live here, so protocols and entries never touch pi directly — they
- * consume {@link AgentRuntimeEvent} and {@link TurnResult}.
+ * The agent, tool wiring, permission gate and counters live here. Event
+ * normalisation lives in `normalize.ts`, and the retry policy in `retry.ts`, so
+ * protocols and entries never touch pi directly — they consume
+ * {@link AgentRuntimeEvent} and {@link TurnResult}.
  */
 import type {
 	AfterToolCallContext,
@@ -20,49 +21,12 @@ import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest, type ToolChangePreview } from "./permissions.js";
-import type { AgentRuntimeEvent, PromptImage, TranscriptEntry, TurnStopReason, TurnUsage } from "./events.js";
+import type { AgentRuntimeEvent, TranscriptEntry } from "./events.js";
 import type { Logger, McpServerStatus } from "../types.js";
+import { firstText, normalizeKernelEvent, toTranscript } from "./normalize.js";
+import { runTurn, type PromptOptions, type TurnDriver, type TurnResult } from "./retry.js";
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** The assistant half of pi's message union, without importing pi-ai for a name. */
-type AssistantTurn = Extract<AgentMessage, { role: "assistant" }>;
-
-const EMPTY_USAGE: TurnUsage = { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
-
-/** pi stop reasons -> our vocabulary (the mapping to a client's is a protocol concern). */
-const STOP_REASONS: Record<string, TurnStopReason> = {
-	stop: "stop",
-	toolUse: "tool_use",
-	pending: "stop",
-	deferred: "stop",
-	length: "length",
-	aborted: "cancelled",
-	error: "error",
-};
-
-export interface PromptOptions {
-	images?: PromptImage[];
-	signal?: AbortSignal;
-	/** Extra attempts after a turn fails without running any tool. Default: 2. */
-	retries?: number;
-	/** Delay before attempt N (1-based retry index). */
-	retryDelayMs?: (attempt: number) => number;
-	onRetry?: (reason: string, attempt: number) => void;
-}
-
-export interface TurnResult {
-	/** True when the turn was still failing after the retries were used up. */
-	failed: boolean;
-	errorMessage?: string;
-	/** Retries that were needed before the turn settled. */
-	retries: number;
-	stopReason: TurnStopReason;
-	/** Usage reported for the final assistant message of the turn. */
-	usage: TurnUsage;
-	/** Tokens the transcript occupied after this turn. */
-	contextTokens: number;
-}
+export type { PromptOptions, TurnResult } from "./retry.js";
 
 export interface AgentStats {
 	turns: number;
@@ -126,98 +90,6 @@ export interface AgentRuntime {
 	/** Adds or replaces one MCP server's status (same array identity, so `/mcp` sees it). */
 	upsertMcpServer(status: McpServerStatus): void;
 	stats(): AgentStats;
-}
-
-/** Reads the text out of a pi tool result (those shapes stop here). */
-function firstText(result: unknown): string | undefined {
-	const content = (result as { content?: unknown } | undefined)?.content;
-	if (!Array.isArray(content)) return undefined;
-	for (const block of content) {
-		if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
-			const text = (block as { text?: unknown }).text;
-			if (typeof text === "string") return text;
-		}
-	}
-	return undefined;
-}
-
-/** Image blocks a tool returned (read_file on a screenshot, for instance). */
-function resultImages(result: unknown): PromptImage[] {
-	const content = (result as { content?: unknown } | undefined)?.content;
-	if (!Array.isArray(content)) return [];
-
-	return content
-		.filter((block) => block && typeof block === "object" && (block as { type?: string }).type === "image")
-		.map((block) => ({
-			mimeType: String((block as { mimeType?: unknown }).mimeType ?? "application/octet-stream"),
-			data: String((block as { data?: unknown }).data ?? ""),
-		}))
-		.filter((image) => image.data.length > 0);
-}
-
-/** pi messages -> provider-neutral transcript entries (for replaying history). */
-function toTranscript(messages: AgentMessage[]): TranscriptEntry[] {
-	const entries: TranscriptEntry[] = [];
-
-	for (const message of messages) {
-		if (message.role === "user") {
-			const blocks = Array.isArray(message.content) ? message.content : [];
-			entries.push({
-				role: "user",
-				text: blocks
-					.filter((block) => block.type === "text")
-					.map((block) => (block as { text?: string }).text ?? "")
-					.join("\n"),
-				images: blocks.filter((block) => block.type === "image").length,
-			});
-			continue;
-		}
-
-		if (message.role === "assistant") {
-			const blocks = Array.isArray(message.content) ? message.content : [];
-			entries.push({
-				role: "assistant",
-				thinking: blocks
-					.filter((block) => block.type === "thinking")
-					.map((block) => (block as { thinking?: string }).thinking ?? "")
-					.join(""),
-				text: blocks
-					.filter((block) => block.type === "text")
-					.map((block) => (block as { text?: string }).text ?? "")
-					.join(""),
-				toolCalls: blocks
-					.filter((block) => block.type === "toolCall")
-					.map((block) => {
-						const call = block as { id?: string; name?: string; arguments?: unknown };
-						return { id: call.id ?? "", name: call.name ?? "", args: call.arguments ?? {} };
-					}),
-			});
-			continue;
-		}
-
-		if (message.role === "toolResult") {
-			entries.push({
-				role: "tool",
-				toolCallId: message.toolCallId,
-				name: message.toolName,
-				isError: message.isError === true,
-				text: firstText(message) ?? "",
-			});
-		}
-	}
-
-	return entries;
-}
-
-function toUsage(usage: AssistantTurn["usage"]): TurnUsage {
-	return {
-		input: usage.input,
-		output: usage.output,
-		total: usage.totalTokens,
-		cacheRead: usage.cacheRead,
-		cacheWrite: usage.cacheWrite,
-		reasoning: usage.reasoning ?? 0,
-	};
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
@@ -332,68 +204,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 		extensions?.dispatch(event);
 	};
 
-	/** pi's event stream, translated into the vocabulary the layers above speak. */
-	const normalize = (event: Parameters<Parameters<typeof agent.subscribe>[0]>[0]): AgentRuntimeEvent | undefined => {
-		switch (event.type) {
-			case "turn_start":
-				return { type: "turn_start" };
-
-			case "message_update": {
-				const inner = event.assistantMessageEvent;
-				if (inner.type === "text_delta" && inner.delta.length > 0) return { type: "text_delta", text: inner.delta };
-				if (inner.type === "thinking_delta" && inner.delta.length > 0) return { type: "thinking_delta", text: inner.delta };
-				return undefined;
-			}
-
-			case "tool_execution_start":
-				return { type: "tool_start", id: event.toolCallId, name: event.toolName, args: event.args };
-
-			case "tool_execution_update": {
-				const text = firstText(event.partialResult);
-				return text === undefined ? undefined : { type: "tool_update", id: event.toolCallId, name: event.toolName, text };
-			}
-
-			case "tool_execution_end": {
-				const details = (event.result as { details?: unknown } | undefined)?.details;
-				const images = resultImages(event.result);
-				const text =
-					firstText(event.result) ??
-					(images.length > 0
-						? `[${images.length} image(s) returned]`
-						: event.isError
-							? "Tool failed without a message"
-							: "Tool finished without output");
-				return {
-					type: "tool_end",
-					id: event.toolCallId,
-					name: event.toolName,
-					isError: event.isError,
-					text,
-					...(details !== undefined ? { details } : {}),
-					...(images.length > 0 ? { images } : {}),
-				};
-			}
-
-			default:
-				return undefined;
-		}
-	};
-
 	agent.subscribe((event) => {
-		const normalized = normalize(event);
+		const normalized = normalizeKernelEvent(event);
 		if (normalized) emit(normalized);
 	});
 
-	const summarize = (assistant: AssistantTurn | undefined, failure: string | undefined, retriesUsed: number): TurnResult => {
-		const usage = assistant ? toUsage(assistant.usage) : EMPTY_USAGE;
-		return {
-			failed: failure !== undefined,
-			...(failure !== undefined ? { errorMessage: failure } : {}),
-			retries: retriesUsed,
-			stopReason: assistant ? (STOP_REASONS[assistant.stopReason] ?? "stop") : "stop",
-			usage,
-			contextTokens: usage.total,
-		};
+	/** The kernel agent, reduced to what `runTurn` needs. */
+	const driver: TurnDriver = {
+		messages: () => agent.state.messages,
+		setMessages: (messages) => {
+			agent.state.messages = messages;
+		},
+		prompt: async (text, images) => {
+			await agent.prompt(text, images.length > 0 ? images.map((image) => ({ type: "image" as const, ...image })) : undefined);
+		},
+		abort: () => agent.abort(),
 	};
 
 	const runtime: AgentRuntime = {
@@ -437,47 +262,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 			return () => listeners.delete(listener);
 		},
 
-		/**
-		 * A turn that failed without running any tool can be rolled back safely, so
-		 * provider hiccups (429/502 and friends) are retried before the front end
-		 * ever hears about them.
-		 */
 		async prompt(text, promptOptions = {}) {
-			const images = promptOptions.images ?? [];
 			const retries = promptOptions.retries ?? defaultRetries;
-			const forwardAbort = (): void => agent.abort();
-			promptOptions.signal?.addEventListener("abort", forwardAbort, { once: true });
-
-			try {
-				for (let tryIndex = 0; ; tryIndex += 1) {
-					const before = agent.state.messages.length;
-					await agent.prompt(text, images.length > 0 ? images.map((image) => ({ type: "image" as const, ...image })) : undefined);
-
-					const appended: AgentMessage[] = agent.state.messages.slice(before);
-					const last = appended.at(-1);
-					const assistant = last?.role === "assistant" ? last : undefined;
-					const aborted = assistant?.stopReason === "aborted";
-					const failure =
-						assistant && (aborted || assistant.stopReason === "error")
-							? (assistant.errorMessage ?? `request ${assistant.stopReason}`)
-							: undefined;
-					const toolsRan = appended.some((message) => message.role === "toolResult");
-
-					// Cancelling is intentional, so only provider failures are retried.
-					if (failure === undefined || aborted || toolsRan || tryIndex >= retries) {
-						const result = summarize(assistant, failure, tryIndex);
-						emit({ type: "turn_end", ...result });
-						return result;
-					}
-
-					promptOptions.onRetry?.(failure, tryIndex + 1);
-					// Drop the failed user/assistant pair so the retry starts from a clean transcript.
-					agent.state.messages = agent.state.messages.slice(0, before);
-					await sleep(promptOptions.retryDelayMs?.(tryIndex + 1) ?? Math.min(1_000 * 2 ** tryIndex, 8_000));
-				}
-			} finally {
-				promptOptions.signal?.removeEventListener("abort", forwardAbort);
-			}
+			const result = await runTurn(driver, text, promptOptions, retries);
+			emit({ type: "turn_end", ...result });
+			return result;
 		},
 
 		abort: () => agent.abort(),
