@@ -24,6 +24,7 @@ import type {
 } from "./events.js";
 import type { EnvironmentSnapshot } from "./environment.js";
 import { normalizeKernelEvent } from "./normalize.js";
+import { foldTranscript } from "./state-fold.js";
 import { runTurn, type PromptOptions, type TurnDriver } from "./retry.js";
 import { isStreamId, type StreamEventInput, type StreamLog } from "./stream-log.js";
 import type { Logger } from "../types.js";
@@ -76,8 +77,12 @@ export interface RunWorkerOptions {
 	config: AppConfig;
 	extensions?: ExtensionHost;
 	log: StreamLog;
-	/** Whatever the stream says the transcript is, input message included. */
-	readState(streamId: string): Promise<AgentMessage[]>;
+	/**
+	 * Whatever the stream says the transcript is, input message included.
+	 * Defaults to folding the log — a front end only overrides it to avoid a
+	 * second read of data it already has.
+	 */
+	readState?(streamId: string): Promise<AgentMessage[]>;
 	resolveEnvironment(streamId: string, mode: RunMode): Promise<EnvironmentSnapshot>;
 	/**
 	 * Tool catalog of this process; runs only get the ones their snapshot allows.
@@ -244,7 +249,8 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 		try {
 			const environment = await options.resolveEnvironment(streamId, mode);
 			await options.log.append(streamId, [{ type: "run.started", runId, inputCause, environment, mode }]);
-			const messages = await options.readState(streamId);
+			const messages =
+				options.readState !== undefined ? await options.readState(streamId) : foldTranscript(await options.log.read(streamId));
 			const tools = selectTools(environment, mode);
 			const agent = (options.createAgent ?? defaultAgent)({
 				streamId,

@@ -5,8 +5,11 @@
  * same transcript, which is what makes replay, fork and retry equivalent to the
  * in-memory session the old runtime kept.
  *
- * At S1 only the rules the compatibility layer needs are implemented; S5 adds
- * the remaining ones (compaction, queued input, …) without changing this shape.
+ * S5 makes this the only state path: a worker folds once before each run and
+ * never mutates its transcript incrementally, and `AgentRuntime.snapshot()` is
+ * kept only as the compatibility seam the old on-disk format needs. The fold is
+ * total over the event vocabulary — unknown or truncated events are ignored, so
+ * a newer log still opens in an older process.
  */
 import type { AgentMessage } from "./contract.js";
 import type { PromptImage, RunMode, StreamEvent, TurnUsage } from "./events.js";
@@ -20,6 +23,7 @@ export interface StreamStatus {
 	activeRun: { runId: string; startedAt: number; mode: RunMode } | null;
 	/** Cumulative usage over all settled turns. */
 	usage: TurnUsage;
+	/** Completed model turns (one per `run.turn.settled`), like `/stats.turns`. */
 	turnCount: number;
 	toolCallCount: number;
 	/** Input events waiting for a run. */
@@ -29,6 +33,22 @@ export interface StreamStatus {
 const EMPTY_USAGE: TurnUsage = { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
+/** Usage carried on an `AssistantMessage`, mapped onto our wire shape. */
+function usageOf(message: unknown): TurnUsage {
+	const raw = isObject(message) && isObject(message.usage) ? message.usage : {};
+	const number = (key: string): number => {
+		const value = raw[key];
+		return typeof value === "number" ? value : 0;
+	};
+	const input = number("input");
+	const output = number("output");
+	const cacheRead = number("cacheRead");
+	const cacheWrite = number("cacheWrite");
+	const reasoning = number("reasoning");
+	const total = typeof raw.totalTokens === "number" ? raw.totalTokens : input + output;
+	return { input, output, total, cacheRead, cacheWrite, reasoning };
+}
 
 const addUsage = (total: TurnUsage, usage: TurnUsage): TurnUsage => ({
 	input: total.input + usage.input,
@@ -137,9 +157,11 @@ export function foldStatus(events: readonly StreamEvent[]): StreamStatus | undef
 				activeRun = null;
 				break;
 			}
-			case "turn_end": {
-				usage = addUsage(usage, event.usage);
+			case "run.turn.settled": {
+				// One completed model turn: this is what `/stats.turns` counts, and
+				// the assistant message is the only place usage survives a retry.
 				turnCount += 1;
+				usage = addUsage(usage, usageOf(event.message));
 				break;
 			}
 			case "tool_end": {

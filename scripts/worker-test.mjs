@@ -175,7 +175,7 @@ try {
 	check("assistant 的 toolCall 指向 get_current_time", messagesA[1]?.content?.some((block) => block.type === "toolCall" && block.name === "get_current_time") === true);
 	check("toolResult 保留结果与 isError", messagesA[2]?.isError === false && messagesA[2]?.content?.[0]?.text?.includes("2024"));
 	const statusA = foldStatus(eventsA);
-	check("状态：turnCount 1、toolCallCount 1、无活动 run", statusA?.turnCount === 1 && statusA?.toolCallCount === 1 && statusA?.activeRun === null);
+	check("状态：turnCount 2（工具轮 + 收尾轮）、toolCallCount 1、无活动 run", statusA?.turnCount === 2 && statusA?.toolCallCount === 1 && statusA?.activeRun === null);
 	check("seq 从 1 连续递增", eventsA.every((event, index) => event.seq === index + 1), eventsA.map((event) => event.seq).slice(0, 5).join(","));
 	check("所有事件属于同一条 stream", eventsA.every((event) => event.streamId === idA));
 	check("turn_end 出现在 run.settled 之前", eventsA.findIndex((event) => event.type === "turn_end") < eventsA.findIndex((event) => event.type === "run.settled"));
