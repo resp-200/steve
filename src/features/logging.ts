@@ -3,7 +3,7 @@
  *
  * The admin console can raise or lower the level and point the log at a
  * directory at runtime; both settings are meant to survive a restart, so their
- * *values* live in `.steve/admin.json` (`admin-config.ts`) — this module only
+ * *values* live in `~/.steve/admin.json` (`admin-config.ts`) — this module only
  * owns the mechanics: filtering, formatting and the file sink.
  *
  * Where lines go:
@@ -13,15 +13,16 @@
  *     (`<dir>/YYYY-MM-DD/steve-YYYY-MM-DDTHH.log`, local time), so a long
  *     running process never grows a single unbounded file.
  *
- * With no directory configured the default is `<cwd>/.steve/logs` — the same
- * gitignored `.steve/` directory every other local artefact lives in — so a
- * fresh checkout writes logs out of the box instead of failing on `~`.
+ * With no directory configured the default is `~/.steve/logs` — the one global
+ * state directory every other local artefact lives in — so a fresh install
+ * writes logs out of the box.
  *
  * A broken path must never take the process down: the first failure falls back
  * to the sink and disables the file sink for this process.
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { steveHomeDir } from "../model/config.js";
 
 export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
@@ -32,9 +33,9 @@ export function isLogLevel(value: unknown): value is LogLevel {
 	return typeof value === "string" && (LOG_LEVELS as readonly string[]).includes(value);
 }
 
-/** Default log directory: `<cwd>/.steve/logs` (gitignored, next to the other local state). */
-export function defaultLogDir(cwd = process.cwd()): string {
-	return join(cwd, ".steve", "logs");
+/** Default log directory: `~/.steve/logs` (the global state directory). */
+export function defaultLogDir(): string {
+	return join(steveHomeDir(), "logs");
 }
 
 const pad = (value: number): string => String(value).padStart(2, "0");

@@ -29,18 +29,18 @@ Anthropic 协议的 baseUrl 不能填成 `.../v1`），否则会 404。
 
 ## 2. 配置文件的位置与优先级
 
-凭据**只从 `.steve/.env` 读**（一种形状，永远在 gitignore 的 `.steve/` 里）。按**优先级从低到高**（后面的覆盖前面的）：
+凭据**只从 `~/.steve/.env` 读**——一个位置，与 cwd、与安装目录都无关：
 
 | 顺序 | 路径 | 用途 |
 | --- | --- | --- |
-| 1 | `<安装目录>/.steve/.env` | 客户端从别的 cwd 拉起 ACP server 时的兜底 |
-| 2 | `~/.steve/.env` | 全局，对所有项目生效 |
-| 3 | `$PWD/.steve/.env` | **推荐**，每个项目自己的网关/模型 |
+| 1 | `~/.steve/.env` | 唯一的配置文件，CLI / ACP / `steve-serve` 都读它 |
+| 2 | `$STEVE_HOME/.env` | 想换状态目录时设置 `STEVE_HOME`（测试用它隔离） |
+| — | 真实环境变量 | **永远最优先**：`LLM_MODEL_ID=xxx npm run dev` 会盖过文件 |
 
-- `<安装目录>` = `src/model/config.ts`（或 `dist/model/config.js`）往上两级，即仓库根。
-- **真实环境变量永远最优先**：`LLM_MODEL_ID=xxx npm run dev` 会盖过所有 `.env` 文件。
-- **旧的裸 `.env`（项目根目录、安装目录）已不再读取**：留着不会报错，只是被忽略。缺变量时的报错会直接指路：`Missing required environment variable LLM_API_KEY. Copy .env.example to .steve/.env and fill it in.`
-- `.steve/` 整个目录都在 `.gitignore` 里，本地配置与密钥不会进仓库（`npm run arch:test` 会机检）。
+- 首次 `loadConfig()` 会自动创建 `~/.steve/`，所以全新机器上也能直接从管理后台录入供应商。
+- `~/.steve/` 同时放 `admin.json`（管理后台）、`watch.json`（定时任务）、`mcp.json`（MCP）、`extensions/`、`streams/`、`sessions/`、`logs/`。
+- **旧的写法已不再读取**：项目根目录/安装目录下的裸 `.env`、以及 `<cwd>/.steve/.env`，留着不会报错，只是被忽略。缺变量时的报错会直接指路：`Missing required environment variable LLM_API_KEY. Copy .env.example to .steve/.env and fill it in.`
+- 状态目录在用户主目录下，天然不进仓库；仓库内的 `.steve/` 也在 `.gitignore` 里（`npm run arch:test` 会机检）。
 
 `.env` 解析规则（`parseEnvFile`）：
 
@@ -78,7 +78,7 @@ Anthropic 协议的 baseUrl 不能填成 `.../v1`），否则会 404。
 | `LLM_MODEL_ID` | string | 请求体里的 `model` 字段；同时是 `Model.id` 与 `Model.name` | `Model.id` / `Model.name` |
 | `LLM_BASE_URL` | string | 端点根地址；构造时去掉结尾的 `/` | `Model.baseUrl` |
 
-三者任一缺失会抛 `Missing required environment variable <NAME>. Copy .env.example to .steve/.env and fill it in.`
+三者任一缺失会抛 `Missing required environment variable <NAME>. Copy .env.example to .steve/.env and fill it in.`（目录是 `~/.steve`）
 
 ### 4.2 可选
 
@@ -225,7 +225,7 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
-| `Missing required environment variable LLM_API_KEY` | 没找到任何 `.env`：`mkdir -p .steve && cp .env.example .steve/.env` 并填三个必填项 |
+| `Missing required environment variable LLM_API_KEY` | 没找到 `~/.steve/.env`：`mkdir -p ~/.steve && cp .env.example ~/.steve/.env` 并填三个必填项 |
 | `LLM_API must be one of ...` | `LLM_API` 拼写错误 |
 | `LLM_AUTH_STYLE must be auto, bearer or api-key` | `LLM_AUTH_STYLE` 拼写错误 |
 | 401 / Unauthorized（Anthropic 网关） | 试 `LLM_AUTH_STYLE=bearer`；OpenAI 网关则确认 key 与 baseUrl 同源 |

@@ -1,7 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import type { Model, ProviderId } from "@earendil-works/pi-ai";
 import type { RequestHeadersProvider } from "./request-headers.js";
 
@@ -54,19 +53,35 @@ export function loadEnvFiles(files: string[]): void {
 }
 
 /**
- * Where credentials are looked for, lowest priority first.
+ * The one global state directory: `~/.steve`.
  *
- * Only `.steve/.env` is read — one shape, always inside the gitignored `.steve/`
- * directory. Plain `.env` files (project root, install directory) used to be
- * supported for compatibility; they are ignored now, so a stale one does nothing
- * and the missing-variable error points at `.steve/.env`.
+ * Everything Steve persists — `.env` credentials, `admin.json`, `watch.json`,
+ * `mcp.json`, `streams/`, `sessions/`, `logs/` — lives here, so starting the
+ * same install from different working directories always reads the same
+ * configuration. `STEVE_HOME` overrides the directory (tests and unusual
+ * installs point it at a scratch location).
  */
-export function envFileCandidates(cwd = process.cwd()): string[] {
-	return [
-		resolve(packageRoot(), ".steve", ".env"),
-		resolve(homedir(), ".steve", ".env"),
-		resolve(cwd, ".steve", ".env"),
-	];
+export function steveHomeDir(): string {
+	const override = process.env.STEVE_HOME?.trim();
+	if (override !== undefined && override !== "") return resolve(override);
+	return join(homedir(), ".steve");
+}
+
+/** Create `~/.steve` if needed and return it. */
+export function ensureSteveHome(): string {
+	const dir = steveHomeDir();
+	mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+/**
+ * Where credentials are looked for. There is exactly one file now: the global
+ * `~/.steve/.env`. Real environment variables still win over it (see
+ * `loadEnvFiles`); project-local `.env` files are deliberately ignored so a
+ * checkout can never silently override the user's keys.
+ */
+export function envFileCandidates(): string[] {
+	return [join(steveHomeDir(), ".env")];
 }
 
 /** Wire protocols this demo can talk to. */
@@ -191,15 +206,10 @@ function resolveAuthStyle(): AuthStyle {
 	return "auto";
 }
 
-/** Directory of the installed project (`dist/model/` or `src/model/` -> root). */
-function packageRoot(): string {
-	return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-}
-
 export function loadConfig(): AppConfig {
-	// Several places, lowest priority first: the install directory (so clients that
-	// spawn the ACP server from another cwd still find credentials), the global
-	// ~/.steve/.env, then the working directory.
+	// One global config file: ~/.steve/.env. Create the directory on first run so
+	// the admin console and the gateway editor have somewhere to write.
+	ensureSteveHome();
 	loadEnvFiles(envFileCandidates());
 	return {
 		apiKey: requireEnv("LLM_API_KEY"),

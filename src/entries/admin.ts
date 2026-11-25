@@ -2,8 +2,8 @@
  * Admin console backend: the `/admin` page and the JSON API behind it.
  *
  * It is deliberately a thin host-level surface: providers and logging live in
- * `.steve/admin.json`, the Feishu gateway in `.steve/.env`, schedules in
- * `.steve/watch.json` — the same files a hand edit would change. Nothing here
+ * `~/.steve/admin.json`, the Feishu gateway in `~/.steve/.env`, schedules in
+ * `~/.steve/watch.json` — the same files a hand edit would change. Nothing here
  * re-implements stream, run or trigger semantics; the console drives the same
  * worker and log the HTTP API already uses.
  *
@@ -33,7 +33,7 @@ import { isSessionId } from "../features/session-store.js";
 import type { StreamLog } from "../features/stream-log.js";
 import { isValidTimezone, parseCron } from "../features/trigger-schedule.js";
 import type { RunWorker } from "../features/worker.js";
-import { resolveApi } from "../model/config.js";
+import { resolveApi, steveHomeDir } from "../model/config.js";
 import { applyHeaders, hostOf, providerHeaders } from "../model/request-headers.js";
 import { VERSION } from "../model/version.js";
 import type { HttpExchange, HttpRoute } from "../protocols/http/events.js";
@@ -62,11 +62,16 @@ export interface AdminDeps {
 
 export const ADMIN_PAGE_PATHS = ["/admin", "/admin/"] as const;
 export const ADMIN_API = "/admin/api";
-export const WATCH_FILE = ".steve/watch.json";
+export const WATCH_FILE = "watch.json";
 export const FEISHU_API_BASE_DEFAULT = "https://open.feishu.cn";
 
-/** Raw configuration files the console may display. */
-const RAW_FILES = [".steve/.env", ".steve/admin.json", ".steve/watch.json", ".steve/mcp.json"] as const;
+/** Raw configuration files the console may display (all inside `~/.steve`). */
+const RAW_FILE_NAMES = [".env", "admin.json", "watch.json", "mcp.json"] as const;
+
+/** Absolute path of a raw configuration file (`~/.steve/<name>`). */
+function rawFilePath(name: string): string {
+	return join(steveHomeDir(), name);
+}
 
 /** Keys whose values are always masked in the file viewer. */
 const SECRET_ENV_KEYS = new Set([
@@ -113,11 +118,12 @@ function asString(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
 }
 
-const watchFilePath = (cwd: string): string => join(cwd, WATCH_FILE);
+/** The trigger table lives next to the other global config: `~/.steve/watch.json`. */
+const watchFilePath = (): string => join(steveHomeDir(), WATCH_FILE);
 
-async function readWatchFile(cwd: string, logger: LeveledLogger): Promise<Record<string, unknown>> {
+async function readWatchFile(logger: LeveledLogger): Promise<Record<string, unknown>> {
 	try {
-		const text = await readFile(watchFilePath(cwd), "utf8");
+		const text = await readFile(watchFilePath(), "utf8");
 		const parsed: unknown = JSON.parse(text);
 		return asObject(parsed) ?? {};
 	} catch (error) {
@@ -126,8 +132,8 @@ async function readWatchFile(cwd: string, logger: LeveledLogger): Promise<Record
 	}
 }
 
-async function writeWatchFile(cwd: string, value: Record<string, unknown>): Promise<void> {
-	const file = watchFilePath(cwd);
+async function writeWatchFile(value: Record<string, unknown>): Promise<void> {
+	const file = watchFilePath();
 	await mkdir(dirname(file), { recursive: true });
 	const temporary = `${file}.${process.pid}.tmp`;
 	await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -216,7 +222,7 @@ function feishuMode(): "ws" | "http" {
 
 /**
  * Keep the running process' view in sync with what was just written to
- * `.steve/.env`, so the console echoes saved values before a restart.
+ * `~/.steve/.env`, so the console echoes saved values before a restart.
  * (Changes still need a restart to affect the live bot/connection.)
  */
 function applyEnvUpdates(updates: Record<string, string | undefined>): void {
@@ -307,7 +313,7 @@ function extractModels(payload: unknown): ModelCandidate[] {
 export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 	const { cwd, logger } = deps;
 
-	const readConfig = (): Promise<AdminConfig> => readAdminConfig(cwd, (message) => logger.warn(message));
+	const readConfig = (): Promise<AdminConfig> => readAdminConfig((message) => logger.warn(message));
 
 	return [
 		{
@@ -468,7 +474,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 				}
 				const providers = existing === undefined ? [...config.providers, provider] : config.providers.map((item) => (item.id === existing.id ? provider : item));
 				const next: AdminConfig = { ...config, providers };
-				await writeAdminConfig(cwd, next);
+				await writeAdminConfig(next);
 				logger.info(`[admin] saved provider "${provider.name}" (${provider.id})`);
 				exchange.json(200, {
 					ok: true,
@@ -510,7 +516,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					...(config.persona !== undefined ? { persona: config.persona } : {}),
 					...(config.activeProviderId !== undefined && config.activeProviderId !== id ? { activeProviderId: config.activeProviderId } : {}),
 				};
-				await writeAdminConfig(cwd, next);
+				await writeAdminConfig(next);
 				logger.info(`[admin] deleted provider ${id}`);
 				exchange.json(200, { ok: true, restartRequired: true });
 			},
@@ -533,7 +539,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					fail(exchange, 404, `unknown provider "${id}"`);
 					return;
 				}
-				await writeAdminConfig(cwd, { ...config, activeProviderId: id });
+				await writeAdminConfig({ ...config, activeProviderId: id });
 				logger.info(`[admin] activated provider ${id}`);
 				exchange.json(200, { ok: true, activeProviderId: id, restartRequired: true });
 			},
@@ -627,13 +633,13 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					return;
 				}
 				try {
-					await updateEnvFile(cwd, updates);
+					await updateEnvFile(updates);
 				} catch (error) {
-					fail(exchange, 500, `could not write ${envFilePath(cwd)}: ${describe(error)}`);
+					fail(exchange, 500, `could not write ${envFilePath()}: ${describe(error)}`);
 					return;
 				}
 				applyEnvUpdates(updates);
-				logger.info(`[admin] updated Feishu gateway settings in .steve/.env`);
+				logger.info(`[admin] updated Feishu gateway settings in ~/.steve/.env`);
 				exchange.json(200, { ok: true, restartRequired: true });
 			},
 		},
@@ -641,7 +647,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 			method: "GET",
 			path: `${ADMIN_API}/schedules`,
 			handle: async (exchange) => {
-				const watch = await readWatchFile(cwd, logger);
+				const watch = await readWatchFile(logger);
 				exchange.json(200, { schedules: schedulesFromWatch(watch), watchFile: WATCH_FILE });
 			},
 		},
@@ -688,7 +694,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					return;
 				}
 				const mode = body.mode === "foreground" ? "foreground" : "background";
-				const watch = await readWatchFile(cwd, logger);
+				const watch = await readWatchFile(logger);
 				const triggers = asObject(watch.triggers) ?? {};
 				triggers[name] = {
 					kind: "cron",
@@ -700,7 +706,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 				};
 				watch.triggers = triggers;
 				try {
-					await writeWatchFile(cwd, watch);
+					await writeWatchFile(watch);
 				} catch (error) {
 					fail(exchange, 500, `could not write ${WATCH_FILE}: ${describe(error)}`);
 					return;
@@ -721,7 +727,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					return;
 				}
 				const name = asString(body.name);
-				const watch = await readWatchFile(cwd, logger);
+				const watch = await readWatchFile(logger);
 				const triggers = asObject(watch.triggers);
 				if (triggers === undefined || triggers[name] === undefined) {
 					fail(exchange, 404, `unknown schedule "${name}"`);
@@ -730,7 +736,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 				delete triggers[name];
 				watch.triggers = triggers;
 				try {
-					await writeWatchFile(cwd, watch);
+					await writeWatchFile(watch);
 				} catch (error) {
 					fail(exchange, 500, `could not write ${WATCH_FILE}: ${describe(error)}`);
 					return;
@@ -751,7 +757,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					return;
 				}
 				const name = asString(body.name);
-				const watch = await readWatchFile(cwd, logger);
+				const watch = await readWatchFile(logger);
 				const schedule = schedulesFromWatch(watch).find((entry) => entry.name === name);
 				if (schedule === undefined) {
 					fail(exchange, 404, `unknown schedule "${name}"`);
@@ -772,9 +778,10 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 			handle: async (exchange) => {
 				const config = await readConfig();
 				const files: { path: string; exists: boolean; size?: number; mtime?: string }[] = [];
-				for (const path of RAW_FILES) {
+				for (const name of RAW_FILE_NAMES) {
+					const path = rawFilePath(name);
 					try {
-						const info = await stat(join(cwd, path));
+						const info = await stat(path);
 						files.push({ path, exists: true, size: info.size, mtime: info.mtime.toISOString() });
 					} catch {
 						files.push({ path, exists: false });
@@ -790,9 +797,9 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					logDir: config.logDir ?? deps.logger.dir ?? "",
 					persona: config.persona ?? "",
 					watchEnabled: deps.watchEnabled,
-					adminFile: adminConfigPath(cwd),
-					envFile: envFilePath(cwd),
-					watchFile: WATCH_FILE,
+					adminFile: adminConfigPath(),
+					envFile: envFilePath(),
+					watchFile: rawFilePath(WATCH_FILE),
 					files,
 				});
 			},
@@ -839,7 +846,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 				};
 				if (logDir === undefined) delete next.logDir;
 				if (persona === undefined) delete next.persona;
-				await writeAdminConfig(cwd, next);
+				await writeAdminConfig(next);
 				deps.logger.setLevel(next.logLevel);
 				deps.logger.setDir(next.logDir);
 				logger.info(`[admin] logging set to ${next.logLevel} -> ${next.logDir ?? "default"}`);
@@ -853,22 +860,28 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 			method: "GET",
 			path: `${ADMIN_API}/files`,
 			handle: async (exchange) => {
-				const rawPath = (exchange.request.query.get("path") ?? "").replace(/^\.?\//, "");
-				const matched = RAW_FILES.find((path) => path === rawPath);
+				// Accept the absolute path (what /system returns) and the bare name
+				// (`.env`, `admin.json`, …), so the console can use either.
+				const requested = (exchange.request.query.get("path") ?? "").trim();
+				const name = requested.startsWith("/")
+					? requested.slice(steveHomeDir().length + 1)
+					: requested.replace(/^\.?\//, "").replace(/^\.steve\//, "");
+				const matched = (RAW_FILE_NAMES as readonly string[]).find((candidate) => candidate === name);
 				if (matched === undefined) {
-					fail(exchange, 400, `path must be one of ${RAW_FILES.join(", ")}`);
+					fail(exchange, 400, `path must be one of ${RAW_FILE_NAMES.map((entry) => rawFilePath(entry)).join(", ")}`);
 					return;
-				}
+				};
+				const matchedPath = rawFilePath(matched);
 				const reveal = exchange.request.query.get("reveal") === "1" || exchange.request.query.get("reveal") === "true";
 				let content: string;
 				try {
-					content = await readFile(join(cwd, matched), "utf8");
+					content = await readFile(matchedPath, "utf8");
 				} catch (error) {
-					fail(exchange, 404, `could not read ${matched}: ${describe(error)}`);
+					fail(exchange, 404, `could not read ${matchedPath}: ${describe(error)}`);
 					return;
 				}
 				exchange.json(200, {
-					path: matched,
+					path: matchedPath,
 					content: reveal ? text(content, 512 * 1024) : maskFileContent(matched, text(content, 512 * 1024)),
 					masked: !reveal,
 				});

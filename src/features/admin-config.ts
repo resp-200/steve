@@ -1,7 +1,7 @@
 /**
  * The admin console's on-disk configuration: LLM providers, the active
- * provider and logging preferences (`.steve/admin.json`), plus small helpers
- * the console needs to edit `.steve/.env` without ever showing raw secrets.
+ * provider and logging preferences (`~/.steve/admin.json`), plus small helpers
+ * the console needs to edit `~/.steve/.env` without ever showing raw secrets.
  *
  * The functional layer must stay usable without a console, so nothing here is
  * required at startup: with no admin file the process behaves exactly as
@@ -9,13 +9,13 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { resolveApi, type AppConfig } from "../model/config.js";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { resolveApi, steveHomeDir, type AppConfig } from "../model/config.js";
 import type { Logger } from "../types.js";
 import { isLogLevel, type LogLevel } from "./logging.js";
 import { coerceRequestHeaders, normalizeRequestHeaders } from "./request-headers.js";
 
-/** Hidden directory shared by every local configuration file. */
+/** Hidden directory shared by every local configuration file (under the home dir). */
 export const ADMIN_DIR = ".steve";
 export const ADMIN_CONFIG_FILE = "admin.json";
 export const ENV_FILE = ".env";
@@ -43,7 +43,7 @@ export interface AdminConfig {
 	providers: ProviderEntry[];
 	activeProviderId?: string;
 	logLevel: LogLevel;
-	/** Log **directory**; one file per hour is created under it. Absent = `<cwd>/.steve/logs`. */
+	/** Log **directory**; one file per hour is created under it. Absent = `~/.steve/logs`. */
 	logDir?: string;
 	/** The user's own role instructions, layered on top of the built-in identity. Absent = none. */
 	persona?: string;
@@ -51,12 +51,17 @@ export interface AdminConfig {
 
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = { providers: [], logLevel: "info" };
 
-export function adminConfigPath(cwd = process.cwd()): string {
-	return join(cwd, ADMIN_DIR, ADMIN_CONFIG_FILE);
+/**
+ * Paths are always resolved inside `~/.steve` (or `STEVE_HOME`), never relative
+ * to the working directory — starting the service from another folder must not
+ * silently read or write a different configuration.
+ */
+export function adminConfigPath(): string {
+	return join(steveHomeDir(), ADMIN_CONFIG_FILE);
 }
 
-export function envFilePath(cwd = process.cwd()): string {
-	return join(cwd, ADMIN_DIR, ENV_FILE);
+export function envFilePath(): string {
+	return join(steveHomeDir(), ENV_FILE);
 }
 
 /** Never send a secret to the browser; keep a stable 4-character tail for recognition. */
@@ -121,7 +126,7 @@ export function applyProvider(base: AppConfig, config: AdminConfig): AppConfig {
 }
 
 /**
- * Build a config from a provider alone (first run, before `.steve/.env` exists).
+ * Build a config from a provider alone (first run, before `~/.steve/.env` exists).
  * The shape mirrors `buildModel()` in `model/config.ts`; keeping it here avoids
  * touching the kernel layer, which is deliberately frozen.
  */
@@ -250,8 +255,8 @@ export function coerceHeaderFields(input: Record<string, unknown>, onDrop?: (mes
 	};
 }
 
-export async function readAdminConfig(cwd = process.cwd(), logger?: Logger): Promise<AdminConfig> {
-	const file = adminConfigPath(cwd);
+export async function readAdminConfig(logger?: Logger): Promise<AdminConfig> {
+	const file = adminConfigPath();
 	let text: string;
 	try {
 		text = await readFile(file, "utf8");
@@ -294,7 +299,7 @@ async function writeFileAtomic(file: string, content: string): Promise<void> {
 	await rename(temporary, file);
 }
 
-export async function writeAdminConfig(cwd: string, config: AdminConfig): Promise<void> {
+export async function writeAdminConfig(config: AdminConfig): Promise<void> {
 	const body = {
 		providers: config.providers,
 		...(config.activeProviderId !== undefined ? { activeProviderId: config.activeProviderId } : {}),
@@ -302,7 +307,7 @@ export async function writeAdminConfig(cwd: string, config: AdminConfig): Promis
 		...(config.logDir !== undefined ? { logDir: config.logDir } : {}),
 		...(config.persona !== undefined ? { persona: config.persona } : {}),
 	};
-	await writeFileAtomic(adminConfigPath(cwd), `${JSON.stringify(body, null, 2)}\n`);
+	await writeFileAtomic(adminConfigPath(), `${JSON.stringify(body, null, 2)}\n`);
 }
 
 function quoteEnvValue(value: string): string {
@@ -311,12 +316,12 @@ function quoteEnvValue(value: string): string {
 }
 
 /**
- * Update keys in `.steve/.env` in place. `undefined` leaves the key alone, an
+ * Update keys in `~/.steve/.env` in place. `undefined` leaves the key alone, an
  * empty string removes the line — the console uses the empty string as "clear".
  * Comments and unrelated lines are preserved verbatim.
  */
-export async function updateEnvFile(cwd: string, updates: Record<string, string | undefined>): Promise<void> {
-	const file = envFilePath(cwd);
+export async function updateEnvFile(updates: Record<string, string | undefined>): Promise<void> {
+	const file = envFilePath();
 	let lines: string[] = [];
 	try {
 		lines = (await readFile(file, "utf8")).split(/\r?\n/);

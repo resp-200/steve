@@ -2,8 +2,7 @@
  * Extension host: discovers plugin files, loads them, and runs their hooks.
  *
  * Plugins live outside the build:
- *   <cwd>/.steve/extensions/*.mjs   project-local
- *   ~/.steve/extensions/*.mjs       global
+ *   ~/.steve/extensions/*.mjs       global (the one state directory)
  *   explicit paths                  `--extension <file>` / `STEVE_EXTENSIONS`
  *
  * A plugin is an ES module whose default export is `(api) => void`. Everything it
@@ -62,7 +61,7 @@ export interface ExtensionHostOptions {
 	sessionId?: string;
 	/** Explicit plugin files or directories. */
 	paths?: string[];
-	/** Set false to skip the `.steve/extensions` directories. Default: true. */
+	/** Set false to skip the `~/.steve/extensions` directory. Default: true. */
 	discover?: boolean;
 	/** Load the in-repo plugins (session commands, local tools, demo tools, mcp.json). Default: true. */
 	builtins?: boolean;

@@ -3,8 +3,8 @@
  * Admin console acceptance test: the page, the JSON API and the files it owns.
  *
  * Everything runs offline: `scripts/mock-server.mjs` is the model, the console
- * writes into a temp workspace (`.steve/admin.json`, `.steve/.env`,
- * `.steve/watch.json`) and the restart endpoint is checked by observing the
+ * writes into the HOMed state directory (`admin.json`, `.env`, `watch.json`
+ * under `$HOME/.steve`) and the restart endpoint is checked by observing the
  * process exit code a supervisor would act on.
  */
 import { spawn } from "node:child_process";
@@ -306,9 +306,9 @@ try {
 	});
 	check("保存网关配置成功并要求重启", gatewaySaved.status === 200 && gatewaySaved.body.restartRequired === true);
 	const envText = readFileSync(envFile, "utf8");
-	check(".steve/.env 写入新的 secret", envText.includes('FEISHU_APP_SECRET="new-secret-5678"') || envText.includes("FEISHU_APP_SECRET=new-secret-5678"));
-	check(".steve/.env 写入 encryptKey 与 apiBase", /FEISHU_ENCRYPT_KEY=/.test(envText) && /FEISHU_API_BASE=/.test(envText));
-	check(".steve/.env 保留未修改的 App ID 不在文件里（留空=保持不变）", !envText.includes("FEISHU_APP_ID"));
+	check("~/.steve/.env 写入新的 secret", envText.includes('FEISHU_APP_SECRET="new-secret-5678"') || envText.includes("FEISHU_APP_SECRET=new-secret-5678"));
+	check("~/.steve/.env 写入 encryptKey 与 apiBase", /FEISHU_ENCRYPT_KEY=/.test(envText) && /FEISHU_API_BASE=/.test(envText));
+	check("~/.steve/.env 保留未修改的 App ID 不在文件里（留空=保持不变）", !envText.includes("FEISHU_APP_ID"));
 	const echoed = await request("GET", "/admin/api/gateways");
 	check("保存后网关状态立即回显 secret", echoed.body.feishu.hasSecret === true);
 	check("保存后网关状态立即回显 encryptKey 与 apiBase", echoed.body.feishu.hasEncryptKey === true && echoed.body.feishu.apiBase === "http://127.0.0.1:8951");
@@ -377,7 +377,7 @@ try {
 	/* ---------------------------------------------------------------- */
 	const system = await request("GET", "/admin/api/system");
 	check("系统信息返回版本与日志级别", system.status === 200 && system.body.version === VERSION && system.body.logLevel === "info");
-	check("系统信息列出配置文件", Array.isArray(system.body.files) && system.body.files.some((file) => file.path === ".steve/admin.json" && file.exists === true));
+	check("系统信息列出配置文件", Array.isArray(system.body.files) && system.body.files.some((file) => file.path === adminFile && file.exists === true));
 
 	const logsaved = await request("POST", "/admin/api/system/save", { body: { logLevel: "debug" } });
 	check("保存日志级别成功", logsaved.status === 200 && logsaved.body.logLevel === "debug");
@@ -403,10 +403,10 @@ try {
 	const personaGone = JSON.parse(readFileSync(adminFile, "utf8"));
 	check("清空后 admin.json 不再保留该字段", personaGone.persona === undefined, JSON.stringify(personaGone.persona));
 
-	const maskedFile = await request("GET", "/admin/api/files?path=.steve%2F.env&reveal=0");
+	const maskedFile = await request("GET", `/admin/api/files?path=${encodeURIComponent(envFile)}&reveal=0`);
 	check("文件查看默认掩码", maskedFile.status === 200 && maskedFile.body.masked === true && String(maskedFile.body.content).includes("****5678"), describe(maskedFile.body));
 	check("掩码内容不含明文 secret", !String(maskedFile.body.content).includes("new-secret-5678"));
-	const revealed = await request("GET", "/admin/api/files?path=.steve%2F.env&reveal=1");
+	const revealed = await request("GET", `/admin/api/files?path=${encodeURIComponent(envFile)}&reveal=1`);
 	check("显式 reveal=1 返回原文", revealed.body.masked === false && String(revealed.body.content).includes("new-secret-5678"));
 	const badFile = await request("GET", "/admin/api/files?path=..%2F..%2Fetc%2Fpasswd");
 	check("文件查看拒绝白名单外路径", badFile.status === 400);

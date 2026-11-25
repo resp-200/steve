@@ -1,6 +1,6 @@
 # 技术方案：把 steve 改造成 Personal Agent
 
-> 状态：**设计稿（分批实施中）**。S0 拆文件、S0′ 架构断言、S1 事件日志 + 兼容层、S2 事件投影、S3 环境快照、S4 运行执行器（`worker.ts`）与 ACP `session/prompt` 接线、S5 状态折叠（`foldStatus` 的 usage/turnCount 与 `/stats` 同口径，`worker.ts` 默认按日志 fold 构造上下文）、S6 触发器（`trigger.ts` 引擎 + `registerTrigger` + `.steve/watch.json` 内置插件）、S7 文件/webhook 触发与后台审批闸门（`approval.ts`）、S8 HTTP 服务入口（`steve-serve`：`protocols/http/events.ts` + `entries/serve.ts`，用法见 `doc/serve.md`）已落地。全部阶段均已有实现与对应测试。
+> 状态：**设计稿（分批实施中）**。S0 拆文件、S0′ 架构断言、S1 事件日志 + 兼容层、S2 事件投影、S3 环境快照、S4 运行执行器（`worker.ts`）与 ACP `session/prompt` 接线、S5 状态折叠（`foldStatus` 的 usage/turnCount 与 `/stats` 同口径，`worker.ts` 默认按日志 fold 构造上下文）、S6 触发器（`trigger.ts` 引擎 + `registerTrigger` + `~/.steve/watch.json` 内置插件）、S7 文件/webhook 触发与后台审批闸门（`approval.ts`）、S8 HTTP 服务入口（`steve-serve`：`protocols/http/events.ts` + `entries/serve.ts`，用法见 `doc/serve.md`）已落地。全部阶段均已有实现与对应测试。
 > 目标读者：改代码的人（需要知道改哪里）与评审的人（需要知道为什么这么改）。
 > steve 现有架构见 [README](../README.md)；本文所有「现状」都指 `0.1.2` 的实现，并且能在源码里逐条对上。
 
@@ -148,7 +148,7 @@ steve 现在只有一条运转规则：
 | `src/features/environment.ts` | L3 | `EnvironmentSnapshot` 的形状与装配（`snapshotEnvironment()`），可序列化 | ④ |
 | `src/features/worker.ts` | L3 | `createRunWorker()`：`submit(input) → {runId}`、生命周期事件、取消、重试与回滚 | ③ |
 | `src/features/trigger.ts` | L3 | 触发器调度：`createTriggerEngine()`，四类 spec，防风暴 | ⑥ |
-| `src/extensions/builtin/watch-config.ts` | L3′ | 内置插件：读 `.steve/watch.json`，注册定时 / 文件 / 事件谓词触发器 | ⑥ |
+| `src/extensions/builtin/watch-config.ts` | L3′ | 内置插件：读 `~/.steve/watch.json`，注册定时 / 文件 / 事件谓词触发器 | ⑥ |
 | `src/protocols/http/events.ts` | L2 | SSE / WebSocket 订阅端点，投影后推送 | ① ⑤ |
 | `src/entries/serve.ts` | L1 | 常驻入口：总线 + worker + 触发器 + HTTP 订阅 + ACP 同时挂上 | ① ② ⑥ |
 | `src/extensions/api.ts`（改） | L3′ | 新增 `registerTrigger()`，`ExtensionAPI` 增加子集能力 | ⑥ |
@@ -360,7 +360,7 @@ export interface TriggerRegistration {
 
 ```ts
 export interface StreamLogOptions {
-	dir: string;                        // 默认 <cwd>/.steve/streams
+	dir: string;                        // 默认 ~/.steve/streams
 	logger?: Logger;
 	/** 单文件轮转阈值，默认 8 MiB；超了就切到 <streamId>.<n>.jsonl。 */
 	rotateBytes?: number;
@@ -383,7 +383,7 @@ export interface StreamLog {
 **文件布局**：
 
 ```
-.steve/streams/
+~/.steve/streams/
   <streamId>/
     meta.json        { streamId, cwd, title, createdAt }
     0001.jsonl       # 每行一个 {seq, ts, type, payload, causeId}
@@ -526,7 +526,7 @@ submit(streamId, user.message)
 **体积策略**（新增，属于 ⑤ 的一部分）：
 
 - 给 `features/stream-log.ts` 加 `maxEventBytes`（默认 64 KiB）：超限的事件在**写入前**截断并标记 `truncated: true`，原文不入日志。
-- 图片（`PromptImage`）不进日志正文：写入时替换为 `{ imageRef: "blob:<sha256>" }`，blob 落到 `.steve/blobs/<sha>`，把日志文件保持在可读量级。
+- 图片（`PromptImage`）不进日志正文：写入时替换为 `{ imageRef: "blob:<sha256>" }`，blob 落到 `~/.steve/blobs/<sha>`，把日志文件保持在可读量级。
 
 **验收**：`scripts/projection-test.mjs`
 - `full` 档位：所有事件原样通过（逐条断言等于输入）；
@@ -590,7 +590,7 @@ export function createTriggerEngine(options: {
 3. **因果链深度**：一条 `trigger.fired` 的 `causeId` 链回溯超过 `maxDepth`（默认 3）就拒绝——防止「触发器 A 产生事件 → 触发 B → 触发 A」的无限自我驱动。
 4. **后台 run 的工具集收缩**（见 §9 权限模型）：`mode: "background"` 的 run 只能使用 `permission: "auto"` 的工具，需要审批的调用直接转成 `approval.pending` 事件挂起。
 
-配置文件 `.steve/watch.json`（内置插件 `watch-config.ts` 读取，格式与 `mcp.json` 一致）：
+配置文件 `~/.steve/watch.json`（内置插件 `watch-config.ts` 读取，格式与 `mcp.json` 一致）：
 
 ```jsonc
 {
@@ -615,7 +615,7 @@ export function createTriggerEngine(options: {
 }
 ```
 
-**`.steve/watch.json` 的校验规则**（坏条目只记日志跳过，与 `mcp.json` 的语义一致）：
+**`~/.steve/watch.json` 的校验规则**（坏条目只记日志跳过，与 `mcp.json` 的语义一致）：
 
 | 字段 | 规则 |
 | --- | --- |
@@ -725,7 +725,7 @@ SSE 的坑与 ACP 相同：必须回 `X-Accel-Buffering: no`（已在 `protocols
 | **S4** | `features/worker.ts` + ACP `session/prompt` 改为 submit+等终态 | S1 S3 | 异步 ReAct | `worker-test` + 全量 |
 | **S5** | `features/state-fold.ts` 落地，`foldTranscript` 作为状态唯一出口；过渡期双写 `<id>.json` 在此停写 | S1 S4 | ④ 完成 | `state-fold-test`（含与旧 snapshot 的等价断言）+ 双写一致性检查 |
 | **S6** | `features/trigger.ts`（先 predicate + cron） + `registerTrigger()` + `watch-config.ts` | S1 S4 | ⑥ 前两类 | `trigger-test` |
-| **S7** | fs + webhook 触发器、防风暴、`.steve/watch.json` 全量 | S6 | ⑥ 完成 | `trigger-test` 扩充 |
+| **S7** | fs + webhook 触发器、防风暴、`~/.steve/watch.json` 全量 | S6 | ⑥ 完成 | `trigger-test` 扩充 |
 | **S8** | `protocols/http/events.ts` + `entries/serve.ts` + `doc/serve.md` | S2 S6 | 常驻形态 | `serve-test`（SSE 续订、断线重连、投影） |
 
 **里程碑**：
@@ -764,7 +764,7 @@ SSE 的坑与 ACP 相同：必须回 `X-Accel-Buffering: no`（已在 `protocols
 | --- | --- | --- |
 | 一次性 Agent 导致每轮重建上下文的开销 | 长对话每轮多出可测的延迟 | S5 的 `state-fold-test` 里加一条耗时断言（构造 + fold < 100ms）；超了就切「常驻 Agent + 每轮 fold 校验」备选 |
 | fold 与 pi 内部状态不一致 | 续聊上下文缺消息/多消息 | S5 强制：每轮结束用 `foldTranscript()` 与 `agent.state.messages` 深比较，不一致记 `fold.mismatch` 事件（上线首周开盘，之后可关） |
-| JSONL 体积膨胀 | `.steve/streams/` 涨到数百 MB | 单事件 64 KiB 上限 + 8 MiB 轮转 + `steve --prune`（按流删除/归档）；不做自动 GC（删对话是用户决定） |
+| JSONL 体积膨胀 | `~/.steve/streams/` 涨到数百 MB | 单事件 64 KiB 上限 + 8 MiB 轮转 + `steve --prune`（按流删除/归档）；不做自动 GC（删对话是用户决定） |
 | 触发器风暴 | 后台 run 排队打满、烧额度 | §5.5 的四道防风暴；另外 `maxFiresPerMinute` 超限只记 `watch.dedupe` 不抛错 |
 | ACP 兼容被投影改动破坏 | 老客户端看不到 thinking / 工具输出 | 默认 `full` + `acp-tap.mjs` 抓包比对（S2 的验收门槛） |
 | 迁移期双写不一致 | `<id>.json` 与 JSONL 对不上 | 过渡期每次写 JSONL 后顺带写 `<id>.json`，但不读它；S5 之后停写 |
@@ -781,7 +781,7 @@ SSE 的坑与 ACP 相同：必须回 `X-Accel-Buffering: no`（已在 `protocols
 | Webhook | 配了 `secret` 才允许非 loopback 来源；`--host` 非 127.0.0.1 且无 secret 时启动失败（与 `steve-acp-serve.mjs` 的「不会静默起一个没有认证的服务」一致） |
 | 触发器输入注入 | `predicate` 的 `when` 是受限 JSON DSL，**不使用 `eval` / `new Function`**；`cron` / `fs` 的路径必须收敛在 workspace roots 内（复用 `isInside()`） |
 | 日志体积 | 单事件 64 KiB 上限；图片走 blob；单文件 8 MiB 轮转 |
-| 隐私 | `audit` 档位写 `.steve/audit.jsonl`（含原文），默认不开启；`user` 档位不发 thinking 与工具原文 |
+| 隐私 | `audit` 档位写 `~/.steve/audit.jsonl`（含原文），默认不开启；`user` 档位不发 thinking 与工具原文 |
 
 ---
 

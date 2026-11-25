@@ -137,7 +137,13 @@ async function hostChecks() {
 			else process.env.HOME = previous;
 		}
 	};
-	check("项目本地 .steve/extensions 会被发现", withHome(() => discoverExtensionFiles({ cwd: temp }).length) === 1);
+	// Discovery only looks at the global state directory now: a project-local
+	// `.steve/extensions` inside the cwd must be ignored.
+	const localPluginDir = join(temp, ".steve", "extensions");
+	mkdirSync(localPluginDir, { recursive: true });
+	writeFileSync(join(localPluginDir, "local.mjs"), "export default () => {};\n");
+	check("项目本地 .steve/extensions 被忽略（只认 ~/.steve）", withHome(() => discoverExtensionFiles({ cwd: temp }).length) === 0);
+	rmSync(join(temp, ".steve"), { recursive: true, force: true });
 	check("discover: false 时跳过目录发现", withHome(() => discoverExtensionFiles({ cwd: temp, discover: false }).length) === 0);
 	const globalPluginDir = join(scratchHome, ".steve", "extensions");
 	mkdirSync(globalPluginDir, { recursive: true });

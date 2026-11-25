@@ -19,13 +19,12 @@ server 的来源有三个，工具以 `mcp__<server>__<tool>` 命名进工具表
 | --- | --- | --- |
 | **插件** | `pi.registerMcpServer({ name, command, args, env, timeoutMs })` | `plugin` |
 | **ACP 客户端** | 客户端在 `session/new` / `session/load` 里传 `mcpServers` | `client` |
-| **项目配置** | `<cwd>/.steve/mcp.json` | `project` |
 | **全局配置** | `~/.steve/mcp.json` | `global` |
 
 同名时按优先级取一个（`src/features/mcp.ts` 的 `SOURCE_PRIORITY`）：
 
 ```
-plugin = client (3)  >  project (2)  >  global (1)
+plugin = client (3)  >  global (1)
 ```
 
 同优先级先声明者胜。落败的那条**不会消失**：它在 `/mcp` 里显示为 `skipped` 并说明原因，
@@ -35,12 +34,12 @@ plugin = client (3)  >  project (2)  >  global (1)
 
 ---
 
-## 3. `.steve/mcp.json`（内置插件 `mcp-config`）
+## 3. `~/.steve/mcp.json`（内置插件 `mcp-config`）
 
 格式和 Claude Desktop / Cursor 一致，可以直接抄；仓库根目录有模板 `mcp.example.json`：
 
 ```bash
-mkdir -p .steve && cp mcp.example.json .steve/mcp.json
+mkdir -p ~/.steve && cp mcp.example.json ~/.steve/mcp.json
 ```
 
 ```jsonc
@@ -72,7 +71,7 @@ mkdir -p .steve && cp mcp.example.json .steve/mcp.json
 
 1. **不插值**：`${VAR}` 不会被展开，原样传给 server（会打一行提示）。要读环境变量请写插件。
 2. **坏文件 / 坏条目只记日志并跳过**：缺 `command`、`args` 不是字符串数组、JSON 语法错，都不会影响会话。
-3. **`.steve/` 整个目录都在 `.gitignore` 里**，所以明文 key 只留在本机（这也是不做插值的前提）。
+3. **配置在 `~/.steve/` 里**（用户主目录，永远不在仓库中），所以明文 key 只留在本机（这也是不做插值的前提）。
 
 `"//"` 之类的额外键会被忽略，可以当注释用（模板里就是这么写的）。
 
@@ -204,7 +203,7 @@ amap-maps [plugin] stdio — npx -y @amap/amap-maps-mcp-server
 | 文件 | 职责 |
 | --- | --- |
 | `src/features/mcp.ts` | 最小 MCP 客户端：stdio 分帧、`initialize`/`tools/list`/`tools/call`、超时、stderr 末行、按来源优先级去重、`onServer` 增量回调 |
-| `src/extensions/builtin/mcp-config.ts` | 内置插件：读 `~/.steve/mcp.json` 与 `<cwd>/.steve/mcp.json`，校验每个条目 |
+| `src/extensions/builtin/mcp-config.ts` | 内置插件：读 `~/.steve/mcp.json`，校验每个条目 |
 | `src/extensions/api.ts` | `registerMcpServer` 与 `PluginMcpServer` 类型 |
 | `src/extensions/builtin/session-commands.ts` | `/mcp` 命令（读 `ctx.session.mcp`） |
 | `src/types.ts` | `McpServerStatus`（跨层共享的状态形状） |

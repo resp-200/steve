@@ -98,7 +98,25 @@ async function runtimeChecks() {
 	const { createAgentRuntime } = await import("../dist/features/runtime.js");
 	const { loadConfig } = await import("../dist/model/config.js");
 
-	const config = loadConfig();
+	// `loadConfig()` creates `~/.steve` on first run; keep that inside the scratch
+	// home this test already uses instead of touching the developer's real one.
+	const previousHome = process.env.HOME;
+	const previousEnv = { LLM_API_KEY: process.env.LLM_API_KEY, LLM_MODEL_ID: process.env.LLM_MODEL_ID, LLM_BASE_URL: process.env.LLM_BASE_URL };
+	process.env.HOME = scratchHome;
+	process.env.LLM_API_KEY = "mock";
+	process.env.LLM_MODEL_ID = "mock";
+	process.env.LLM_BASE_URL = "http://127.0.0.1:1/anthropic";
+	let config;
+	try {
+		config = loadConfig();
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		for (const [key, value] of Object.entries(previousEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
 	const runtime = createAgentRuntime({ config });
 
 	runtime.restore([
@@ -323,7 +341,9 @@ async function cliChecks() {
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const workspace = mkdtempSync(join(tmpdir(), "steve-cli-session-"));
-	const fileFor = (id) => join(workspace, ".steve", "sessions", `${id}.json`);
+	// Sessions are global now (`~/.steve/sessions`), and HOME points at this
+	// scratch home, so the transcript lands here regardless of the cwd.
+	const fileFor = (id) => join(scratchHome, ".steve", "sessions", `${id}.json`);
 	const messagesIn = (id) => (existsSync(fileFor(id)) ? JSON.parse(readFileSync(fileFor(id), "utf8")).messages.length : -1);
 
 	try {

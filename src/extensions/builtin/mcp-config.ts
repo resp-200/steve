@@ -1,10 +1,9 @@
 /**
  * Built-in plugin: MCP servers declared in a JSON file.
  *
- * Files, lowest priority first (a project file wins over the global one):
+ * One file, in the global state directory:
  *
- *   ~/.steve/mcp.json          global, every project
- *   <cwd>/.steve/mcp.json      the project you are in
+ *   ~/.steve/mcp.json
  *
  * Format — the shape Claude Desktop / Cursor use, so configs can be copied over:
  *
@@ -22,26 +21,22 @@
  * Three deliberate rules:
  *
  *   1. **Plugin declarations win.** A server declared in code (`registerMcpServer`)
- *      or by the client (`session/new`) takes precedence over a config file, and a
- *      project file beats the global one. The loser shows up in `/mcp` as
- *      `skipped`, with the reason.
+ *      or by the client (`session/new`) takes precedence over the config file. The
+ *      loser shows up in `/mcp` as `skipped`, with the reason.
  *   2. **No `${ENV}` interpolation.** A config file that reads the environment is
  *      a plugin's job; here a value is always the literal text. That is safe
- *      because `.steve/` is gitignored — nothing in it is meant to be committed.
+ *      because `~/.steve/` lives outside every checkout.
  *   3. **Broken entries never break the session.** A bad file, a bad entry or a
  *      malformed field is logged and skipped; the rest still loads.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { steveHomeDir } from "../../model/config.js";
 import type { ExtensionAPI, PluginMcpServer } from "../api.js";
 
-/** Config files, lowest priority first. */
-function configFiles(cwd: string): { file: string; source: "global" | "project" }[] {
-	return [
-		{ file: join(homedir(), ".steve", "mcp.json"), source: "global" },
-		{ file: join(cwd, ".steve", "mcp.json"), source: "project" },
-	];
+/** The one config file: `~/.steve/mcp.json`. */
+function configFiles(): { file: string; source: "global" }[] {
+	return [{ file: join(steveHomeDir(), "mcp.json"), source: "global" }];
 }
 
 /** Catches `${VAR}` so we can say out loud that it is *not* substituted. */
@@ -117,7 +112,7 @@ function toServer(pi: ExtensionAPI, file: string, name: string, raw: unknown): P
 }
 
 export function mcpConfig(pi: ExtensionAPI): void {
-	for (const { file, source } of configFiles(pi.ctx.cwd)) {
+	for (const { file, source } of configFiles()) {
 		if (!existsSync(file)) continue;
 
 		let parsed: unknown;

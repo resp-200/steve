@@ -141,7 +141,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const config = withPersona(loadConfig(), await readAdminConfig(process.cwd()));
+	const config = withPersona(loadConfig(), await readAdminConfig());
 	const log = (message: string): void => {
 		if (!parsed.quiet) process.stderr.write(`[acp] ${message}\n`);
 	};

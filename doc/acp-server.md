@@ -85,7 +85,7 @@ npm run acp:serve -- --daemon       # 在仓库里等价；node scripts/steve-ac
 缺 token、端口被占用都会先给人话提示再退出，不会静默起一个没有认证的服务。
 
 命令优先用 PATH 上的 `steve-acp`，没装则退回仓库的 `dist/protocols/acp/main.js`（先 `npm run build`）。
-cwd 就是启动目录 —— `.steve/mcp.json` 与 `.steve/extensions/` 按 cwd 发现。
+cwd 就是启动目录（工具与权限按它生效）—— 但 `~/.steve/mcp.json` 与 `~/.steve/extensions/` 是全局的，不随 cwd 变化。
 
 #### 后台运行与日志
 
@@ -188,7 +188,7 @@ curl -sS -D - -o /dev/null -m 5 https://<host>/acp \
 | `--cors <origins>` | `ACP_CORS` | 关 | 允许的浏览器来源，逗号分隔或 `*` |
 | `--permissions <ask\|allow>` | `ACP_PERMISSIONS` | `ask` | `allow` = 不问直接执行（慎用） |
 | `--allow-local-tools` | `ACP_ALLOW_LOCAL_TOOLS=true` | 关 | 见 §6 |
-| `--session-dir <path>` | `ACP_SESSION_DIR` | `<cwd>/.steve/sessions` | transcript 存放位置 |
+| `--session-dir <path>` | `ACP_SESSION_DIR` | `~/.steve/sessions` | transcript 存放位置 |
 | `--no-sessions` | — | — | 不持久化：没有 `session/load` 能力 |
 | `--extension <path>` | `STEVE_EXTENSIONS=a,b` | — | 加载插件，可重复 |
 | `--no-discovery` | `STEVE_DISCOVERY=off` | — | 只加载显式指定的插件 |
@@ -350,7 +350,7 @@ Access-Control-Allow-Private-Network: true
 
 ## 7. 会话持久化
 
-每个会话的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--no-sessions` 关闭）。
+每个会话的 transcript 存到 `<session-dir>/<id>.json`（默认 `~/.steve/sessions`，`--no-sessions` 关闭）。
 `session/load` 会读回它、回放给客户端、并把该会话重新挂上（客户端重启后能接着聊）。
 
 - 文件格式与 CLI 共用（`features/session-store.ts` 的 `sessionRecord()` 是唯一的记录装配处）。
@@ -361,7 +361,7 @@ Access-Control-Allow-Private-Network: true
 
 ## 8. MCP 在 ACP 里怎么挂（要点，细节见 [`mcp.md`](./mcp.md)）
 
-- **来源**：ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`（标 `client`）+ 插件声明的（标 `plugin`）+ `.steve/mcp.json`。
+- **来源**：ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`（标 `client`）+ 插件声明的（标 `plugin`）+ `~/.steve/mcp.json`（标 `global`）。
 - **不阻塞**：`session/new` 立即返回，MCP 在后台连；**每个 server 一连上就立刻挂到会话**（一个慢 server 不拖累其它）。
 - **子进程 cwd** = 会话 cwd，所以 `args: ["."]`、相对脚本路径都指向项目目录。
 - 会话结束 / `session/delete` 时关闭子进程。
@@ -387,7 +387,7 @@ Access-Control-Allow-Private-Network: true
 ```
 
 ```bash
-tail -f <项目>/.steve/acp-tap.log      # → client / ← agent，一行一条消息
+tail -f ~/.steve/acp-tap.log      # → client / ← agent，一行一条消息
 ```
 
 ---

@@ -243,7 +243,9 @@ function readStreamEvents(streamsDir, streamId) {
 
 const workspace = mkdtempSync(join(tmpdir(), "steve-feishu-"));
 const home = mkdtempSync(join(tmpdir(), "steve-feishu-home-"));
-const streamsDir = join(workspace, ".steve", "streams");
+// Streams are global now: the spawned serve runs with HOME=home, so they land
+// in this scratch home rather than the workspace.
+const streamsDir = join(home, ".steve", "streams");
 mkdirSync(streamsDir, { recursive: true });
 
 const children = [];

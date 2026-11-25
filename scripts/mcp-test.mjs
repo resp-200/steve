@@ -7,7 +7,7 @@
 //      (`mcp__mock__echo`), a model-driven call reaches the MCP server, and the
 //      tools go through the permission dialog
 //   C. session/list + session/delete over ACP
-//   D. .steve/mcp.json (built-in plugin): parsing, validation, source priority
+//   D. ~/.steve/mcp.json (built-in plugin): parsing, validation, source priority
 //
 //   npm run build && node scripts/mcp-test.mjs
 import { spawn } from "node:child_process";
@@ -22,7 +22,7 @@ import { AcpHttpClient } from "../web/acp-http-client.js";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const scratchHome = mkdtempSync(join(tmpdir(), "steve-home-")); // isolate ~/.steve for spawned agents
 const MOCK_PORT = Number(process.env.MOCK_PORT ?? 8894);
-const ACP_PORT = Number(process.env.PLUGIN_TEST_PORT ?? 8892);
+const ACP_PORT = Number(process.env.PLUGIN_TEST_PORT ?? 8893);
 const MCP_SCRIPT = join(ROOT, "scripts", "mock-mcp-server.mjs");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -418,6 +418,12 @@ async function configChecks() {
 	const dir = mkdtempSync(join(tmpdir(), "steve-mcp-json-"));
 	const logs = [];
 
+	// `mcp.json` is global now (`~/.steve/mcp.json`), so this section points HOME
+	// at the scratch directory for its whole duration — the developer's own
+	// servers must never leak into these assertions.
+	const previousHome = process.env.HOME;
+	process.env.HOME = dir;
+
 	const write = (json) => writeFileSync(join(dir, ".steve", "mcp.json"), typeof json === "string" ? json : JSON.stringify(json, null, 2));
 	mkdirSync(join(dir, ".steve"), { recursive: true });
 
@@ -459,8 +465,8 @@ async function configChecks() {
 		JSON.stringify(status("fromjson") ?? null).slice(0, 120),
 	);
 	check(
-		"mcp.json 来源标为 project（只出现在配置里的 server）",
-		status("configonly")?.source === "project" && status("configonly")?.status === "connected",
+		"mcp.json 来源标为 global（~/.steve/mcp.json）",
+		status("configonly")?.source === "global" && status("configonly")?.status === "connected",
 		`${status("configonly")?.source ?? "none"}:${status("configonly")?.status ?? ""}`,
 	);
 	check(
@@ -493,31 +499,30 @@ async function configChecks() {
 	);
 
 	// The shipped template must stay valid and loadable — otherwise it rots silently.
-	const templateDir = mkdtempSync(join(tmpdir(), "steve-mcp-template-"));
-	mkdirSync(join(templateDir, ".steve"), { recursive: true });
-	writeFileSync(join(templateDir, ".steve", "mcp.json"), readFileSync(join(ROOT, "mcp.example.json"), "utf8"));
-	// Pin HOME: the mcp-config builtin also reads ~/.steve/mcp.json, and the
-	// developer's own global config must not leak into this assertion.
-	const previousHome = process.env.HOME;
-	process.env.HOME = mkdtempSync(join(tmpdir(), "steve-home-"));
-	const templateHost = await loadExtensions({ cwd: templateDir, mode: "cli", paths: [], discover: false, builtins: true, log: (message) => logs.push(message) });
-	if (previousHome === undefined) delete process.env.HOME;
-	else process.env.HOME = previousHome;
+	// It is installed as `~/.steve/mcp.json` in a scratch home.
+	const templateHome = mkdtempSync(join(tmpdir(), "steve-mcp-template-"));
+	mkdirSync(join(join(templateHome, ".steve")), { recursive: true });
+	writeFileSync(join(templateHome, ".steve", "mcp.json"), readFileSync(join(ROOT, "mcp.example.json"), "utf8"));
+	process.env.HOME = templateHome;
+	const templateHost = await loadExtensions({ cwd: dir, mode: "cli", paths: [], discover: false, builtins: true, log: (message) => logs.push(message) });
+	process.env.HOME = dir;
 	check(
-		"仓库里的 mcp.example.json 可直接用",
+		"仓库里的 mcp.example.json 可直接用（装成 ~/.steve/mcp.json）",
 		templateHost.mcpServers.length === 1 &&
 			templateHost.mcpServers[0].name === "filesystem" &&
-			templateHost.mcpServers[0].source === "project" &&
+			templateHost.mcpServers[0].source === "global" &&
 			templateHost.mcpServers[0].args?.includes("-y") === true,
 		JSON.stringify(templateHost.mcpServers).slice(0, 120),
 	);
-	rmSync(templateDir, { recursive: true, force: true });
+	rmSync(templateHome, { recursive: true, force: true });
 
 	// Malformed file: the rest of the session still runs.
 	write("{ not json");
 	const broken = await loadExtensions({ cwd: dir, mode: "cli", paths: [], discover: false, builtins: true, log: (message) => logs.push(message) });
 	check("坏 JSON 只记日志，不影响会话", broken.errors.length === 0 && logs.some((line) => line.includes("mcp.json") && line.includes("mcp.json")), broken.errors.map((error) => error.message).join(","));
 
+	if (previousHome === undefined) delete process.env.HOME;
+	else process.env.HOME = previousHome;
 	rmSync(dir, { recursive: true, force: true });
 }
 
@@ -528,7 +533,7 @@ async function main() {
 	await cliChecks();
 	process.stderr.write("\nmcp · ACP end to end\n");
 	await acpChecks();
-	process.stderr.write("\nmcp · .steve/mcp.json\n");
+	process.stderr.write("\nmcp · ~/.steve/mcp.json\n");
 	await configChecks();
 
 	const failed = checks.filter((entry) => !entry.passed);

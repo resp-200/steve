@@ -4,8 +4,8 @@
 一个内嵌 HTML 直接返回。它面向的是**这台机器上的运维者**，用来配置模型供应商、网关、
 定时任务、日志和服务重启。
 
-> 设计原则：后台只改**配置文件**（`.steve/admin.json`、`.steve/.env`、
-> `.steve/watch.json`），不绕过任何功能层——供应商切换、网关、定时任务写完都提示
+> 设计原则：后台只改**配置文件**（`~/.steve/admin.json`、`~/.steve/.env`、
+> `~/.steve/watch.json`），不绕过任何功能层——供应商切换、网关、定时任务写完都提示
 > 「需要重启」，重启由 supervisor 完成；日志级别是唯一可热更新的设置。
 
 ## 启动与访问
@@ -50,8 +50,8 @@ steve-serve --port 8892 --token <你的-token>
 - 编辑供应商时 API Key 留空会复用已保存的 Key；上游不可达或鉴权失败时弹窗给出
   可读错误，不影响手动填写。
 
-- 数据保存在 `.steve/admin.json` 的 `providers` 与 `activeProviderId`。
-- 激活的供应商优先于 `.steve/.env` 里的 `LLM_*`；第一次部署时可以完全没有 `.env`，
+- 数据保存在 `~/.steve/admin.json` 的 `providers` 与 `activeProviderId`。
+- 激活的供应商优先于 `~/.steve/.env` 里的 `LLM_*`；第一次部署时可以完全没有 `.env`，
   直接在后台填一个供应商就能跑（仍建议保留 `.env` 作为兜底）。
 - 编辑时 API Key 留空表示**保持原值**；列表和接口只返回 `****xxxx` 掩码。
 - 切换后需要重启服务生效（页面会提示并给出重启按钮）。
@@ -61,7 +61,7 @@ steve-serve --port 8892 --token <你的-token>
 有些网关要求在请求里带自己的头（路由、归因、配额分桶、会话亲和）。供应商表单里的
 「自定义请求头」就是这件事的标准入口：
 
-- **写法**：每行一个 `名称: 值`，存成 `.steve/admin.json` 里的 `headers` 对象。
+- **写法**：每行一个 `名称: 值`，存成 `~/.steve/admin.json` 里的 `headers` 对象。
 - **模板**：值支持占位符 `${sessionId}`（别名 `${session}`、`${conversationId}`、
   `${threadId}`、`${chatId}`），发送时替换成当前会话 id。其他 `${...}` 一律在保存时报错，
   避免把手误写成的字面量发给网关。
@@ -92,7 +92,7 @@ steve-serve --port 8892 --token <你的-token>
   （已连接 / 重试中 / 凭据错误导致的「已停止（配置错误）」）。
 - 事件接收方式可选「长连接」（默认，不需要公网地址与 Verification Token）或
   「HTTP 回调」（需要公网地址与 Verification Token），保存时写 `FEISHU_MODE`。
-- 表单保存写入 `.steve/.env` 的 `FEISHU_*`，留空表示保持不变；「清空网关配置」会删掉
+- 表单保存写入 `~/.steve/.env` 的 `FEISHU_*`，留空表示保持不变；「清空网关配置」会删掉
   全部 `FEISHU_*` 行（含 `FEISHU_MODE`）。
 - 建应用与事件订阅步骤见 [serve.md](./serve.md#飞书机器人)。保存后需重启。
 
@@ -104,7 +104,7 @@ steve-serve --port 8892 --token <你的-token>
 
 - 任务字段：名称、cron（5 段：分 时 日 月 周）、时区（可选，如 `Asia/Shanghai`）、
   目标流、模式（`background` 默认 / `foreground`）、提示词。
-- 保存写入 `.steve/watch.json` 的 `triggers`，由 `watch-config` 插件在启动时注册，
+- 保存写入 `~/.steve/watch.json` 的 `triggers`，由 `watch-config` 插件在启动时注册，
   所以**保存后需要重启生效**。
 - 「立即运行」不依赖 cron 调度：直接向目标流提交一次后台 run，返回 `runId`，方便验证
   提示词效果。
@@ -116,17 +116,17 @@ steve-serve --port 8892 --token <你的-token>
 
 - 版本 / Node / PID / 工作目录 / streams 目录。
 - **日志**：级别 `debug|info|warn|error` 与**日志目录**（只接受文件夹路径，留空用默认的
-  `<cwd>/.steve/logs`）。日志始终同时写 stderr，并按**小时**在目录下切分文件：
+  `~/.steve/logs`）。日志始终同时写 stderr，并按**小时**在目录下切分文件：
   `<dir>/<YYYY-MM-DD>/steve-<YYYY-MM-DD>T<HH>.log`（本地时间，目录按天分层）。级别
   **立即生效**，目录也立即切换（下一次写日志时创建目录与文件）。设置持久化到
-  `.steve/admin.json` 的 `logLevel` / `logDir`，`--log-level` / `--log-dir` 可临时覆盖。
+  `~/.steve/admin.json` 的 `logLevel` / `logDir`，`--log-level` / `--log-dir` 可临时覆盖。
   路径不可写时只告警一次并退回 stderr，绝不影响进程。
 - **角色设定**（`persona`）：用户自己的额外要求，叠加在内置提示词的身份层之后
   （`# 用户的额外要求`）。留空表示不加；清空会从 `admin.json` 删除该字段。它**只在下一次
   会话生效**——提示词在每个会话启动时组装一次，运行中的会话保留原样。层级与场景说明见
   README「系统提示词：四层组装」。
-- **原始配置文件**：查看 `.steve/.env`、`.steve/admin.json`、`.steve/watch.json`、
-  `.steve/mcp.json`。默认掩码 `API_KEY` / `SECRET` / `TOKEN` / `ENCRYPT_KEY` 一类值，
+- **原始配置文件**：查看 `~/.steve/.env`、`~/.steve/admin.json`、`~/.steve/watch.json`、
+  `~/.steve/mcp.json`（接口返回绝对路径，`?path=` 也接受裸文件名）。默认掩码 `API_KEY` / `SECRET` / `TOKEN` / `ENCRYPT_KEY` 一类值，
   勾选「显示敏感值」才返回原文。
 - **重启服务**：`POST /admin/api/system/restart` 返回 `202` 后以退出码 **75** 退出，
   由 systemd / pm2 / docker 等 supervisor 拉起。直接 `npm run serve:dev` 前台跑时，

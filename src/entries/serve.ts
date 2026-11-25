@@ -24,7 +24,7 @@ import { createRunWorker, type RunTerminal, type RunWorker } from "../features/w
 import { createStreamLog, isStreamId, type StreamLog } from "../features/stream-log.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
-import { loadConfig, type AppConfig } from "../model/config.js";
+import { loadConfig, steveHomeDir, type AppConfig } from "../model/config.js";
 import { VERSION } from "../model/version.js";
 import { ADMIN_PAGE } from "./admin-page.js";
 import { ADMIN_PAGE_PATHS, createAdminRoutes } from "./admin.js";
@@ -55,14 +55,14 @@ const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch 
   --token <secret>     请求令牌（Authorization: Bearer <token>）
   --audience <user|full>  SSE 投影档位（默认 user）
   --access <none|read|write|exec>  工具可用的本地能力（默认 exec）
-  --streams-dir <path> 事件日志目录（默认 <cwd>/.steve/streams）
-  --no-watch           不启动 .steve/watch.json 触发器
+  --streams-dir <path> 事件日志目录（默认 ~/.steve/streams）
+  --no-watch           不启动 ~/.steve/watch.json 触发器
   --no-feishu          不启用飞书机器人（等价 --feishu-mode off）
   --feishu-mode <ws|http|off>  飞书事件传输方式（默认 ws：长连接，无需公网回调；
                        http 兼容旧的回调地址，需要 FEISHU_VERIFICATION_TOKEN）
   --no-admin           不启用管理后台 /admin（默认启用）
-  --log-level <debug|info|warn|error>  日志级别（默认读 .steve/admin.json，兜底 info）
-  --log-dir <dir>      日志目录（默认 <cwd>/.steve/logs；按小时切分文件）
+  --log-level <debug|info|warn|error>  日志级别（默认读 ~/.steve/admin.json，兜底 info）
+  --log-dir <dir>      日志目录（默认 ~/.steve/logs；按小时切分文件）
   --help               显示本帮助
   --version            显示版本
 
@@ -261,10 +261,10 @@ async function main(): Promise<void> {
 	const startedAt = Date.now();
 	// The admin file is read before anything else: it carries the logging
 	// preferences and the optional provider override.
-	const adminConfig = await readAdminConfig(cwd, (message) => process.stderr.write(`${message}\n`));
-	// Logs always land in a directory (`<cwd>/.steve/logs` by default); the
-	// logger creates one file per hour under it.
-	const logDir = resolve(parsed.logDir ?? adminConfig.logDir ?? defaultLogDir(cwd));
+	const adminConfig = await readAdminConfig((message: string) => process.stderr.write(`${message}\n`));
+	// Logs always land in a directory (`~/.steve/logs` by default); the logger
+	// creates one file per hour under it.
+	const logDir = resolve(parsed.logDir ?? adminConfig.logDir ?? defaultLogDir());
 	const logger = createLogger({
 		level: parsed.logLevel ?? adminConfig.logLevel,
 		dir: logDir,
@@ -285,7 +285,7 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 
-	// A provider saved from the console wins over `.steve/.env`; without one the
+	// A provider saved from the console wins over `~/.steve/.env`; without one the
 	// environment keeps driving the model exactly as before (and a first run can
 	// start from the console alone, with no `.env` yet).
 	const provider = activeProvider(adminConfig);
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
 	// The console's persona rides with the config so every entry point (CLI, ACP,
 	// background runs) layers the same user instructions onto its own scene.
 	config = withPersona(config, adminConfig);
-	const streamsDir = parsed.streamsDir !== undefined ? resolve(parsed.streamsDir) : join(cwd, ".steve", "streams");
+	const streamsDir = parsed.streamsDir !== undefined ? resolve(parsed.streamsDir) : join(steveHomeDir(), "streams");
 	mkdirSync(streamsDir, { recursive: true });
 
 	const workspace = workspacePolicy({ cwd, access: parsed.access });

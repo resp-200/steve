@@ -8,7 +8,7 @@
 //
 //   npm run build && node scripts/config-test.mjs
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -71,7 +71,7 @@ cpSync(join(ROOT, "dist"), join(INSTALL, "dist"), { recursive: true });
 const real = (path) => realpathSync(path);
 
 try {
-	process.stderr.write("config · .env 链\n");
+	process.stderr.write("config · 全局 ~/.steve/.env\n");
 
 	// 1. nothing on disk
 	const missing = spawnSync(process.execPath, ["--input-type=module", "-e", `
@@ -88,51 +88,57 @@ try {
 		missing.trim().slice(0, 80),
 	);
 
-	// 2. the project's .steve/.env
-	writeEnv(join(project, ".steve"), 'LLM_API_KEY="from-project-steve"\n');
-	check(".steve/.env 被读到", resolve(project, home).key === "from-project-steve", resolve(project, home).key);
-
-
-
-	// 4. the global ~/.steve/.env is used when the project has nothing
+	// 2. only the global ~/.steve/.env is read
 	writeEnv(join(home, ".steve"), 'LLM_API_KEY="from-global"\n');
-	check("项目没配置时用 ~/.steve/.env", resolve(bare, home).key === "from-global", resolve(bare, home).key);
+	check("~/.steve/.env 被读到", resolve(project, home).key === "from-global", resolve(project, home).key);
 
-	// 5. a plain `.env` is ignored — legacy support was dropped, so a stale file
-	//    must not silently win over the global one.
+	const candidates = resolve(bare, home).files;
+	check(
+		"只有一个候选文件：~/.steve/.env",
+		candidates.length === 1 && candidates[0] === join(home, ".steve", ".env"),
+		candidates.join(", "),
+	);
+
+	// 3. a project-local .steve/.env is ignored — the cwd no longer decides anything
+	writeEnv(join(project, ".steve"), 'LLM_API_KEY="from-project-steve"\n');
+	check("项目 .steve/.env 被忽略", resolve(project, home).key === "from-global", resolve(project, home).key);
+
+	// 4. a plain `.env` in the cwd is ignored as well (legacy support was dropped)
 	writeEnv(bare, 'LLM_API_KEY="from-legacy-env"\n');
 	check("旧写法 .env 被忽略（不再兼容）", resolve(bare, home).key === "from-global", resolve(bare, home).key);
 	rmSync(join(bare, ".env"), { force: true });
 
-	// 5. and it loses to the project's own file
-	check("项目配置优先于全局配置", resolve(project, home).key === "from-project-steve", resolve(project, home).key);
+	// 5. the install directory never carries credentials either: clients spawn the
+	//    ACP server from an unrelated cwd and must still see the same global config
+	writeEnv(join(INSTALL, ".steve"), 'LLM_API_KEY="from-install-dir"\n');
+	check("安装目录 .steve/.env 被忽略", resolve(bare, home).key === "from-global", resolve(bare, home).key);
+	rmSync(join(INSTALL, ".steve"), { recursive: true, force: true });
 
 	// 6. the real environment always wins
-	const overridden = resolve(project, home, { LLM_API_KEY: "from-process-env" });
-	check("真实环境变量优先于所有文件", overridden.key === "from-process-env", overridden.key);
+	const overridden = resolve(bare, home, { LLM_API_KEY: "from-process-env" });
+	check("真实环境变量优先于文件", overridden.key === "from-process-env", overridden.key);
 
-	// 7. the install directory's own files are the fallback: clients spawn the ACP
-	//    server from another cwd, so the project's .steve/.env must still be found.
-	const candidates = resolve(bare, home).files;
-	check(
-		"候选顺序：安装目录 < 全局 < 工作目录（都只认 .steve/.env）",
-		candidates.length === 3 &&
-			candidates[0] === join(real(INSTALL), ".steve", ".env") &&
-			candidates[1] === join(home, ".steve", ".env") && // homedir() keeps $HOME as given
-			candidates[2] === join(real(bare), ".steve", ".env"),
-		candidates.join(", "),
-	);
+	// 7. STEVE_HOME points the whole directory somewhere else
+	const altHome = join(workspace, "alt-home");
+	writeEnv(altHome, 'LLM_API_KEY="from-steve-home"\n');
+	check("STEVE_HOME 覆盖状态目录", resolve(bare, home, { STEVE_HOME: altHome }).key === "from-steve-home", resolve(bare, home, { STEVE_HOME: altHome }).key);
 
-	// Nothing global, nothing in cwd: the install directory answers.
-	rmSync(join(home, ".steve", ".env"), { force: true });
-	writeEnv(join(INSTALL, ".steve"), 'LLM_API_KEY="from-install-dir"\n');
-	check("cwd 与全局都没有时，安装目录的 .steve/.env 兜底", resolve(bare, home).key === "from-install-dir", resolve(bare, home).key);
-	writeEnv(join(home, ".steve"), 'LLM_API_KEY="from-global"\n');
-	check("全局配置优先于安装目录", resolve(bare, home).key === "from-global", resolve(bare, home).key);
+	// 8. first run creates ~/.steve so the console has somewhere to write
+	const freshHome = join(workspace, "fresh-home");
+	mkdirSync(freshHome, { recursive: true });
+	const created = spawnSync(process.execPath, ["--input-type=module", "-e", `
+		const { loadConfig } = await import(${JSON.stringify(join(INSTALL, "dist/model/config.js"))});
+		try { loadConfig(); } catch {}
+	`], {
+		cwd: bare,
+		encoding: "utf8",
+		env: { PATH: process.env.PATH, HOME: freshHome, LLM_MODEL_ID: "m", LLM_BASE_URL: "https://example.test/anthropic" },
+	});
+	check("首次启动自动创建 ~/.steve", created.status === 0 && existsSync(join(freshHome, ".steve")), created.stderr.slice(0, 120));
 
-	// 8. quoted values are unwrapped, comments and blanks ignored
-	writeEnv(join(project, ".steve"), '# comment\n\nLLM_API_KEY=\'single-quoted\'\nNOT_A_PAIR\n');
-	check("引号/注释/空行处理正确", resolve(project, home).key === "single-quoted", resolve(project, home).key);
+	// 9. quoted values are unwrapped, comments and blanks ignored
+	writeEnv(join(home, ".steve"), '# comment\n\nLLM_API_KEY=\'single-quoted\'\nNOT_A_PAIR\n');
+	check("引号/注释/空行处理正确", resolve(bare, home).key === "single-quoted", resolve(bare, home).key);
 
 	const failed = checks.filter((entry) => !entry.passed);
 	process.stderr.write(`\n${checks.length - failed.length}/${checks.length} checks passed\n`);

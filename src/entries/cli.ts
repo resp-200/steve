@@ -12,7 +12,7 @@ import { snapshotEnvironment } from "../features/environment.js";
 import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "../features/projection.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { readAdminConfig, withPersona } from "../features/admin-config.js";
-import { loadConfig, type AppConfig } from "../model/config.js";
+import { loadConfig, steveHomeDir, type AppConfig } from "../model/config.js";
 import { VERSION } from "../model/version.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
@@ -32,7 +32,7 @@ Flags
   --audience <user|full|audit>  how much internal detail the terminal shows
                  (default: user — no thinking, no raw tool arguments or output)
   --resume <id>  continue a previous session (the id is printed on exit)
-  --session-dir  where transcripts live (default <cwd>/.steve/sessions)
+  --session-dir  where transcripts live (default ~/.steve/sessions)
   --no-sessions  do not read or write any transcript
   --help, -h     show this help
   --version, -v  print the version and exit
@@ -53,7 +53,7 @@ interface CliOptions {
 	autoApprove: boolean;
 	/** Transcript to resume (`--resume <id>`); new sessions get a generated id. */
 	resume?: string;
-	/** Where transcripts live (default `<cwd>/.steve/sessions`). */
+	/** Where transcripts live (default `~/.steve/sessions`). */
 	sessionDir?: string;
 	/** `--no-sessions`: nothing is read or written. */
 	noSessions: boolean;
@@ -213,7 +213,7 @@ function banner(context: ReplContext): void {
 		options.audience === "user"
 			? color.dim("user (internal detail hidden · --audience full to show it)")
 			: options.audience === "audit"
-				? color.yellow("audit (raw events also appended to .steve/audit.jsonl)")
+				? color.yellow("audit (raw events also appended to ~/.steve/audit.jsonl)")
 				: color.yellow("full (thinking + raw tool arguments and output)");
 
 	process.stdout.write(
@@ -391,7 +391,7 @@ async function main(): Promise<void> {
 	const cwd = process.cwd();
 	// The console's persona applies here too: a role the user wrote once should not
 	// depend on which entry point they happen to start.
-	const config = withPersona(loadConfig(), await readAdminConfig(cwd));
+	const config = withPersona(loadConfig(), await readAdminConfig());
 
 	// Transcript persistence, same store and file format the ACP server uses.
 	// A run never resumes on its own: it gets a fresh id, prints it, and the exit
@@ -399,7 +399,7 @@ async function main(): Promise<void> {
 	const store = parsed.noSessions
 		? undefined
 		: createSessionStore({
-				dir: parsed.sessionDir ?? join(cwd, ".steve", "sessions"),
+				dir: parsed.sessionDir ?? join(steveHomeDir(), "sessions"),
 				logger: (message) => process.stderr.write(`${color.dim(message)}\n`),
 			});
 	const sessionId = parsed.resume ?? newSessionId();
@@ -532,8 +532,8 @@ async function main(): Promise<void> {
 	// §4.5): the default `user` audience hides thinking and raw tool I/O, while
 	// `--audience full` reproduces the pre-projection view exactly.
 	const policy = environment.projection;
-	const auditFile = policy.audience === "audit" ? join(cwd, ".steve", "audit.jsonl") : undefined;
-	if (auditFile) mkdirSync(join(cwd, ".steve"), { recursive: true });
+	const auditFile = policy.audience === "audit" ? join(steveHomeDir(), "audit.jsonl") : undefined;
+	if (auditFile) mkdirSync(steveHomeDir(), { recursive: true });
 	const hooks: ProjectionHooks = {
 		kindFor: (toolName) => chat.toolRegistry().kindFor(toolName),
 		titleFor: (toolName, args) => chat.toolRegistry().titleFor(toolName, args),

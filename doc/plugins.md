@@ -27,10 +27,9 @@ export default function myPlugin(pi) {
 
 | 位置 | 作用范围 | 备注 |
 | --- | --- | --- |
-| `<cwd>/.steve/extensions/*.mjs` | 项目级 | 自动发现；`.steve/` 已 gitignore |
-| `~/.steve/extensions/*.mjs` | 全局 | 自动发现，所有项目生效 |
+| `~/.steve/extensions/*.mjs` | 全局 | 唯一的自动发现目录；所有项目、所有 cwd 生效 |
 | `--extension <path>`（ACP）/ `STEVE_EXTENSIONS=a.mjs,b.mjs` | 单次运行 | 显式指定，文件或目录 |
-| `STEVE_DISCOVERY=off` / `--no-discovery` | 单次运行 | 只加载显式指定的插件，跳过上面两个目录 |
+| `STEVE_DISCOVERY=off` / `--no-discovery` | 单次运行 | 只加载显式指定的插件，跳过上面的目录 |
 
 - 目录发现只收 `.mjs` / `.js`，按文件名排序；显式路径排在发现结果之前。
 - 重名去重（同一个文件不会加载两次）。
@@ -180,7 +179,7 @@ tool "read_file" from a plugin ignored: already provided by the front end
 | `session-commands.ts` | `/help` `/new` `/tools` `/stats` `/model` `/mcp`（CLI 与 ACP 客户端共用） |
 | `local-tools.ts` | 6 个本地工具，按 `ctx.workspace.access` 注册 |
 | `demo-tools.ts` | `get_current_time`（演示用） |
-| `mcp-config.ts` | 读 `.steve/mcp.json`（项目 + 全局） |
+| `mcp-config.ts` | 读 `~/.steve/mcp.json` |
 
 示例（`examples/extensions/`，可直接加载）：
 
@@ -197,7 +196,7 @@ tool "read_file" from a plugin ignored: already provided by the front end
 STEVE_EXTENSIONS=examples/extensions/turn-logger.mjs npm run dev
 npm run acp -- --extension examples/extensions/guard-destructive.mjs
 # 或者放进目录，自动发现：
-cp examples/extensions/git-status.mjs .steve/extensions/
+cp examples/extensions/git-status.mjs ~/.steve/extensions/
 ```
 
 查看加载了什么：CLI 里 `/plugins`（列出文件、钩子计数、插件命令、MCP server、加载失败）。

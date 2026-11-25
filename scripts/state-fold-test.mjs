@@ -61,6 +61,8 @@ let exitCode = 0;
 try {
 	await waitForPort(MOCK_PORT);
 	mock = mockProcess;
+	// loadConfig() creates ~/.steve on first run; keep it in the temp area.
+	process.env.HOME = mkdtempSync(join(tmpdir(), "steve-fold-home-"));
 	process.env.LLM_API_KEY = "mock";
 	process.env.LLM_MODEL_ID = "mock";
 	process.env.LLM_BASE_URL = `http://127.0.0.1:${MOCK_PORT}/anthropic`;

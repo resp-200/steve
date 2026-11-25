@@ -31,6 +31,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { steveHomeDir } from "../model/config.js";
 import type { Logger } from "../types.js";
 import type { PromptImage, StreamEvent, StreamEventBody } from "./events.js";
 
@@ -48,7 +49,7 @@ export function isStreamId(id: unknown): id is string {
 }
 
 export interface StreamLogOptions {
-	/** Default: `<cwd>/.steve/streams`. */
+	/** Default: `~/.steve/streams`. */
 	dir?: string;
 	logger?: Logger;
 	/** Soft cap per file; rotation never resets `seq`. Default 8 MiB. */
@@ -134,7 +135,7 @@ function isHeaderRecord(value: unknown): boolean {
 }
 
 export function createStreamLog(options: StreamLogOptions = {}): StreamLog {
-	const dir = resolve(options.dir ?? join(process.cwd(), ".steve", "streams"));
+	const dir = resolve(options.dir ?? join(steveHomeDir(), "streams"));
 	const logger = options.logger ?? ((): void => {});
 	const rotateBytes = options.rotateBytes ?? DEFAULT_ROTATE_BYTES;
 	const maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;

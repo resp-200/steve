@@ -7,13 +7,12 @@
  * `STEVE_EXTENSIONS` / `STEVE_DISCOVERY` existed twice. They live here now and
  * both entries call these functions.
  *
- *   <cwd>/.steve/extensions/*.mjs   project-local
- *   ~/.steve/extensions/*.mjs       global
+ *   ~/.steve/extensions/*.mjs       global (the one state directory)
  *   explicit paths                  `--extension <file>` / `STEVE_EXTENSIONS`
  */
 import { readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { steveHomeDir } from "../model/config.js";
 
 /** Plugin paths from `STEVE_EXTENSIONS` (comma separated files or directories). */
 export function pluginPaths(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -57,8 +56,7 @@ export function discoverExtensionFiles(options: { cwd: string; paths?: string[];
 	}
 
 	if (options.discover !== false) {
-		found.push(...listDirectory(join(options.cwd, ".steve", "extensions")));
-		found.push(...listDirectory(join(homedir(), ".steve", "extensions")));
+		found.push(...listDirectory(join(steveHomeDir(), "extensions")));
 	}
 
 	return [...new Set(found)];

@@ -47,7 +47,7 @@ export interface SessionStoreOptions {
 	dir: string;
 	/**
 	 * Directory the event streams live in. Defaults to the sibling `streams/`
-	 * directory, so `.steve/sessions` → `.steve/streams`.
+	 * directory, so `~/.steve/sessions` → `~/.steve/streams`.
 	 */
 	streamsDir?: string;
 	logger?: Logger;
