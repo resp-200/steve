@@ -79,8 +79,12 @@ export interface RunWorkerOptions {
 	/** Whatever the stream says the transcript is, input message included. */
 	readState(streamId: string): Promise<AgentMessage[]>;
 	resolveEnvironment(streamId: string, mode: RunMode): Promise<EnvironmentSnapshot>;
-	/** Tool catalog of this process; runs only get the ones their snapshot allows. */
-	tools?: readonly AgentTool<any>[];
+	/**
+	 * Tool catalog of this process; runs only get the ones their snapshot allows.
+	 * A function is read again for every run, so tools a front end appends later
+	 * (MCP servers connect in the background) are visible without rebuilding.
+	 */
+	tools?: readonly AgentTool<any>[] | (() => readonly AgentTool<any>[]);
 	systemPrompt?: string;
 	/** Kernel hooks the host assembles (extension gate, permissions, context). */
 	hooks?: KernelHooks;
@@ -95,9 +99,21 @@ export interface RunWorkerOptions {
 	createAgent?: (context: RunAgentContext) => WorkerAgent;
 }
 
+/** How one run ended, as the log records it (§4.2). */
+export type RunTerminal =
+	| { runId: string; status: "settled"; outcome: RunOutcome }
+	| { runId: string; status: "failed"; error: string }
+	| { runId: string; status: "cancelled"; reason: string };
+
 export interface RunWorker {
 	submit(streamId: string, input: RunInput, mode?: RunMode): Promise<SubmitResult>;
 	cancel(streamId: string, runId: string): Promise<void>;
+	/**
+	 * Resolves once that run reached a terminal state — including a run that was
+	 * superseded or cancelled before it started. Prompt handlers use this instead
+	 * of listening for their own events, so they cannot miss an early failure.
+	 */
+	wait(runId: string): Promise<RunTerminal>;
 	/** Waits until every running and queued run settled. */
 	drain(): Promise<void>;
 	active(): ActiveRun[];
@@ -151,6 +167,25 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 	const maxConcurrent = Math.max(1, options.maxConcurrent ?? 1);
 	const running = new Map<string, Running>();
 	const queue: QueuedRun[] = [];
+	/** Terminal state per run id, kept after the run finished so `wait()` is race-free. */
+	const terminals = new Map<string, RunTerminal>();
+	const waiters = new Map<string, { promise: Promise<RunTerminal>; resolve: (terminal: RunTerminal) => void }>();
+
+	const openRun = (runId: string): void => {
+		let resolve!: (terminal: RunTerminal) => void;
+		const promise = new Promise<RunTerminal>((done) => {
+			resolve = done;
+		});
+		waiters.set(runId, { promise, resolve });
+	};
+
+	const settle = (runId: string, terminal: RunTerminal): void => {
+		terminals.set(runId, terminal);
+		const waiter = waiters.get(runId);
+		if (!waiter) return;
+		waiters.delete(runId);
+		waiter.resolve(terminal);
+	};
 
 	const emitEvent = (event: AgentRuntimeEvent): void => {
 		try {
@@ -180,7 +215,8 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 				.filter((tool) => mode === "foreground" || tool.permissionRequired === false)
 				.map((tool) => tool.name),
 		);
-		return (options.tools ?? []).filter((tool) => allowed.has(tool.name));
+		const catalog = typeof options.tools === "function" ? options.tools() : options.tools ?? [];
+		return catalog.filter((tool) => allowed.has(tool.name));
 	};
 
 	const defaultAgent = (context: RunAgentContext): WorkerAgent => {
@@ -265,9 +301,13 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 				},
 			]);
 			if (result.stopReason === "cancelled" || run.cancelRequested) {
-				await append(streamId, [{ type: "run.cancelled", runId, reason: run.cancelRequested ? "cancelled" : "interrupted" }]);
+				const reason = run.cancelRequested ? "cancelled" : "interrupted";
+				await append(streamId, [{ type: "run.cancelled", runId, reason }]);
+				settle(runId, { runId, status: "cancelled", reason });
 			} else if (result.failed) {
-				await append(streamId, [{ type: "run.failed", runId, error: describeFailure(result), retryable: false }]);
+				const error = describeFailure(result);
+				await append(streamId, [{ type: "run.failed", runId, error, retryable: false }]);
+				settle(runId, { runId, status: "failed", error });
 			} else {
 				const outcome: RunOutcome = {
 					stopReason: result.stopReason as TurnStopReason,
@@ -276,9 +316,12 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 					retries: result.retries,
 				};
 				await append(streamId, [{ type: "run.settled", runId, outcome }]);
+				settle(runId, { runId, status: "settled", outcome });
 			}
 		} catch (error) {
-			await append(streamId, [{ type: "run.failed", runId, error: String(error), retryable: false }]);
+			const message = String(error);
+			await append(streamId, [{ type: "run.failed", runId, error: message, retryable: false }]);
+			settle(runId, { runId, status: "failed", error: message });
 		} finally {
 			unsubscribe?.();
 			running.delete(streamId);
@@ -328,6 +371,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 		const appended = await options.log.append(streamId, [
 			{ type: "user.message", text: input.text, ...(imageBlocks(input.images) ? { images: imageBlocks(input.images) } : {}) },
 		]);
+		openRun(runId);
 		const queued: QueuedRun = { streamId, runId, input, mode, inputCause: appended.first };
 		const active = running.get(streamId);
 		if (active && concurrency === "serial") {
@@ -354,9 +398,18 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 			queue.splice(index, 1);
 			await append(streamId, [{ type: "run.cancel_requested", runId, by: "user" }]);
 			await append(streamId, [{ type: "run.cancelled", runId, reason: "cancelled" }]);
+			settle(runId, { runId, status: "cancelled", reason: "cancelled" });
 			return;
 		}
 		await requestCancel(streamId, runId);
+	};
+
+	const wait = (runId: string): Promise<RunTerminal> => {
+		const terminal = terminals.get(runId);
+		if (terminal) return Promise.resolve(terminal);
+		const waiter = waiters.get(runId);
+		if (!waiter) return Promise.reject(new Error(`unknown run: ${runId}`));
+		return waiter.promise;
 	};
 
 	const drain = async (): Promise<void> => {
@@ -374,6 +427,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 	return {
 		submit,
 		cancel,
+		wait,
 		drain,
 		active: () => [...running.values()].map(({ streamId, runId, mode, startedAt }) => ({ streamId, runId, mode, startedAt })),
 	};

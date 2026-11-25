@@ -54,7 +54,7 @@ const LAYERS = {
 const SHARED = new Set(["types.ts"]);
 
 /** 功能层 → 拓展层：只允许这两个文件（worker 需要 attachSession 等钩子），且必须是 `import type`。 */
-const LATERAL_TO_EXTENSIONS = new Set(["features/runtime.ts", "features/worker.ts"]);
+const LATERAL_TO_EXTENSIONS = new Set(["features/runtime.ts", "features/worker.ts", "features/agent-assembly.ts"]);
 /** 拓展层 → 功能层：只允许这几个契约文件（工具契约 / 事件词表 / 工具声明 / 触发器与环境快照）。 */
 const CONTRACTS_FOR_EXTENSIONS = new Set(["contract.ts", "events.ts", "tool-annotations.ts", "trigger.ts", "environment.ts"]);
 /** 运行时依赖白名单（功能层与协议层只许用这些第三方包 + node 内置）。 */
@@ -283,7 +283,7 @@ for (const { full, rel } of files) {
 	}
 }
 check(
-	"横向边：features 只有 runtime.ts / worker.ts 能 import 插件宿主（且 import type）",
+	"横向边：features 只有运行时装配文件能 import 插件宿主（且 import type）",
 	badLateralToExtensions.length === 0,
 	badLateralToExtensions.slice(0, 5).join("; "),
 );

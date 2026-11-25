@@ -9,15 +9,19 @@ import {
 	type Usage,
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../../model/config.js";
-import type { TurnStopReason, TurnUsage } from "../../features/events.js";
+import type { PromptImage, StreamEvent, TurnStopReason, TurnUsage } from "../../features/events.js";
 import type { ExtensionHost } from "../../extensions/host.js";
 import type { AgentTool } from "../../features/contract.js";
 import { readFile } from "node:fs/promises";
-import { sessionRecord, type SessionStore, type StoredSession } from "../../features/session-store.js";
+import { encodeTranscript, sessionRecord, type SessionStore, type StoredSession } from "../../features/session-store.js";
 import { isAbsolute, join } from "node:path";
 import { editPreview, writePreview } from "../../features/change-preview.js";
 import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "../../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
+import { assembleAgent, type AgentAssembly } from "../../features/agent-assembly.js";
+import { createRunWorker, type RunTerminal, type RunWorker } from "../../features/worker.js";
+import { foldTranscript } from "../../features/state-fold.js";
+import type { StreamLog } from "../../features/stream-log.js";
 import type { Logger, McpServerStatus } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
 import { diffContent } from "./tool-call.js";
@@ -85,10 +89,25 @@ export class AcpSession {
 
 	private readonly options: AcpSessionOptions;
 	private readonly runtime: AgentRuntime;
+	private readonly assembly: AgentAssembly;
 	private readonly publisher: AcpPublisher;
 	private readonly supportsImages: boolean;
-	private readonly unsubscribe: () => void;
+	/** Legacy event source, used only when the session has no persisted stream. */
+	private readonly unsubscribeRuntime?: () => void;
+	/** Event log shared with the session store; present whenever sessions persist. */
+	private readonly log?: StreamLog;
+	/** One stream per ACP session, named by the session id. */
+	private readonly streamId: string;
+	/** Runs turns as runs on the event log when a stream exists (§5.2). */
+	private readonly worker?: RunWorker;
+	private readonly projectionHooks: ProjectionHooks;
 	private readonly createdAt: string;
+	/** Bootstraps the stream (legacy transcript import, subscription) exactly once. */
+	private ready?: Promise<void>;
+	private unsubscribeLog?: () => void;
+	/** Highest seq published to this client; the worker run start is read from here. */
+	private cursor = 0;
+	private currentRunId?: string;
 	private readonly usage: Usage = {
 		totalTokens: 0,
 		inputTokens: 0,
@@ -122,25 +141,33 @@ export class AcpSession {
 		// the runtime drops a plugin tool whose name the client already provides.
 		const tools = [...clientTools];
 
-		this.runtime = createAgentRuntime({
+		// One assembly for the session: the runtime uses it for commands, replay and
+		// the transcript, and the run worker uses the very same tools, registry and
+		// hooks — so an MCP server attached later reaches both, identically.
+		this.assembly = assembleAgent({
 			config: options.config,
 			tools,
-			mcpServers: options.mcpServers ?? [],
-			logger: options.logger,
 			extensions: options.extensions,
-			systemPrompt: this.systemPrompt(),
+			logger: options.logger,
 			// The runtime asks before any tool that declared `permission: "ask"`.
 			permissions: {
 				mode: options.permissionMode,
 				ask: (request) => this.askPermission(request),
 			},
 		});
+		this.runtime = createAgentRuntime({
+			config: options.config,
+			assembly: this.assembly,
+			mcpServers: options.mcpServers ?? [],
+			logger: options.logger,
+			extensions: options.extensions,
+			systemPrompt: this.systemPrompt(),
+		});
 		this.toolNames = this.runtime.toolNames;
 		this.createdAt = options.restore?.createdAt ?? new Date().toISOString();
-		if (options.restore) {
-			this.runtime.restore(options.restore.messages);
-			this.accountUsage(options.restore.usage as TurnUsage | undefined);
-		}
+		// The transcript itself is restored from the stream (or imported by
+		// `ensureReady` for sessions written before S1); only usage is carried here.
+		if (options.restore) this.accountUsage(options.restore.usage as TurnUsage | undefined);
 		// One written-down environment per session (personal agent §4.4). The
 		// workspace roots and model are the same values plugins were loaded with,
 		// so the snapshot cannot drift from what the session actually allows.
@@ -169,28 +196,91 @@ export class AcpSession {
 			titleFor: (toolName, args) => this.titleFor(toolName, args),
 			logger: options.logger,
 		});
-		const projectionHooks: ProjectionHooks = {
+		this.projectionHooks = {
 			kindFor: (toolName) => this.kindFor(toolName),
 			titleFor: (toolName, args) => this.titleFor(toolName, args),
 		};
-		this.unsubscribe = this.runtime.subscribe((event) => {
-			for (const projected of project(event, this.environment.projection, projectionHooks)) {
-				// ACP clients consume the raw stream; summaries are for the terminal
-				// and future HTTP consumers, so a `user` projection is a no-op here.
+
+		this.streamId = this.id;
+		const log = options.store?.log;
+		this.log = log;
+		if (log) {
+			this.worker = createRunWorker({
+				config: options.config,
+				extensions: options.extensions,
+				log,
+				readState: async (streamId) => foldTranscript(await log.read(streamId)),
+				resolveEnvironment: async () => this.environment,
+				tools: () => this.assembly.tools,
+				systemPrompt: this.systemPrompt(),
+				hooks: this.assembly.hooks,
+				logger: options.logger,
+				// ACP clients send one prompt per session; a second one supersedes.
+				concurrency: "serial",
+			});
+		} else {
+			this.unsubscribeRuntime = this.runtime.subscribe((event) => {
+				for (const projected of project(event, this.environment.projection, this.projectionHooks)) {
+					// ACP clients consume the raw stream; summaries are for the terminal
+					// and future HTTP consumers, so a `user` projection is a no-op here.
+					if (projected.audience !== "user") this.publisher.publishEvent(projected.event);
+				}
+			});
+		}
+	}
+
+	/**
+	 * Streams that predate S1 only have `<id>.json`; importing their transcript
+	 * into the log keeps the run worker's view of history identical to the one the
+	 * runtime had. Also attaches the live event subscription exactly once.
+	 */
+	private ensureReady(): Promise<void> {
+		return (this.ready ??= this.initStream());
+	}
+
+	private async initStream(): Promise<void> {
+		const log = this.log;
+		if (!log) return;
+		let events: StreamEvent[] = [];
+		try {
+			events = await log.read(this.streamId);
+		} catch (error) {
+			this.options.logger(`session ${this.id}: could not read stream: ${String(error)}`);
+		}
+		if (events.length === 0 && this.options.restore) {
+			const createdAt = Date.parse(this.options.restore.createdAt);
+			try {
+				await log.append(this.streamId, [
+					{ type: "stream.created", streamId: this.streamId, cwd: this.cwd, ...(Number.isFinite(createdAt) ? { ts: createdAt } : {}) },
+					...encodeTranscript(this.options.restore.messages),
+				]);
+				events = await log.read(this.streamId);
+			} catch (error) {
+				this.options.logger(`session ${this.id}: could not import the stored transcript: ${String(error)}`);
+			}
+		}
+		const last = events.at(-1)?.seq ?? 0;
+		this.cursor = last;
+		this.unsubscribeLog = log.subscribe(this.streamId, last + 1, (event) => {
+			this.cursor = event.seq;
+			for (const projected of project(event, this.environment.projection, this.projectionHooks)) {
 				if (projected.audience !== "user") this.publisher.publishEvent(projected.event);
 			}
 		});
+		this.runtime.restore(foldTranscript(events));
+	}
+
+	/** Keeps the runtime's transcript (persistence, replay, `/stats`) in sync with the log. */
+	private async syncRuntime(): Promise<void> {
+		const log = this.log;
+		if (!log) return;
+		this.runtime.restore(foldTranscript(await log.read(this.streamId)));
 	}
 
 	/* ------------------------------- prompting ------------------------------ */
 
 	async prompt(request: PromptRequest, signal: AbortSignal): Promise<PromptResponse> {
-		if (this.running) {
-			// ACP clients send one prompt per session; a second one supersedes the first.
-			this.options.logger(`session ${this.id}: superseding the in-flight turn`);
-			this.runtime.abort();
-			await this.runtime.waitForIdle();
-		}
+		await this.ensureReady();
 
 		const text = blocksToText(request.prompt);
 		const images = this.supportsImages ? blocksToImages(request.prompt) : [];
@@ -215,8 +305,78 @@ export class AcpSession {
 				if (output) {
 					await this.publisher.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: output } });
 				}
+				// A command such as `/new` may reset the transcript; the log follows it.
+				await this.applyCommandEffects();
 				return { stopReason: "end_turn", usage: { ...this.usage } };
 			}
+		}
+
+		if (this.worker) return await this.promptViaWorker(text, images);
+		return await this.promptViaRuntime(text, images, signal);
+	}
+
+	/**
+	 * Runs one prompt as a run on the event log and waits for its terminal state.
+	 *
+	 * The client sees the same updates as before: the worker appends normalised
+	 * events, the stream subscription projects and publishes them. Usage and the
+	 * warning chunk are emitted from the terminal state, exactly where the old
+	 * runtime path emitted them.
+	 */
+	private async promptViaWorker(text: string, images: PromptImage[]): Promise<PromptResponse> {
+		const worker = this.worker!;
+		const log = this.log!;
+		const fromSeq = this.cursor;
+		if (this.running) this.options.logger(`session ${this.id}: superseding the in-flight turn`);
+
+		this.running = true;
+		let terminal: RunTerminal;
+		try {
+			const submitted = await worker.submit(this.streamId, { text, ...(images.length > 0 ? { images } : {}) }, "foreground");
+			if (!submitted.accepted) throw RequestError.internalError(undefined, submitted.reason ?? "run rejected");
+			this.currentRunId = submitted.runId;
+			terminal = await worker.wait(submitted.runId);
+		} finally {
+			this.running = false;
+			this.currentRunId = undefined;
+		}
+
+		const events = await log.read(this.streamId, fromSeq + 1);
+		const turnEnd = [...events].reverse().find((event): event is Extract<StreamEvent, { type: "turn_end" }> => event.type === "turn_end");
+		const contextTokens = turnEnd?.contextTokens ?? 0;
+		if (terminal.status === "failed") {
+			// Surface provider failures inside the transcript instead of failing the
+			// whole JSON-RPC request, so the client keeps its history.
+			await this.publisher.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `⚠️ ${terminal.error}` } });
+		}
+		if (contextTokens > 0) {
+			this.accountUsage(turnEnd?.usage);
+			await this.publisher.send({
+				sessionUpdate: "usage_update",
+				used: contextTokens,
+				size: this.options.config.model.contextWindow,
+				cost: null,
+			});
+		}
+
+		await this.syncRuntime();
+		await this.persist();
+		const stopReason: TurnStopReason = terminal.status === "cancelled" ? "cancelled" : ((turnEnd?.stopReason ?? "error") as TurnStopReason);
+		const mapped = STOP_REASONS[stopReason] ?? "end_turn";
+		this.options.logger(
+			`session/prompt done: ${this.id} stopReason=${mapped} tokens in/out=${this.usage.inputTokens}/${this.usage.outputTokens}` +
+				(terminal.status === "failed" ? ` error=${terminal.error.slice(0, 160)}` : ""),
+		);
+		return { stopReason: mapped, usage: { ...this.usage } };
+	}
+
+	/** Runs one prompt on the long-lived runtime (no stream: `--no-sessions`). */
+	private async promptViaRuntime(text: string, images: PromptImage[], signal: AbortSignal): Promise<PromptResponse> {
+		if (this.running) {
+			// ACP clients send one prompt per session; a second one supersedes the first.
+			this.options.logger(`session ${this.id}: superseding the in-flight turn`);
+			this.runtime.abort();
+			await this.runtime.waitForIdle();
 		}
 
 		this.running = true;
@@ -232,8 +392,6 @@ export class AcpSession {
 		}
 
 		if (result.failed && result.errorMessage) {
-			// Surface provider failures inside the transcript instead of failing the
-			// whole JSON-RPC request, so the client keeps its history.
 			await this.publisher.send({
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text: `⚠️ ${result.errorMessage}` },
@@ -259,6 +417,33 @@ export class AcpSession {
 		return { stopReason, usage: { ...this.usage } };
 	}
 
+	/**
+	 * A local command may have reset the transcript (`/new`). The log is the truth,
+	 * so mirror the new transcript: an emptied runtime clears the stream, anything
+	 * else is already reflected by the command's own appends.
+	 */
+	private async applyCommandEffects(): Promise<void> {
+		const log = this.log;
+		if (!log || !this.worker) return;
+		if (this.runtime.snapshot().length > 0) {
+			await this.syncRuntime();
+			return;
+		}
+		this.unsubscribeLog?.();
+		this.unsubscribeLog = undefined;
+		try {
+			if (await log.read(this.streamId).then((events) => events.length > 0)) {
+				await log.remove(this.streamId);
+			}
+		} catch (error) {
+			this.options.logger(`session ${this.id}: could not reset the stream: ${String(error)}`);
+		}
+		this.ready = undefined;
+		this.cursor = 0;
+		await this.ensureReady();
+		await this.persist();
+	}
+
 	/** Saves the transcript so the session can be resumed after a restart. */
 	private async persist(): Promise<void> {
 		if (!this.options.store) return;
@@ -275,6 +460,8 @@ export class AcpSession {
 
 	/** Replays a stored transcript to the client (used by `session/load`). */
 	async replay(): Promise<void> {
+		await this.ensureReady();
+		await this.syncRuntime();
 		await this.publisher.replay(this.runtime.transcript());
 	}
 
@@ -290,6 +477,12 @@ export class AcpSession {
 	}
 
 	cancel(): void {
+		if (this.worker && this.currentRunId !== undefined) {
+			// The log records the request first, then the agent is interrupted: a
+			// cancelled run is replayable instead of just disappearing.
+			void this.worker.cancel(this.streamId, this.currentRunId);
+			return;
+		}
 		this.runtime.abort();
 	}
 
@@ -302,6 +495,18 @@ export class AcpSession {
 	attachMcpServer(status: McpServerStatus, connection?: { tools: AgentTool<any>[]; close: () => Promise<void> }): void {
 		if (connection) {
 			this.runtime.addTools(connection.tools);
+			// The worker only runs tools the environment names, so MCP tools must be
+			// added there too (they arrive after `session/new` returned).
+			if (this.worker) {
+				for (const tool of connection.tools) {
+					this.toolNames.push(tool.name);
+					this.environment.tools.push({
+						name: tool.name,
+						permissionRequired: this.assembly.registry.permissionRequired().includes(tool.name),
+						...(this.kindFor(tool.name) ? { kind: this.kindFor(tool.name) } : {}),
+					});
+				}
+			}
 			this.mcpClosers.push(() => connection.close());
 		}
 		this.runtime.upsertMcpServer(status);
@@ -312,7 +517,9 @@ export class AcpSession {
 
 	dispose(): void {
 		this.disposed = true;
-		this.unsubscribe();
+		this.unsubscribeRuntime?.();
+		this.unsubscribeLog?.();
+		if (this.worker && this.currentRunId !== undefined) void this.worker.cancel(this.streamId, this.currentRunId);
 		this.runtime.abort();
 		void this.closeMcp();
 	}

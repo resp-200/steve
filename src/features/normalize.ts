@@ -57,13 +57,18 @@ export function toTranscript(messages: AgentMessage[]): TranscriptEntry[] {
 
 	for (const message of messages) {
 		if (message.role === "user") {
+			// User content is either a plain string or content blocks (fold and pi
+			// both produce strings for text-only input, so both forms must replay).
 			const blocks = Array.isArray(message.content) ? message.content : [];
 			entries.push({
 				role: "user",
-				text: blocks
-					.filter((block) => block.type === "text")
-					.map((block) => (block as { text?: string }).text ?? "")
-					.join("\n"),
+				text:
+					typeof message.content === "string"
+						? message.content
+						: blocks
+								.filter((block) => block.type === "text")
+								.map((block) => (block as { text?: string }).text ?? "")
+								.join("\n"),
 				images: blocks.filter((block) => block.type === "image").length,
 			});
 			continue;

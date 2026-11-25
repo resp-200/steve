@@ -58,6 +58,13 @@ export interface SessionStoreOptions {
 export interface SessionStore {
 	/** Directory the transcripts live in. */
 	readonly dir: string;
+	/** Directory the event streams live in (`<dir>/../streams` unless overridden). */
+	readonly streamsDir: string;
+	/**
+	 * The store's event log. A front end that drives the run worker writes through
+	 * this instance too, so both see the same in-memory sequence counter.
+	 */
+	readonly log: StreamLog;
 	save(session: StoredSession): Promise<void>;
 	load(id: string): Promise<StoredSession | undefined>;
 	list(): Promise<SessionSummary[]>;
@@ -129,6 +136,14 @@ function splitContent(content: unknown): { text: string; images: PromptImage[] }
 		}
 	}
 	return { text, images };
+}
+
+/**
+ * Encodes a transcript as log events. Front ends replay a stored transcript into
+ * a fresh stream (a session written before the stream existed) through this.
+ */
+export function encodeTranscript(messages: readonly unknown[]): StreamEventInput[] {
+	return messages.flatMap((message) => messageToEvents(message));
 }
 
 /** One transcript message → the events that reproduce it in the log. */
@@ -367,5 +382,5 @@ export function createSessionStore(options: SessionStoreOptions): SessionStore {
 		}
 	}
 
-	return { dir, save, load, list, remove };
+	return { dir, streamsDir, log, save, load, list, remove };
 }

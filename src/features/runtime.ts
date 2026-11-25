@@ -15,15 +15,16 @@ import type {
 	BeforeToolCallResult,
 } from "./contract.js";
 import type { PluginCommand, SessionAccessors } from "../extensions/api.js";
-import { createToolRegistry, type AnnotatedTool, type ToolRegistry } from "./tool-annotations.js";
+import { assembleAgent, type AgentAssembly } from "./agent-assembly.js";
 import { modelInfo } from "./session-policy.js";
 import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
 import { createKernelAgent } from "../kernel/agent.js";
-import { createPermissionGate, type PermissionDecision, type PermissionRequest, type ToolChangePreview } from "./permissions.js";
+import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "./permissions.js";
 import type { AgentRuntimeEvent, TranscriptEntry } from "./events.js";
+import type { ToolRegistry } from "./tool-annotations.js";
 import type { Logger, McpServerStatus } from "../types.js";
-import { firstText, normalizeKernelEvent, toTranscript } from "./normalize.js";
+import { normalizeKernelEvent, toTranscript } from "./normalize.js";
 import { runTurn, type PromptOptions, type TurnDriver, type TurnResult } from "./retry.js";
 
 export type { PromptOptions, TurnResult } from "./retry.js";
@@ -60,6 +61,13 @@ export interface AgentRuntimeOptions {
 	};
 	/** Extra attempts after a failed turn that ran no tool. Default: 2. */
 	retries?: number;
+	/**
+	 * Assembly shared with another execution path (the ACP session drives a run
+	 * worker, but still keeps a runtime for commands, replay and the transcript).
+	 * When given, the runtime reuses its tool list, registry and hooks instead of
+	 * assembling a private copy — so MCP tools and permission rules stay in sync.
+	 */
+	assembly?: AgentAssembly;
 }
 
 export interface AgentRuntime {
@@ -95,102 +103,28 @@ export interface AgentRuntime {
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 	const config = options.config;
 	const extensions = options.extensions;
-	// Spread, don't rebuild: a plugin tool carries its own annotations
-	// (`permission` / `metadata` / `describe`), and rebuilding the object silently
-	// dropped them — which meant plugin tools were never gated and never previewed.
-	const pluginTools = (extensions?.tools ?? []).map(
-		(tool): AnnotatedTool => ({
-			...tool,
-			label: tool.label ?? tool.name,
-			parameters: tool.parameters as AgentTool<any>["parameters"],
-			execute: tool.execute,
-		}),
-	);
-	/**
-	 * Front-end tools come first and win: a plugin may not silently replace what the
-	 * host already provides (ACP client tools vs a local-tools plugin, for instance).
-	 * Replacing on purpose will need an explicit `override` flag.
-	 */
-	const agentTools: AgentTool<any>[] = [];
-	const toolSource = new Map<string, string>();
-	for (const tool of options.tools ?? []) {
-		agentTools.push(tool);
-		toolSource.set(tool.name, "the front end");
-	}
-	for (const tool of pluginTools) {
-		const existing = toolSource.get(tool.name);
-		if (existing) {
-			options.logger?.(`tool "${tool.name}" from a plugin ignored: already provided by ${existing}`);
-			continue;
-		}
-		agentTools.push(tool);
-		toolSource.set(tool.name, "a plugin");
-	}
+	const assembly =
+		options.assembly ??
+		assembleAgent({
+			config,
+			tools: options.tools,
+			extensions,
+			logger: options.logger,
+			beforeToolCall: options.beforeToolCall,
+			permissions: options.permissions,
+		});
+	const agentTools = assembly.tools;
+	const registry = assembly.registry;
 	const defaultRetries = options.retries ?? 2;
 	const listeners = new Set<(event: AgentRuntimeEvent) => void>();
 	/** Same array identity for the session lifetime: `/mcp` sees background updates. */
 	const mcpServers: McpServerStatus[] = [...(options.mcpServers ?? [])];
 
-	const registry = createToolRegistry(agentTools);
-
-	/** Tool-declared preview wins; the host's `describe` is the fallback. */
-	const describeChange = async (request: PermissionRequest): Promise<ToolChangePreview | undefined> => {
-		const own = registry.describeFor(request.toolName);
-		if (own) {
-			const preview = await own(request.args);
-			if (preview) return preview;
-		}
-		return options.permissions?.describe?.(request);
-	};
-
-	const permissionGate = options.permissions
-		? createPermissionGate({
-				mode: options.permissions.mode,
-				requires: () => registry.permissionRequired(),
-				ask: options.permissions.ask,
-				describe: describeChange,
-			})
-		: undefined;
-
-	/** Plugins may refuse a tool call before the permission gate ever asks. */
-	const beforeToolCall = async (context: BeforeToolCallContext, signal?: AbortSignal) => {
-		const decision = await extensions?.runToolCall({ toolName: context.toolCall.name, toolCallId: context.toolCall.id, args: context.args });
-		if (decision?.block) {
-			return { block: true, reason: decision.reason ?? `Blocked by an extension: ${context.toolCall.name}` };
-		}
-		return (permissionGate ?? options.beforeToolCall)?.(context, signal);
-	};
-
-	/** `tool_result` plugins may rewrite the result the model sees. */
-	const afterToolCall = async (context: AfterToolCallContext): Promise<AfterToolCallResult | undefined> => {
-		const details = (context.result as { details?: unknown } | undefined)?.details;
-		const patch = await extensions!.runToolResult({
-			toolName: context.toolCall.name,
-			toolCallId: context.toolCall.id,
-			isError: context.isError,
-			text: firstText(context.result) ?? "",
-			...(details !== undefined ? { details } : {}),
-		});
-		if (!patch) return undefined;
-		return {
-			...(patch.text !== undefined ? { content: [{ type: "text" as const, text: patch.text }] } : {}),
-			...(patch.details !== undefined ? { details: patch.details } : {}),
-			...(patch.isError !== undefined ? { isError: patch.isError } : {}),
-		};
-	};
-
 	const agent = createKernelAgent({
 		config,
 		tools: agentTools,
 		...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
-		hooks: {
-			...(extensions || options.beforeToolCall || permissionGate ? { beforeToolCall } : {}),
-			...(extensions?.counts.toolResult ? { afterToolCall } : {}),
-			...(extensions?.counts.context ? { transformContext: (messages: AgentMessage[]) => extensions.runContext(messages) } : {}),
-			...(extensions?.counts.headers
-				? { beforeProviderHeaders: (headers: Record<string, string>, model: { id: string; api: string }) => extensions.runHeaders(headers, { model: model.id, api: model.api }) }
-				: {}),
-		},
+		hooks: assembly.hooks,
 	});
 
 	const emit = (event: AgentRuntimeEvent): void => {

@@ -148,6 +148,18 @@ try {
 	check("run.started 的 inputCause 指向输入事件", startedEvent?.inputCause === userEvent?.seq, `${startedEvent?.inputCause} vs ${userEvent?.seq}`);
 	check("run.started 携带环境快照与模式", startedEvent?.mode === "foreground" && startedEvent?.environment?.cwd === ROOT && startedEvent?.environment?.tools?.some((tool) => tool.name === "get_current_time"));
 
+	const terminalA = await workerA.wait(submitted.runId);
+	check("wait() 返回该 run 的终态（settled）", terminalA.status === "settled" && terminalA.outcome?.stopReason === "stop", JSON.stringify(terminalA).slice(0, 100));
+	const replayOfTerminal = await workerA.wait(submitted.runId);
+	check("wait() 可重复读取同一终态", replayOfTerminal.status === "settled");
+	check(
+		"未知 run 的 wait() 明确失败",
+		await workerA.wait("no-such-run").then(
+			() => false,
+			() => true,
+		),
+	);
+
 	await workerA.drain();
 	const eventsA = await readEvents(idA);
 	const settledA = eventsA.find((event) => event.type === "run.settled");
@@ -261,6 +273,8 @@ try {
 	const submittedD = await workerD.submit(idD, { text: "long task" });
 	await waitFor(() => slowAgent?.proceeding === true, 5_000, "run to start");
 	await workerD.cancel(idD, submittedD.runId);
+	const terminalD = await workerD.wait(submittedD.runId);
+	check("取消后 wait() 返回 cancelled 终态", terminalD.status === "cancelled", JSON.stringify(terminalD).slice(0, 100));
 	await workerD.drain();
 	const eventsD = await readEvents(idD);
 	check("取消留下 run.cancel_requested（by user）", eventsD.some((event) => event.type === "run.cancel_requested" && event.runId === submittedD.runId && event.by === "user"));
@@ -386,6 +400,26 @@ try {
 	check("background run 正常收尾", eventsG.some((event) => event.type === "run.settled"));
 
 	/* --------------------------- G. invalid input --------------------------- */
+
+	// A tools provider is read again for every run, so tools attached later (MCP)
+	// join the next run without rebuilding the worker.
+	const idH = streamId("provider");
+	let providerReads = 0;
+	const catalog = [timeTool];
+	const workerH = workerFor({
+		tools: () => {
+			providerReads += 1;
+			return catalog;
+		},
+		resolveEnvironment: async (_id, mode) => environmentFor(mode, catalog.map((tool) => ({ name: tool.name, permissionRequired: false }))),
+	});
+	const submittedH = await workerH.submit(idH, { text: "what time is it?" });
+	const terminalH = await workerH.wait(submittedH.runId);
+	check("tools provider 的 run 正常收尾", terminalH.status === "settled" && providerReads >= 1, `${providerReads} read(s)`);
+	catalog.push(writeTool);
+	const submittedH2 = await workerH.submit(idH, { text: "hello again" });
+	const terminalH2 = await workerH.wait(submittedH2.runId);
+	check("追加到目录的工具在下一轮可用（provider 每轮重读）", terminalH2.status === "settled" && providerReads >= 2);
 
 	const invalid = await workerA.submit("../../etc/passwd", { text: "nope" });
 	check("非法 stream id 被拒绝", invalid.accepted === false && invalid.reason === "invalid stream id", invalid.reason ?? "");
