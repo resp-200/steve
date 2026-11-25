@@ -6,7 +6,8 @@
 | [acp-server.md](./acp-server.md) | ACP 服务端：启动参数、客户端接入（编辑器 / CLI / 桌面与 Web）、线协议（Streamable HTTP）、工具与权限、持久化、排查 |
 | [mcp.md](./mcp.md) | MCP 接入：三种来源与优先级、`.steve/mcp.json`、工具映射、连接时机、`/mcp`、没实现什么 |
 | [plugins.md](./plugins.md) | 插件开发：发现位置、`pi.ctx`、四类钩子、三类贡献、失败语义、什么时候该写成插件 |
-| [../docs/personal-agent.md](../docs/personal-agent.md) | 技术方案（设计稿，未实施）：把 steve 改造成 Personal Agent——事件总线、异步 worker、状态折叠、按受众投影、主动 Watch |
+| [serve.md](./serve.md) | 常驻服务 `steve-serve`：HTTP/SSE 接口、token、watch webhook、后台审批、限制 |
+| [../docs/personal-agent.md](../docs/personal-agent.md) | 技术方案与实施记录：把 steve 改造成 Personal Agent——事件总线、异步 worker、状态折叠、按受众投影、主动 Watch（S0–S8 已落地） |
 
 项目整体说明（分层、约定与规范、测试、发布）在主 [README](../README.md)。
 
@@ -31,5 +32,6 @@ LLM_BASE_URL="<端点根地址>"      # Anthropic 形如 https://host/anthropic�
 | 换模型 / 网关、搞清楚每个环境变量 | [model-integration.md](./model-integration.md) |
 | 让编辑器 / CLI / 桌面应用等 ACP 客户端连上 | [acp-server.md](./acp-server.md) §2–3 |
 | 远程 / 云端访问（一键启动、token、反代） | [acp-server.md](./acp-server.md) §2.1–2.2 |
+| 不用编辑器，用 HTTP/SSE 接自己的前端 / 定时与 webhook 触发 | [serve.md](./serve.md) |
 | 接一个 MCP server | [mcp.md](./mcp.md) §2–3 |
 | 加工具 / 加斜杠命令 / 挂钩子 | [plugins.md](./plugins.md) |

@@ -11,7 +11,8 @@
 //   D. cancellation: `run.cancel_requested` is durable, the agent is aborted,
 //      `run.cancelled` follows, and nothing is retried
 //   E. concurrency: `serial` supersedes the running run, `queue` waits for it
-//   F. background runs only receive tools the snapshot allows without asking
+//   F. background runs: tools come from the snapshot; a tool that needs consent
+//      parks on approvals (allow / deny / timeout) instead of executing
 //
 //   npm run build && node scripts/worker-test.mjs
 import { spawn } from "node:child_process";
@@ -396,8 +397,57 @@ try {
 	await workerG.drain();
 	const eventsG = await readEvents(idG);
 	check("background run 的 run.started 标记模式", eventsG.some((event) => event.type === "run.started" && event.mode === "background"));
-	check("background run 只拿到无需审批的工具", seenTools.join(",") === "get_current_time", seenTools.join(","));
+	check("background run 拿到快照声明的全部工具", seenTools.sort().join(",") === "get_current_time,write_file", seenTools.join(","));
 	check("background run 正常收尾", eventsG.some((event) => event.type === "run.settled"));
+
+	// A tool that needs consent without an approvals callback is refused, not run.
+	const deniedWithoutCallback = workerFor();
+	const idH0 = streamId("background-refused");
+	await deniedWithoutCallback.submit(idH0, { text: "write file /tmp/steve-never-written.txt" }, "background");
+	await deniedWithoutCallback.drain();
+	const eventsH0 = await readEvents(idH0);
+	const refusedResult = (await folded(idH0)).find((message) => message.role === "toolResult" && message.toolName === "write_file");
+	check("background run：未配置 approvals 时需审批工具被拒绝", refusedResult?.isError === true);
+	check("background run：被拒绝的工具仍让 run 正常收尾", eventsH0.some((event) => event.type === "run.settled"));
+
+	const approvals = [];
+	const workerI = workerFor({
+		resolveEnvironment: async (_id, mode) =>
+			environmentFor(mode, [
+				{ name: "get_current_time", permissionRequired: false },
+				{ name: "write_file", permissionRequired: true },
+			]),
+		approvals: async (context, request) => {
+			approvals.push(`${context.mode}:${request.toolName}`);
+			return "allow";
+		},
+	});
+	const idI = streamId("background-approved");
+	await workerI.submit(idI, { text: "write file /tmp/steve-approved.txt" }, "background");
+	await workerI.drain();
+	const approved = (await folded(idI)).find((message) => message.role === "toolResult" && message.toolName === "write_file");
+	check("background run：approvals 返回 allow 后工具执行", approvals.includes("background:write_file") && approved?.isError !== true);
+
+	const workerJ = workerFor({
+		resolveEnvironment: async (_id, mode) => environmentFor(mode, [{ name: "write_file", permissionRequired: true }]),
+		approvals: async () => "deny",
+	});
+	const idJ = streamId("background-denied");
+	await workerJ.submit(idJ, { text: "write file /tmp/steve-denied.txt" }, "background");
+	await workerJ.drain();
+	const denied = (await folded(idJ)).find((message) => message.role === "toolResult" && message.toolName === "write_file");
+	check("background run：approvals 返回 deny 时工具不执行", denied?.isError === true);
+	check("background run：deny 后 run 仍正常收尾", (await readEvents(idJ)).some((event) => event.type === "run.settled"));
+
+	const workerK = workerFor({
+		resolveEnvironment: async (_id, mode) => environmentFor(mode, [{ name: "write_file", permissionRequired: true }]),
+		approvals: async () => "timeout",
+	});
+	const idK = streamId("background-timeout");
+	await workerK.submit(idK, { text: "write file /tmp/steve-timeout.txt" }, "background");
+	await workerK.drain();
+	const eventsK = await readEvents(idK);
+	check("background run：approvals 超时把 run 收成 cancelled", eventsK.some((event) => event.type === "run.cancelled"));
 
 	/* --------------------------- G. invalid input --------------------------- */
 

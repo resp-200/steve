@@ -33,6 +33,11 @@ import type { Logger } from "../types.js";
 export interface RunInput {
 	text: string;
 	images?: PromptImage[];
+	/**
+	 * Append the input as a `user.message` first (default). Set false when the
+	 * event is already in the stream — a trigger fired it, for instance.
+	 */
+	append?: boolean;
 }
 
 export interface SubmitResult {
@@ -71,7 +76,12 @@ export interface RunAgentContext {
 	messages: AgentMessage[];
 	tools: AgentTool<any>[];
 	config: AppConfig;
+	/** Ends the run as cancelled (used when a parked approval times out). */
+	cancel?: (reason?: string) => void;
 }
+
+/** What a background run may do with a tool that needs consent. */
+export type WorkerApproval = "allow" | "deny" | "timeout";
 
 export interface RunWorkerOptions {
 	config: AppConfig;
@@ -100,6 +110,12 @@ export interface RunWorkerOptions {
 	logger?: Logger;
 	/** Observes normalised turn events as they are appended (live front ends). */
 	onEvent?: (event: AgentRuntimeEvent) => void;
+	/**
+	 * Asked before a background run executes a tool that needs consent (§9).
+	 * Without it such calls are refused; the front end wires this to a human
+	 * (HTTP endpoint, CLI prompt, ACP client) through an approval gate.
+	 */
+	approvals?: (context: RunAgentContext, request: { toolName: string; args: unknown }) => Promise<WorkerApproval>;
 	/** Test seam; the default builds a one-shot kernel agent. */
 	createAgent?: (context: RunAgentContext) => WorkerAgent;
 }
@@ -112,7 +128,8 @@ export type RunTerminal =
 
 export interface RunWorker {
 	submit(streamId: string, input: RunInput, mode?: RunMode): Promise<SubmitResult>;
-	cancel(streamId: string, runId: string): Promise<void>;
+	/** Returns false when the run is neither queued nor running. */
+	cancel(streamId: string, runId: string): Promise<boolean>;
 	/**
 	 * Resolves once that run reached a terminal state — including a run that was
 	 * superseded or cancelled before it started. Prompt handlers use this instead
@@ -213,23 +230,52 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 		}
 	};
 
-	/** Tools the run may use: named by the snapshot, narrowed for background runs. */
-	const selectTools = (environment: EnvironmentSnapshot, mode: RunMode): AgentTool<any>[] => {
-		const allowed = new Set(
-			environment.tools
-				.filter((tool) => mode === "foreground" || tool.permissionRequired === false)
-				.map((tool) => tool.name),
-		);
+	/** Tools the run may use: exactly the ones its snapshot names. */
+	const selectTools = (environment: EnvironmentSnapshot): AgentTool<any>[] => {
+		const allowed = new Set(environment.tools.map((tool) => tool.name));
 		const catalog = typeof options.tools === "function" ? options.tools() : options.tools ?? [];
 		return catalog.filter((tool) => allowed.has(tool.name));
 	};
 
+	/**
+	 * Background runs get a wrapper around the host's hooks: a tool the snapshot
+	 * marks as needing consent parks on `approvals` instead of reaching the normal
+	 * gate (which expects a live human on the other end).
+	 */
+	const hooksFor = (context: RunAgentContext): KernelHooks | undefined => {
+		const base = options.hooks;
+		if (context.mode !== "background") return base;
+		const needsApproval = new Set(
+			context.environment.tools.filter((tool) => tool.permissionRequired !== false).map((tool) => tool.name),
+		);
+		return {
+			...(base ?? {}),
+			async beforeToolCall(call, signal) {
+				const toolName = call.toolCall.name;
+				if (!needsApproval.has(toolName)) {
+					return base?.beforeToolCall !== undefined ? base.beforeToolCall(call, signal) : undefined;
+				}
+				if (options.approvals === undefined) {
+					return { block: true, reason: `background run cannot execute "${toolName}" without approval` };
+				}
+				const decision = await options.approvals(context, { toolName, args: call.args });
+				if (decision === "allow") return undefined;
+				if (decision === "timeout") {
+					context.cancel?.("approval timeout");
+					return { block: true, reason: `approval for "${toolName}" timed out` };
+				}
+				return { block: true, reason: `"${toolName}" was not approved for a background run` };
+			},
+		};
+	};
+
 	const defaultAgent = (context: RunAgentContext): WorkerAgent => {
+		const hooks = hooksFor(context);
 		const agent = createKernelAgent({
 			config: options.config,
 			tools: context.tools,
 			...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
-			...(options.hooks !== undefined ? { hooks: options.hooks } : {}),
+			...(hooks !== undefined ? { hooks } : {}),
 		});
 		agent.state.messages = [...context.messages];
 		return {
@@ -251,8 +297,8 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 			await options.log.append(streamId, [{ type: "run.started", runId, inputCause, environment, mode }]);
 			const messages =
 				options.readState !== undefined ? await options.readState(streamId) : foldTranscript(await options.log.read(streamId));
-			const tools = selectTools(environment, mode);
-			const agent = (options.createAgent ?? defaultAgent)({
+			const tools = selectTools(environment);
+			const context: RunAgentContext = {
 				streamId,
 				runId,
 				mode,
@@ -260,7 +306,13 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 				messages,
 				tools,
 				config: options.config,
-			});
+				cancel: (reason) => {
+					run.cancelRequested = true;
+					logger(`run ${runId} cancelled: ${reason ?? "requested"}`);
+					run.agent?.abort();
+				},
+			};
+			const agent = (options.createAgent ?? defaultAgent)(context);
 			run.agent = agent;
 
 			// Lifecycle events are appended as they happen; assistant messages only
@@ -374,11 +426,18 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 	const submit = async (streamId: string, input: RunInput, mode: RunMode = "foreground"): Promise<SubmitResult> => {
 		if (!isStreamId(streamId)) return { runId: "", accepted: false, reason: "invalid stream id" };
 		const runId = randomUUID();
-		const appended = await options.log.append(streamId, [
-			{ type: "user.message", text: input.text, ...(imageBlocks(input.images) ? { images: imageBlocks(input.images) } : {}) },
-		]);
+		let inputCause: number;
+		if (input.append === false) {
+			const existing = await options.log.read(streamId);
+			inputCause = existing.at(-1)?.seq ?? 0;
+		} else {
+			const appended = await options.log.append(streamId, [
+				{ type: "user.message", text: input.text, ...(imageBlocks(input.images) ? { images: imageBlocks(input.images) } : {}) },
+			]);
+			inputCause = appended.first;
+		}
 		openRun(runId);
-		const queued: QueuedRun = { streamId, runId, input, mode, inputCause: appended.first };
+		const queued: QueuedRun = { streamId, runId, input, mode, inputCause };
 		const active = running.get(streamId);
 		if (active && concurrency === "serial") {
 			void requestCancel(streamId, active.runId);
@@ -397,7 +456,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 		return { runId, accepted: true };
 	};
 
-	const cancel = async (streamId: string, runId: string): Promise<void> => {
+	const cancel = async (streamId: string, runId: string): Promise<boolean> => {
 		// A queued run never started: drop it and leave a terminal event behind.
 		const index = queue.findIndex((item) => item.streamId === streamId && item.runId === runId);
 		if (index >= 0) {
@@ -405,9 +464,12 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 			await append(streamId, [{ type: "run.cancel_requested", runId, by: "user" }]);
 			await append(streamId, [{ type: "run.cancelled", runId, reason: "cancelled" }]);
 			settle(runId, { runId, status: "cancelled", reason: "cancelled" });
-			return;
+			return true;
 		}
+		const run = running.get(streamId);
+		if (!run || run.runId !== runId) return false;
 		await requestCancel(streamId, runId);
+		return true;
 	};
 
 	const wait = (runId: string): Promise<RunTerminal> => {
