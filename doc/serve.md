@@ -60,35 +60,44 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST localhost:8892/streams/<id>/me
 
 `steve-serve` 可以把飞书（Lark）自建应用机器人接成聊天面：群里或私聊里 @ 它，消息会落到一条事件流，由 worker 执行，回答再回到飞书。一个 chat 固定映射到一条流（`sha256("feishu:"+chat_id)` 前 12 位十六进制），所以历史会累积，进程重启后还能接着聊。
 
-**准备**（飞书开放平台，约 5 分钟）：
+事件传输有两种方式：**长连接（默认，推荐）** 与 **HTTP 回调**（兼容旧配置）。长连接由进程主动连飞书，**不需要公网地址、不需要回调 URL，也不需要 Verification Token**。
+
+**准备**（飞书开放平台，约 3 分钟）：
 
 1. 创建**企业自建应用** → 添加「机器人」能力。
 2. 权限：`im:message`（接收消息）与 `im:message:send_as_bot`（发消息）。
-3. 事件订阅：订阅 `im.message.receive_v1`（接收消息 v2.0），请求地址填 `https://<你的公网地址>/feishu/events`（需要公网可达，反代或内网穿透都行；与 ACP 一样，入口本身只监听回环时需要自己加一层）。
-4. 若开启了「加密策略」，把 Encrypt Key 也记下来；同时事件订阅页会给 Verification Token。
+3. 事件订阅：添加事件 `im.message.receive_v1`（接收消息 v2.0）。
+4. 事件接收方式选**「长连接」**（推荐，不需要填写请求地址）。若只能用 HTTP 回调：请求地址填 `https://<你的公网地址>/feishu/events`，并记下事件订阅页的 Verification Token（开启「加密策略」时再记 Encrypt Key）。
 5. 把凭证写进 `.steve/.env`（或直接 export）：
 
 ```bash
 FEISHU_APP_ID="cli_xxxxxxxxxxxxxxxx"
 FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-FEISHU_VERIFICATION_TOKEN="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-# FEISHU_ENCRYPT_KEY="..."   # 只有开启加密策略时
+# FEISHU_MODE="ws"                 # ws（默认，长连接）| http（旧回调）
+# FEISHU_VERIFICATION_TOKEN="..."   # 仅 http 模式需要
+# FEISHU_ENCRYPT_KEY="..."          # 仅 http 模式且开启加密时需要
 ```
 
-**运行**：`steve-serve --port 8892`，启动日志出现 `feishu bot: on` 即生效；`--no-feishu` 可关闭。飞书后台点「保存」时会先发 URL 校验请求，`steve-serve` 直接回 challenge。
+**运行**：`steve-serve --port 8892`（默认长连接），启动日志出现 `feishu bot: on (long connection, ...)` 即生效。切换方式：`--feishu-mode http` 用回调、`--feishu-mode off` 或 `--no-feishu` 关闭；管理后台「网关」页也能切换并查看连接状态。长连接依赖 optional 依赖 `ws`（本仓库 devDependencies 已含；部署时若未安装，启动会记录错误并禁用飞书）。
 
-**行为**：
+**长连接行为**：
 
-- 回调必须在 3 秒内 ACK，所以入口先回 `200`，run 完成后再调 `POST /open-apis/im/v1/messages/:message_id/reply` 回复（tenant_access_token 进程内缓存，提前 2 分钟刷新）。
+- 启动时用 App ID / App Secret 调 `POST /callback/ws/endpoint` 换取 WebSocket 地址，随后主动连接（不校验 Verification Token，连接本身用应用凭据认证）。
+- ping/pong 保活，断线按飞书下发的间隔指数退避重连；大事件按 `sum`/`seq` 分片，收齐后重组。
+- 每条事件处理完回 ack `{"code":200}`；事件到流的映射与回复逻辑和 HTTP 模式完全一致。
+
+**HTTP 回调模式额外说明**：`/feishu/events` 必须先 `200` ACK（飞书 3 秒超时重投）；该路径不走 `--token` 的 Bearer 鉴权（飞书回调无法带自定义头），改用 Verification Token 与（开启加密时的）`X-Lark-Signature` 校验；其余接口仍然要 token。长连接模式下不再注册 `/feishu/events`（返回 404）。
+
+**公共行为**：
+
+- 回复通过 `POST /open-apis/im/v1/messages/:message_id/reply`（tenant_access_token 进程内缓存，提前 2 分钟刷新）。
 - 只处理文本消息；`@_user_1` 之类的 mention key 会被剥掉；非文本、机器人自己发的消息、未知事件类型只记日志不回复。
-- `/feishu/events` 不走 `--token` 的 Bearer 鉴权（飞书回调无法带自定义头），改用 Verification Token 与（开启加密时的）`X-Lark-Signature` 校验；其余接口仍然要 token。
 - 按 `event_id` 去重（飞书超时会重投）。
 - 同一 chat 的 stream 串行执行：新消息若顶掉正在跑的 run，旧 run 的回复会带「执行被取消」。
 - 权限仍走 `steve-serve` 的 `--access` 与审批策略：需要审批（permission: ask）的工具在常驻进程里不会弹窗，会被拒绝并写进事件流；只读/只写类工具按 `--access` 放行。
 - 回复是纯文本（agent 的最终文本；工具调用过程不推给飞书），超过 4000 字截断。
 
-**限制**：只支持 HTTP 回调模式（飞书的长连接需要官方 SDK，本项目不引新依赖）；群聊需 @ 机器人；图片/卡片/富文本暂不处理。
-
+**限制**：群聊需 @ 机器人；图片/卡片/富文本暂不处理；HTTP 回调需要公网可达地址与 Verification Token。
 
 ## Watch 与后台运行
 

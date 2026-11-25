@@ -22,8 +22,12 @@ export const MAX_REPLY_CHARS = 4_000;
 export interface FeishuConfig {
 	appId: string;
 	appSecret: string;
-	/** Token shown on the event subscription page; every callback must carry it. */
-	verificationToken: string;
+	/**
+	 * Event-subscription token. Only used by the HTTP callback transport; the
+	 * long-connection transport authenticates the socket with the app credentials
+	 * instead, so the token can be absent there.
+	 */
+	verificationToken?: string;
 	/** Enables AES-CBC payload decryption and request signature checks. */
 	encryptKey?: string;
 	apiBase?: string;
@@ -164,9 +168,9 @@ function textFromContent(content: string, mentions: unknown): string {
 }
 
 /**
- * Parses one callback request: URL verification, `im.message.receive_v1`, or an
- * ignored event. Token/signature enforcement happens here; the caller only has
- * to turn the result into a response.
+ * Parses one HTTP callback request: URL verification, `im.message.receive_v1`,
+ * or an ignored event. Token/signature enforcement happens here; the caller
+ * only has to turn the result into a response.
  */
 export function parseFeishuCallback(input: { body: string; headers: Headers; config: FeishuConfig }): FeishuCallback {
 	const { body, headers, config } = input;
@@ -177,20 +181,34 @@ export function parseFeishuCallback(input: { body: string; headers: Headers; con
 		payload = jsonBody(decryptFeishuPayload(payload.encrypt, config.encryptKey));
 	}
 	const token = typeof payload.token === "string" ? payload.token : undefined;
-	if (token !== undefined && !sameSecret(token, config.verificationToken)) {
-		throw new FeishuError(401, "Feishu verification token mismatch");
+	if (config.verificationToken !== undefined) {
+		if (token !== undefined && !sameSecret(token, config.verificationToken)) {
+			throw new FeishuError(401, "Feishu verification token mismatch");
+		}
+		if (typeof payload.challenge === "string" && token === undefined) {
+			throw new FeishuError(401, "Feishu challenge without a token");
+		}
+		// v2 events carry their token in `header.token`; classifyFeishuPayload checks it.
 	}
-	if (typeof payload.challenge === "string") {
-		if (token === undefined) throw new FeishuError(401, "Feishu challenge without a token");
-		return { kind: "challenge", challenge: payload.challenge };
-	}
+	if (typeof payload.challenge === "string") return { kind: "challenge", challenge: payload.challenge };
+	return classifyFeishuPayload(payload, config.verificationToken);
+}
+
+/**
+ * Classifies an authenticated v2 event payload. The HTTP transport calls it
+ * after signature/token checks; the long-connection transport calls it directly
+ * because the socket itself was authenticated with the app credentials.
+ */
+export function classifyFeishuPayload(payload: Record<string, unknown>, verificationToken?: string): FeishuCallback {
 	const event = payload.event;
 	const eventHeader = payload.header;
 	if (event === null || typeof event !== "object") return { kind: "ignored", reason: "callback has no event" };
 	if (eventHeader === null || typeof eventHeader !== "object") return { kind: "ignored", reason: "callback has no header" };
-	const headerToken = typeof (eventHeader as { token?: unknown }).token === "string" ? (eventHeader as { token: string }).token : undefined;
-	if (headerToken === undefined || !sameSecret(headerToken, config.verificationToken)) {
-		throw new FeishuError(401, "Feishu verification token mismatch");
+	if (verificationToken !== undefined) {
+		const headerToken = typeof (eventHeader as { token?: unknown }).token === "string" ? (eventHeader as { token: string }).token : undefined;
+		if (headerToken === undefined || !sameSecret(headerToken, verificationToken)) {
+			throw new FeishuError(401, "Feishu verification token mismatch");
+		}
 	}
 	const eventType = typeof (eventHeader as { event_type?: unknown }).event_type === "string" ? (eventHeader as { event_type: string }).event_type : "";
 	if (eventType !== "im.message.receive_v1") return { kind: "ignored", reason: `unsupported event ${eventType}` };
@@ -325,9 +343,9 @@ export function feishuConfigFromEnv(env: NodeJS.ProcessEnv = process.env, logger
 	const appId = env.FEISHU_APP_ID?.trim();
 	const appSecret = env.FEISHU_APP_SECRET?.trim();
 	const verificationToken = env.FEISHU_VERIFICATION_TOKEN?.trim();
-	if (appId === undefined || appSecret === undefined || verificationToken === undefined) {
+	if (appId === undefined || appSecret === undefined) {
 		if (appId !== undefined || appSecret !== undefined || verificationToken !== undefined) {
-			logger?.("feishu: FEISHU_APP_ID, FEISHU_APP_SECRET and FEISHU_VERIFICATION_TOKEN must all be set; bot disabled");
+			logger?.("feishu: FEISHU_APP_ID and FEISHU_APP_SECRET must both be set; bot disabled");
 		}
 		return undefined;
 	}
@@ -336,7 +354,7 @@ export function feishuConfigFromEnv(env: NodeJS.ProcessEnv = process.env, logger
 	return {
 		appId,
 		appSecret,
-		verificationToken,
+		...(verificationToken !== undefined && verificationToken !== "" ? { verificationToken } : {}),
 		...(encryptKey !== undefined && encryptKey !== "" ? { encryptKey } : {}),
 		...(apiBase !== undefined && apiBase !== "" ? { apiBase } : {}),
 		...(logger !== undefined ? { logger } : {}),

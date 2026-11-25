@@ -30,6 +30,7 @@ import { ADMIN_PAGE } from "./admin-page.js";
 import { ADMIN_PAGE_PATHS, createAdminRoutes } from "./admin.js";
 import { startHttpServer, type HttpExchange, type HttpRoute } from "../protocols/http/events.js";
 import {
+	classifyFeishuPayload,
 	createFeishuClient,
 	FEISHU_API_BASE,
 	FeishuError,
@@ -41,6 +42,7 @@ import {
 	type FeishuConfig,
 	type FeishuMessage,
 } from "../protocols/feishu/bot.js";
+import { createFeishuLongConnection } from "../protocols/feishu/long-connection.js";
 import type { WorkspaceAccess } from "../types.js";
 
 const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch + HTTP/SSE
@@ -55,7 +57,9 @@ const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch 
   --access <none|read|write|exec>  工具可用的本地能力（默认 exec）
   --streams-dir <path> 事件日志目录（默认 <cwd>/.steve/streams）
   --no-watch           不启动 .steve/watch.json 触发器
-  --no-feishu          不启用飞书机器人（默认在 FEISHU_* 环境变量齐全时启用）
+  --no-feishu          不启用飞书机器人（等价 --feishu-mode off）
+  --feishu-mode <ws|http|off>  飞书事件传输方式（默认 ws：长连接，无需公网回调；
+                       http 兼容旧的回调地址，需要 FEISHU_VERIFICATION_TOKEN）
   --no-admin           不启用管理后台 /admin（默认启用）
   --log-level <debug|info|warn|error>  日志级别（默认读 .steve/admin.json，兜底 info）
   --log-file <path>    同时把日志追加到文件（默认只写 stderr）
@@ -71,9 +75,11 @@ HTTP API：
   POST /streams/:id/cancel          {runId?}
   POST /streams/:id/approvals       {requestId, decision}
   POST /hooks/:name                 Watch webhook
-  POST /feishu/events               飞书事件回调（需 FEISHU_APP_ID / FEISHU_APP_SECRET /
-                                    FEISHU_VERIFICATION_TOKEN，可选 FEISHU_ENCRYPT_KEY；
-                                    FEISHU_API_BASE 仅供测试覆盖，默认 ${FEISHU_API_BASE}）
+  POST /feishu/events               飞书 HTTP 回调（仅 --feishu-mode http；需 FEISHU_APP_ID /
+                                    FEISHU_APP_SECRET / FEISHU_VERIFICATION_TOKEN，可选
+                                    FEISHU_ENCRYPT_KEY；FEISHU_API_BASE 仅供测试覆盖）
+  长连接模式（默认）不需要回调地址与 Verification Token：只要 FEISHU_APP_ID 与
+  FEISHU_APP_SECRET，在飞书开放平台把事件订阅方式选为「长连接」即可。
 
 管理后台（默认启用；页面不需要 token，API 需要 Bearer token）：
   GET  /admin                       控制台页面（概览 / 模型供应商 / 网关 / 定时任务 / 系统）
@@ -96,6 +102,8 @@ interface ServeOptions {
 	streamsDir?: string;
 	watch: boolean;
 	feishu: boolean;
+	feishuMode: "ws" | "http";
+	feishuModeExplicit: boolean;
 	admin: boolean;
 	logLevel?: LogLevel;
 	logFile?: string;
@@ -108,7 +116,7 @@ function valueFor(argv: readonly string[], index: number, flag: string): string 
 }
 
 function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
-	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true, feishu: true, admin: true };
+	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true, feishu: true, feishuMode: "ws", feishuModeExplicit: false, admin: true };
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index] as string;
 		switch (arg) {
@@ -122,6 +130,17 @@ function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
 			case "--no-feishu":
 				options.feishu = false;
 				break;
+			case "--feishu-mode": {
+				const value = valueFor(argv, index, arg);
+				if (value !== "ws" && value !== "http" && value !== "off") {
+					throw new Error(`--feishu-mode must be ws, http or off (got "${value}")`);
+				}
+				options.feishuMode = value === "off" ? "ws" : value;
+				options.feishuModeExplicit = true;
+				options.feishu = value !== "off";
+				index += 1;
+				break;
+			}
 			case "--no-admin":
 				options.admin = false;
 				break;
@@ -342,10 +361,24 @@ async function main(): Promise<void> {
 		},
 	});
 
-	const feishuConfig = parsed.feishu ? feishuConfigFromEnv(process.env, log) : undefined;
+	// The console / .env file may pin the transport; an explicit flag wins.
+	const envFeishuMode = (() => {
+		const raw = process.env.FEISHU_MODE?.trim().toLowerCase();
+		if (raw === "http") return "http" as const;
+		if (raw === "off" || raw === "none") return "off" as const;
+		return "ws" as const;
+	})();
+	const requestedFeishuMode: "ws" | "http" | "off" = parsed.feishu === false ? "off" : parsed.feishuModeExplicit ? parsed.feishuMode : envFeishuMode;
+	const fromEnv = requestedFeishuMode !== "off" ? feishuConfigFromEnv(process.env, log) : undefined;
+	let feishuConfig: FeishuConfig | undefined = fromEnv;
+	let feishuMode: "ws" | "http" | "off" = feishuConfig === undefined ? "off" : requestedFeishuMode;
+	if (feishuMode === "http" && feishuConfig?.verificationToken === undefined) {
+		log("feishu: http callback mode needs FEISHU_VERIFICATION_TOKEN; use --feishu-mode ws for the long connection");
+		feishuConfig = undefined;
+		feishuMode = "off";
+	}
 	const feishuClient: FeishuClient | undefined = feishuConfig !== undefined ? createFeishuClient(feishuConfig) : undefined;
 	const seenFeishuEvents = new Set<string>();
-	if (feishuConfig !== undefined) log(`feishu bot: on (${feishuConfig.apiBase ?? FEISHU_API_BASE})`);
 
 	const replyToFeishu = async (message: FeishuMessage): Promise<void> => {
 		if (feishuClient === undefined) return;
@@ -364,6 +397,54 @@ async function main(): Promise<void> {
 		const events = await log2.read(streamId, from + 1);
 		await feishuClient.replyText(message.messageId, composeFeishuReply(events, terminal));
 	};
+
+	// Both transports end here: dedupe by event id, then answer asynchronously.
+	const handleFeishuCallback = (callback: FeishuCallback): void => {
+		if (callback.kind === "ignored") {
+			log(`feishu: ignored event (${callback.reason})`);
+			return;
+		}
+		if (callback.kind !== "message") return;
+		if (callback.eventId !== "") {
+			if (seenFeishuEvents.has(callback.eventId)) {
+				log(`feishu: duplicate event ${callback.eventId} ignored`);
+				return;
+			}
+			seenFeishuEvents.add(callback.eventId);
+			if (seenFeishuEvents.size > 1_000) {
+				const oldest = seenFeishuEvents.values().next().value;
+				if (oldest !== undefined) seenFeishuEvents.delete(oldest);
+			}
+		}
+		void replyToFeishu(callback).catch((error: unknown) => {
+			log(`feishu: could not answer ${callback.messageId}: ${error instanceof Error ? error.message : String(error)}`);
+		});
+	};
+
+	const longConnection =
+		feishuMode === "ws" && feishuConfig !== undefined
+			? createFeishuLongConnection({
+					appId: feishuConfig.appId,
+					appSecret: feishuConfig.appSecret,
+					...(feishuConfig.apiBase !== undefined ? { apiBase: feishuConfig.apiBase } : {}),
+					logger: log,
+					onEvent: (payload) => {
+						let callback: FeishuCallback;
+						try {
+							callback = classifyFeishuPayload(payload);
+						} catch (error) {
+							log(`feishu: could not read long-connection event: ${error instanceof Error ? error.message : String(error)}`);
+							return;
+						}
+						handleFeishuCallback(callback);
+					},
+				})
+			: undefined;
+	longConnection?.start();
+	if (feishuMode !== "off" && feishuConfig !== undefined) {
+		const transport = feishuMode === "ws" ? "long connection" : "http callback";
+		log(`feishu bot: on (${transport}, ${feishuConfig.apiBase ?? FEISHU_API_BASE})`);
+	}
 
 	// Watch triggers fire `user.message` events; the worker is pulled in by them.
 	const claims = new Set<number>();
@@ -552,8 +633,9 @@ async function main(): Promise<void> {
 			method: "POST",
 			path: "/feishu/events",
 			handle: async (exchange) => {
-				if (feishuConfig === undefined || feishuClient === undefined) {
-					exchange.json(404, { error: "feishu disabled" });
+				if (feishuMode !== "http" || feishuConfig === undefined) {
+					const error = feishuMode === "ws" ? "feishu long connection mode; use the WebSocket transport" : "feishu disabled";
+					exchange.json(404, { error });
 					return;
 				}
 				const headers: Record<string, string | string[] | undefined> = {};
@@ -574,24 +656,7 @@ async function main(): Promise<void> {
 				}
 				// Feishu retries unless the callback is acknowledged within 3 seconds.
 				exchange.json(200, {});
-				if (callback.kind === "ignored") {
-					log(`feishu: ignored event (${callback.reason})`);
-					return;
-				}
-				if (callback.eventId !== "") {
-					if (seenFeishuEvents.has(callback.eventId)) {
-						log(`feishu: duplicate event ${callback.eventId} ignored`);
-						return;
-					}
-					seenFeishuEvents.add(callback.eventId);
-					if (seenFeishuEvents.size > 1_000) {
-						const oldest = seenFeishuEvents.values().next().value;
-						if (oldest !== undefined) seenFeishuEvents.delete(oldest);
-					}
-				}
-				void replyToFeishu(callback).catch((error: unknown) => {
-					log(`feishu: could not answer ${callback.messageId}: ${error instanceof Error ? error.message : String(error)}`);
-				});
+				handleFeishuCallback(callback);
 			},
 		},
 	];
@@ -608,12 +673,19 @@ async function main(): Promise<void> {
 				worker,
 				logger,
 				restart,
+				feishuStatus: () => ({
+					mode: feishuMode,
+					configured: feishuConfig !== undefined,
+					...(longConnection !== undefined
+						? { connected: longConnection.status().connected, attempts: longConnection.status().attempts, ...(longConnection.status().lastError !== undefined ? { lastError: longConnection.status().lastError } : {}) }
+						: {}),
+				}),
 			}),
 		);
 	}
 
 	const publicPaths: string[] = [];
-	if (feishuConfig !== undefined) publicPaths.push("/feishu/events");
+	if (feishuMode === "http") publicPaths.push("/feishu/events");
 	if (parsed.admin) publicPaths.push(...ADMIN_PAGE_PATHS);
 
 	const server = await startHttpServer({
@@ -631,6 +703,7 @@ async function main(): Promise<void> {
 		if (closing) return;
 		closing = true;
 		log(`shutting down (${reason})`);
+		longConnection?.stop();
 		await engine?.stop();
 		for (const unsubscribe of triggerUnsubscribes.splice(0)) unsubscribe();
 		await worker.drain();

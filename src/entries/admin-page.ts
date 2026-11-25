@@ -358,6 +358,9 @@ table.data tbody tr:last-child td { border-bottom: 0; }
 
 /* ---------- 表单 ---------- */
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+.radio-row { display: flex; flex-wrap: wrap; gap: 10px 22px; padding-top: 4px; }
+.radio { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--text); cursor: pointer; }
+.radio input { accent-color: var(--accent); width: 15px; height: 15px; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field.full { grid-column: 1 / -1; }
 .field label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
@@ -651,7 +654,7 @@ pre.code {
         <div class="page-head">
           <div>
             <h1 class="page-title">网关</h1>
-            <p class="page-desc">把事件流接入聊天网关。飞书机器人使用自建应用，事件订阅回调地址为 <span class="mono">/feishu/events</span>，需要公网可访问地址。</p>
+            <p class="page-desc">把事件流接入聊天网关。飞书机器人默认使用<b>长连接</b>接收事件，不需要公网回调地址；也可以切换为 HTTP 回调（<span class="mono">/feishu/events</span>，需要公网可访问地址）。</p>
           </div>
         </div>
         <div class="card card-pad">
@@ -666,6 +669,13 @@ pre.code {
           </div>
           <form id="gatewayForm" novalidate>
             <div class="form-grid mt">
+              <div class="field full">
+                <label>事件接收方式</label>
+                <div class="radio-row">
+                  <label class="radio"><input type="radio" name="gw-mode" value="ws" checked> 长连接（推荐，无需公网地址）</label>
+                  <label class="radio"><input type="radio" name="gw-mode" value="http"> HTTP 回调（需公网地址与 Verification Token）</label>
+                </div>
+              </div>
               <div class="field">
                 <label for="gw-appId">App ID</label>
                 <input id="gw-appId" type="text" placeholder="留空保持不变" autocomplete="off">
@@ -1512,13 +1522,23 @@ pre.code {
       else if (hasAny) statusElement.innerHTML = badge("部分配置", "warn");
       else statusElement.innerHTML = badge("未配置", "muted");
     }
+    var mode = feishu.mode === "http" ? "http" : "ws";
+    (document.querySelectorAll('input[name="gw-mode"]') || []).forEach(function (input) {
+      input.checked = input.value === mode;
+    });
+    var connection = feishu.connection || {};
     var details = byId("feishuDetails");
     if (details) {
       var rows = "";
+      rows += kvRow("事件接收方式", mode === "ws" ? badge("长连接", "ok") : badge("HTTP 回调", "warn"));
+      if (mode === "ws") {
+        var link = connection.connected ? badge("已连接", "ok") : badge("连接中" + (connection.attempts ? "（第 " + connection.attempts + " 次）" : ""), "warn");
+        rows += kvRow("连接状态", link + (connection.lastError ? ' <span class="muted small">' + escapeHtml(String(connection.lastError)) + "</span>" : ""));
+      }
       rows += kvRow("API Base", '<span class="mono">' + escapeHtml(display(feishu.apiBase)) + "</span>");
       rows += kvRow("App ID", '<span class="mono">' + escapeHtml(display(feishu.appIdMasked)) + "</span>");
       rows += kvRow("App Secret", feishu.hasSecret ? badge("已设置", "ok") : badge("未设置", "muted"));
-      rows += kvRow("Verification Token", feishu.hasVerificationToken ? badge("已设置", "ok") : badge("未设置", "muted"));
+      rows += kvRow("Verification Token", mode === "ws" ? badge("长连接不需要", "muted") : feishu.hasVerificationToken ? badge("已设置", "ok") : badge("未设置", "muted"));
       rows += kvRow("Encrypt Key", feishu.hasEncryptKey ? badge("已设置", "ok") : badge("未设置（可选）", "muted"));
       details.innerHTML = rows;
     }
@@ -1528,6 +1548,10 @@ pre.code {
 
   function saveGateway() {
     var feishu = {};
+    var currentGateway = (state.gateways && state.gateways.feishu) || {};
+    var modeInput = document.querySelector('input[name="gw-mode"]:checked');
+    var mode = modeInput ? modeInput.value : "ws";
+    if (mode !== (currentGateway.mode === "http" ? "http" : "ws")) feishu.mode = mode;
     var appId = valueOf("gw-appId").trim();
     var appSecret = valueOf("gw-appSecret").trim();
     var verificationToken = valueOf("gw-verificationToken").trim();

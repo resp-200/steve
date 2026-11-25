@@ -46,6 +46,14 @@ export interface AdminDeps {
 	logger: LeveledLogger;
 	/** Called after the response for POST /admin/api/system/restart has flushed. */
 	restart: () => void;
+	/** Live Feishu transport state supplied by the server entry. */
+	feishuStatus?: () => {
+		mode?: "ws" | "http" | "off";
+		configured?: boolean;
+		connected?: boolean;
+		attempts?: number;
+		lastError?: string;
+	};
 }
 
 export const ADMIN_PAGE_PATHS = ["/admin", "/admin/"] as const;
@@ -198,13 +206,19 @@ function maskFileContent(path: string, content: string): string {
 	return content;
 }
 
-function feishuState(): { configured: boolean; appId: string; appSecret: string; verificationToken: string; encryptKey: string; apiBase: string } {
+function feishuMode(): "ws" | "http" {
+	return process.env.FEISHU_MODE?.trim().toLowerCase() === "http" ? "http" : "ws";
+}
+
+function feishuState(): { mode: "ws" | "http"; configured: boolean; appId: string; appSecret: string; verificationToken: string; encryptKey: string; apiBase: string } {
+	const mode = feishuMode();
 	const appId = process.env.FEISHU_APP_ID?.trim() ?? "";
 	const appSecret = process.env.FEISHU_APP_SECRET?.trim() ?? "";
 	const verificationToken = process.env.FEISHU_VERIFICATION_TOKEN?.trim() ?? "";
 	const encryptKey = process.env.FEISHU_ENCRYPT_KEY?.trim() ?? "";
 	const apiBase = process.env.FEISHU_API_BASE?.trim() || FEISHU_API_BASE_DEFAULT;
-	return { configured: appId !== "" && appSecret !== "" && verificationToken !== "", appId, appSecret, verificationToken, encryptKey, apiBase };
+	const configured = appId !== "" && appSecret !== "" && (mode === "ws" || verificationToken !== "");
+	return { mode, configured, appId, appSecret, verificationToken, encryptKey, apiBase };
 }
 
 export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
@@ -364,14 +378,23 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 			path: `${ADMIN_API}/gateways`,
 			handle: (exchange) => {
 				const feishu = feishuState();
+				const live = deps.feishuStatus?.() ?? {};
 				exchange.json(200, {
 					feishu: {
+						mode: feishu.mode,
 						configured: feishu.configured,
+						verificationTokenRequired: feishu.mode === "http",
 						appIdMasked: maskSecretValue(feishu.appId),
 						hasSecret: feishu.appSecret !== "",
 						hasVerificationToken: feishu.verificationToken !== "",
 						hasEncryptKey: feishu.encryptKey !== "",
 						apiBase: feishu.apiBase,
+						connection: {
+							mode: live.mode ?? feishu.mode,
+							connected: live.connected ?? false,
+							attempts: live.attempts ?? 0,
+							...(live.lastError !== undefined ? { lastError: live.lastError } : {}),
+						},
 					},
 					available: ["feishu"],
 					planned: ["wecom", "qq"],
@@ -401,7 +424,18 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					updates.FEISHU_VERIFICATION_TOKEN = "";
 					updates.FEISHU_ENCRYPT_KEY = "";
 					updates.FEISHU_API_BASE = "";
+					updates.FEISHU_MODE = "";
 				} else if (feishu !== undefined) {
+					let nextMode: "ws" | "http" = feishuMode();
+					if (feishu.mode !== undefined) {
+						const mode = asString(feishu.mode).toLowerCase();
+						if (mode !== "ws" && mode !== "http") {
+							fail(exchange, 400, 'feishu.mode must be "ws" or "http"');
+							return;
+						}
+						nextMode = mode;
+						updates.FEISHU_MODE = mode;
+					}
 					const mapping: [string, unknown][] = [
 						["FEISHU_APP_ID", feishu.appId],
 						["FEISHU_APP_SECRET", feishu.appSecret],
@@ -413,6 +447,13 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 						if (raw === undefined) continue;
 						const value = asString(raw);
 						if (value !== "") updates[key] = value;
+					}
+					if (nextMode === "http") {
+						const token = updates.FEISHU_VERIFICATION_TOKEN ?? process.env.FEISHU_VERIFICATION_TOKEN?.trim() ?? "";
+						if (token === "") {
+							fail(exchange, 400, "http callback mode needs a verification token");
+							return;
+						}
 					}
 				}
 				if (Object.keys(updates).length === 0) {

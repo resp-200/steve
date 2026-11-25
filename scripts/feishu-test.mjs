@@ -22,6 +22,8 @@ const SERVE_PORT = 8942;
 const ENCRYPTED_PORT = 8944;
 const MOCK_PORT = 8943;
 const FEISHU_PORT = 8941;
+const WS_PORT = 8946;
+const WS_SERVE_PORT = 8947;
 
 const TOKEN = "feishu-serve-token";
 const APP_ID = "cli_feishu_test";
@@ -108,6 +110,7 @@ async function waitForPort(port, label, token) {
 function startFakeFeishu() {
 	const replies = [];
 	const tokenCalls = [];
+	const endpointCalls = [];
 	const server = createServer((request, response) => {
 		const chunks = [];
 		request.on("data", (chunk) => chunks.push(chunk));
@@ -118,6 +121,18 @@ function startFakeFeishu() {
 				response.writeHead(status, { "content-type": "application/json" });
 				response.end(JSON.stringify(payload));
 			};
+			if (request.url === "/callback/ws/endpoint") {
+				endpointCalls.push({ body: parsed, headers: { locale: request.headers.locale, "user-agent": request.headers["user-agent"] } });
+				reply(200, {
+					code: 0,
+					msg: "ok",
+					data: {
+						URL: `ws://127.0.0.1:${WS_PORT}/?device_id=dev-test&service_id=42`,
+						ClientConfig: { PingInterval: 5, ReconnectCount: 3, ReconnectInterval: 1, ReconnectNonce: 1 },
+					},
+				});
+				return;
+			}
 			if (request.url === "/open-apis/auth/v3/tenant_access_token/internal") {
 				tokenCalls.push({ body: parsed });
 				reply(200, { code: 0, msg: "ok", tenant_access_token: TENANT_TOKEN, expire: 7200 });
@@ -132,7 +147,7 @@ function startFakeFeishu() {
 		});
 	});
 	return new Promise((resolve) => {
-		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls }));
+		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls }));
 	});
 }
 
@@ -144,6 +159,7 @@ const mockEnv = {
 };
 
 const feishuEnv = {
+	FEISHU_MODE: "http",
 	FEISHU_APP_ID: APP_ID,
 	FEISHU_APP_SECRET: APP_SECRET,
 	FEISHU_VERIFICATION_TOKEN: VERIFICATION_TOKEN,
@@ -344,7 +360,109 @@ try {
 	const encryptedMessage = await postCallback(ENCRYPTED_PORT, encryptedMessageBody, signedHeaders(encryptedMessageBody, ENCRYPT_KEY));
 	check("加密消息回调 200", encryptedMessage.status === 200, `status ${encryptedMessage.status}`);
 
-	// F. Disabled without credentials
+	// F. Long connection (WebSocket event subscription; no public callback)
+	let wsModule;
+	try {
+		wsModule = await import("ws");
+	} catch {
+		wsModule = undefined;
+	}
+	if (wsModule === undefined) {
+		process.stdout.write("  - `ws` is not installed; skipping long-connection checks\n");
+	} else {
+		const { WebSocketServer } = wsModule;
+		const { encodeFrame, decodeFrame } = await import("../dist/protocols/feishu/long-connection.js");
+		const frames = [];
+		let connected = false;
+		let serverSocket;
+		const wss = new WebSocketServer({ host: "127.0.0.1", port: WS_PORT });
+		await new Promise((resolve) => wss.once("listening", resolve));
+		wss.on("connection", (socket) => {
+			connected = true;
+			serverSocket = socket;
+			socket.on("message", (data) => {
+				let frame;
+				try {
+					frame = decodeFrame(new Uint8Array(data));
+				} catch (error) {
+					frames.push({ error: String(error) });
+					return;
+				}
+				frames.push(frame);
+				const type = frame.headers.find((header) => header.key === "type")?.value;
+				if (frame.method === 0 && type === "ping") {
+					socket.send(
+						encodeFrame({
+							service: frame.service,
+							method: 0,
+							headers: [{ key: "type", value: "pong" }],
+							payload: Buffer.from(JSON.stringify({ PingInterval: 5, ReconnectCount: 3, ReconnectInterval: 1, ReconnectNonce: 1 }), "utf8"),
+						}),
+					);
+				}
+			});
+		});
+
+		const wsServe = start("serve-ws", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(WS_SERVE_PORT), "--token", TOKEN], {
+			cwd: workspace,
+			env: { ...process.env, ...mockEnv, ...feishuEnv, FEISHU_MODE: "ws", HOME: home, MOCK_PORT: String(MOCK_PORT) },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		children.push(wsServe);
+		await waitForPort(WS_SERVE_PORT, "long-connection serve /health", TOKEN);
+		await waitFor(() => connected, { label: "long-connection websocket", timeout: 20_000 });
+
+		check("长连接：用 app 凭据请求发现端点", fakeFeishu.endpointCalls.some((call) => call.body.AppID === APP_ID && call.body.AppSecret === APP_SECRET), String(fakeFeishu.endpointCalls.length));
+		await waitFor(() => frames.some((frame) => frame.method === 0 && frame.headers.some((header) => header.key === "type" && header.value === "ping")), { label: "long-connection ping" });
+		const ping = frames.find((frame) => frame.method === 0 && frame.headers.some((header) => header.key === "type" && header.value === "ping"));
+		check("长连接：收到 ping 控制帧", ping !== undefined);
+		check("长连接：ping 使用端点的 service_id", ping !== undefined && ping.service === 42 && ping.headers.some((header) => header.key === "type" && header.value === "ping"), String(ping?.service));
+
+		// Deliver one message as two fragments, as Feishu does for larger events.
+		const eventBody = JSON.stringify(messageEvent({ eventId: "evt_feishu_long_connection" }));
+		const half = Math.ceil(eventBody.length / 2);
+		const fragments = [eventBody.slice(0, half), eventBody.slice(half)];
+		const beforeReplies = fakeFeishu.replies.length;
+		fragments.forEach((fragment, index) => {
+			serverSocket.send(
+				encodeFrame({
+					service: 42,
+					method: 1,
+					headers: [
+						{ key: "type", value: "event" },
+						{ key: "message_id", value: "lc-msg-1" },
+						{ key: "sum", value: "2" },
+						{ key: "seq", value: String(index + 1) },
+						{ key: "trace_id", value: "trace-lc-1" },
+					],
+					payload: Buffer.from(fragment, "utf8"),
+				}),
+			);
+		});
+		await waitFor(() => frames.some((frame) => frame.method === 1 && frame.payload !== undefined && Buffer.from(frame.payload).toString("utf8").includes('"code":200')), { label: "long-connection ack" });
+		const ack = frames.find((frame) => frame.method === 1 && frame.payload !== undefined && Buffer.from(frame.payload).toString("utf8").includes('"code":200'));
+		check("长连接：分片事件收齐后 ack code=200", ack !== undefined);
+		check("长连接：ack 带 biz_rt 头", ack !== undefined && ack.headers.some((header) => header.key === "biz_rt"), JSON.stringify(ack?.headers ?? []));
+
+		const longStreamId = streamIdForChat(CHAT_ID);
+		await waitFor(() => readStreamEvents(streamsDir, longStreamId).some((event) => event.type === "run.settled"), { label: "long-connection run settled", timeout: 30_000 });
+		const longEvents = readStreamEvents(streamsDir, longStreamId);
+		check("长连接：消息写入同一条 chat 流", longEvents.some((event) => event.type === "user.message" && event.text === "你好"));
+		await waitFor(() => fakeFeishu.replies.length > beforeReplies, { label: "long-connection reply", timeout: 30_000 });
+		const longReply = fakeFeishu.replies.at(-1);
+		check("长连接：用 Open API 回复", longReply !== undefined && longReply.path === `/open-apis/im/v1/messages/${MESSAGE_ID}/reply`, String(longReply?.path));
+		check("长连接：回复文本是 agent 的回答", longReply !== undefined && JSON.parse(longReply.body.content).text.includes(REPLY_TEXT), String(longReply?.body?.content ?? ""));
+
+		const wsCallback = await postCallback(WS_SERVE_PORT, messageEvent({ eventId: "evt_feishu_ws_http" }), callbackHeaders({ authorization: `Bearer ${TOKEN}` }));
+		check("长连接模式下 HTTP 回调返回 404", wsCallback.status === 404, `status ${wsCallback.status} ${wsCallback.text}`);
+		check("长连接模式下 HTTP 回调提示改用 WebSocket", wsCallback.text.includes("long connection mode"), wsCallback.text);
+
+		await stop(wsServe.child);
+		wss.close();
+		check("长连接：停止服务后连接关闭", true);
+	}
+
+	// G. Disabled without credentials
 	const disabledServe = start(
 		"serve-no-feishu",
 		process.execPath,
