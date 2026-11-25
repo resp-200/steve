@@ -1485,7 +1485,7 @@ pre.code {
    */
   function parseHeadersText(text) {
     var out = {};
-    var lines = String(text || "").split(/\r?\n/);
+    var lines = String(text || "").split(NEWLINE);
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim();
       if (!line || line.charAt(0) === "#") continue;

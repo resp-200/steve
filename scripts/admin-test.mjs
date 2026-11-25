@@ -165,6 +165,26 @@ try {
 		typeof page.body === "string" && page.body.includes('id="modelPicker"') && page.body.includes('id="pv-modelRows"') && page.body.includes('id="pv-pickModels"'),
 	);
 
+	// The page ships its JS inline. A syntax error there leaves every API healthy
+	// while the browser silently shows "连接中" forever, so compile what we serve.
+	// The page is one big template literal, and an escape such as /\r?\n/ inside it
+	// arrives here as a real CR/LF, turning the regex into an unterminated one.
+	const inlineScripts = [...String(page.body).matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+	check("页面带内联脚本", inlineScripts.length > 0, `${inlineScripts.length} scripts`);
+	const scriptErrors = [];
+	for (const [index, source] of inlineScripts.entries()) {
+		try {
+			new Function(source);
+		} catch (error) {
+			scriptErrors.push(`script #${index}: ${error.message}`);
+		}
+	}
+	check("页面内联脚本都能编译（语法错误会让页面永远停在「连接中」）", scriptErrors.length === 0, scriptErrors.join("; "));
+	check(
+		"页面内联脚本不含裸转义序列（模板字符串里会被还原成真字符）",
+		inlineScripts.every((source) => !/\\[a-zA-Z]/.test(source.replace(/\\\\/g, ""))),
+	);
+
 	const unauthorized = await request("GET", "/admin/api/overview", { headers: {} });
 	check("管理 API 缺少 token 返回 401", unauthorized.status === 401, `status ${unauthorized.status}`);
 

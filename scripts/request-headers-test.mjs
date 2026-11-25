@@ -37,8 +37,8 @@ const provider = (over = {}) => ({
 	name: "opencode",
 	baseUrl: "https://opencode.ai/zen/go/v1",
 	apiKey: "sk-test",
-	defaultModel: "deepseek-v4.1-flash",
-	models: ["deepseek-v4.1-flash"],
+	defaultModel: "some-model",
+	models: ["some-model"],
 	reasoning: false,
 	...over,
 });
