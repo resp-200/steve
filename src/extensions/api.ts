@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { Type } from "../features/contract.js";
 import type { AgentMessage, AgentTool } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
+import type { TriggerRegistration } from "../features/trigger.js";
 import type { McpServerStatus, ModelInfo, WorkspacePolicy } from "../types.js";
 
 // Plugin-facing re-exports: authors import everything from this module.
@@ -145,6 +146,11 @@ export interface ExtensionAPI {
 	registerCommand(command: PluginCommand): void;
 	/** Contributes an MCP server; the core connects it and merges its tools. */
 	registerMcpServer(server: PluginMcpServer): void;
+	/**
+	 * Contributes a watch trigger: a standing rule that, when it fires, starts a
+	 * run on a stream. The engine lives in the core; a plugin only declares it.
+	 */
+	registerTrigger(registration: TriggerRegistration): void;
 }
 
 /** What the API recorded, in the order plugins registered it. */
@@ -157,6 +163,7 @@ export interface ExtensionRecords {
 	tools: PluginTool[];
 	mcpServers: PluginMcpServer[];
 	commands: PluginCommand[];
+	triggers: TriggerRegistration[];
 }
 
 export type PluginFactory = (api: ExtensionAPI) => unknown | Promise<unknown>;
@@ -171,6 +178,7 @@ export function createExtensionAPI(ctx: ExtensionContext): { api: ExtensionAPI; 
 		tools: [],
 		commands: [],
 		mcpServers: [],
+		triggers: [],
 	};
 
 	const on = (event: string, handler: (...args: never[]) => unknown): void => {
@@ -220,6 +228,18 @@ export function createExtensionAPI(ctx: ExtensionContext): { api: ExtensionAPI; 
 				throw new Error(`registerMcpServer("${server.name}") needs a command (only the stdio transport is supported)`);
 			}
 			records.mcpServers.push(server);
+		},
+		registerTrigger: (registration) => {
+			if (!registration?.name || typeof registration.name !== "string") {
+				throw new Error("registerTrigger needs a name");
+			}
+			if (!registration.spec || typeof registration.spec !== "object") {
+				throw new Error(`registerTrigger("${registration.name}") needs a spec`);
+			}
+			if (registration.mode !== "foreground" && registration.mode !== "background") {
+				throw new Error(`registerTrigger("${registration.name}") needs mode "foreground" or "background"`);
+			}
+			records.triggers.push(registration);
 		},
 	};
 

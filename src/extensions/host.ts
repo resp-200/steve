@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import type { AgentMessage } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
 import type { ToolAnnotations } from "../features/tool-annotations.js";
+import type { TriggerRegistration } from "../features/trigger.js";
 import {
 	createExtensionAPI,
 	createExtensionContext,
@@ -41,6 +42,7 @@ import {
 import { demoTools } from "./builtin/demo-tools.js";
 import { localTools } from "./builtin/local-tools.js";
 import { mcpConfig } from "./builtin/mcp-config.js";
+import { watchConfig } from "./builtin/watch-config.js";
 import { sessionCommands } from "./builtin/session-commands.js";
 import { discoverExtensionFiles, discoveryEnabled, pluginPaths } from "./discovery.js";
 
@@ -101,6 +103,8 @@ export interface ExtensionHost {
 	hasCommand(name: string): boolean;
 	/** MCP servers the plugins asked for (the core connects them). */
 	readonly mcpServers: PluginMcpServer[];
+	/** Watch triggers the plugins declared (the core registers them). */
+	readonly triggers: TriggerRegistration[];
 	/** Tool names plugins marked as needing approval. */
 	permissionRequired(): string[];
 	/** Presentation hints a plugin declared for a tool, if any. */
@@ -141,6 +145,7 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 					{ label: "builtin:local-tools", factory: localTools as PluginFactory },
 					{ label: "builtin:demo-tools", factory: demoTools as PluginFactory },
 					{ label: "builtin:mcp-config", factory: mcpConfig as PluginFactory },
+					{ label: "builtin:watch-config", factory: watchConfig as PluginFactory },
 				]),
 	];
 
@@ -211,6 +216,7 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 	const tools = loaded.flatMap((plugin) => plugin.records.tools);
 	const commands = loaded.flatMap((plugin) => plugin.records.commands);
 	const mcpServers = loaded.flatMap((plugin) => plugin.records.mcpServers);
+	const triggers = loaded.flatMap((plugin) => plugin.records.triggers);
 	const counts = {
 		toolCall: loaded.reduce((total, plugin) => total + plugin.records.toolCallHandlers.length, 0),
 		toolResult: loaded.reduce((total, plugin) => total + plugin.records.toolResultHandlers.length, 0),
@@ -228,6 +234,7 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 		tools,
 		commands,
 		mcpServers,
+		triggers,
 		counts,
 
 		permissionRequired: () => tools.filter((tool) => tool.permission === "ask").map((tool) => tool.name),

@@ -71,6 +71,7 @@ run("插件", "node", ["scripts/plugin-test.mjs"]);
 run("会话持久化", "node", ["scripts/session-test.mjs"]);
 run("事件日志（stream-log + 兼容层）", "node", ["scripts/stream-log-test.mjs"]);
 run("状态折叠（state-fold）", "node", ["scripts/state-fold-test.mjs"]);
+run("触发器（trigger）", "node", ["scripts/trigger-test.mjs"]);
 run("事件投影（projection）", "node", ["scripts/projection-test.mjs"]);
 run("环境快照（environment）", "node", ["scripts/environment-test.mjs"]);
 run("运行执行器（worker）", "node", ["scripts/worker-test.mjs"]);

@@ -56,6 +56,7 @@
 		"sessions:test": "node scripts/session-test.mjs",
 		"streams:test": "node scripts/stream-log-test.mjs",
 		"folds:test": "node scripts/state-fold-test.mjs",
+		"triggers:test": "node scripts/trigger-test.mjs",
 		"projections:test": "node scripts/projection-test.mjs",
 		"environments:test": "node scripts/environment-test.mjs",
 		"workers:test": "node scripts/worker-test.mjs",
