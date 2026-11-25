@@ -677,7 +677,12 @@ async function main(): Promise<void> {
 					mode: feishuMode,
 					configured: feishuConfig !== undefined,
 					...(longConnection !== undefined
-						? { connected: longConnection.status().connected, attempts: longConnection.status().attempts, ...(longConnection.status().lastError !== undefined ? { lastError: longConnection.status().lastError } : {}) }
+						? {
+								connected: longConnection.status().connected,
+								attempts: longConnection.status().attempts,
+								fatal: longConnection.status().fatal,
+								...(longConnection.status().lastError !== undefined ? { lastError: longConnection.status().lastError } : {}),
+							}
 						: {}),
 				}),
 			}),

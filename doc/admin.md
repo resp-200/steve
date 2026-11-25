@@ -50,7 +50,8 @@ steve-serve --port 8892 --token <你的-token>
 `available / planned` 返回，后续新增网关不需要改页面结构。
 
 - 展示飞书是否已配置、App ID 掩码、secret / verification token / encrypt key 是否已
-  设置、API Base，以及**事件接收方式**（长连接 / HTTP 回调）与长连接实时状态。
+  设置、API Base，以及**事件接收方式**（长连接 / HTTP 回调）与长连接实时状态
+  （已连接 / 重试中 / 凭据错误导致的「已停止（配置错误）」）。
 - 事件接收方式可选「长连接」（默认，不需要公网地址与 Verification Token）或
   「HTTP 回调」（需要公网地址与 Verification Token），保存时写 `FEISHU_MODE`。
 - 表单保存写入 `.steve/.env` 的 `FEISHU_*`，留空表示保持不变；「清空网关配置」会删掉

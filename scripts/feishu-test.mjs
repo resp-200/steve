@@ -24,6 +24,8 @@ const MOCK_PORT = 8943;
 const FEISHU_PORT = 8941;
 const WS_PORT = 8946;
 const WS_SERVE_PORT = 8947;
+const FATAL_SERVE_PORT = 8948;
+const FATAL_APP_ID = "cli_feishu_fatal";
 
 const TOKEN = "feishu-serve-token";
 const APP_ID = "cli_feishu_test";
@@ -123,6 +125,10 @@ function startFakeFeishu() {
 			};
 			if (request.url === "/callback/ws/endpoint") {
 				endpointCalls.push({ body: parsed, headers: { locale: request.headers.locale, "user-agent": request.headers["user-agent"] } });
+				if (parsed.AppID === FATAL_APP_ID) {
+					reply(200, { code: 514, msg: "auth_failed" });
+					return;
+				}
 				reply(200, {
 					code: 0,
 					msg: "ok",
@@ -374,11 +380,13 @@ try {
 		const { encodeFrame, decodeFrame } = await import("../dist/protocols/feishu/long-connection.js");
 		const frames = [];
 		let connected = false;
+		let connectionCount = 0;
 		let serverSocket;
 		const wss = new WebSocketServer({ host: "127.0.0.1", port: WS_PORT });
 		await new Promise((resolve) => wss.once("listening", resolve));
 		wss.on("connection", (socket) => {
 			connected = true;
+			connectionCount += 1;
 			serverSocket = socket;
 			socket.on("message", (data) => {
 				let frame;
@@ -457,9 +465,64 @@ try {
 		check("长连接模式下 HTTP 回调返回 404", wsCallback.status === 404, `status ${wsCallback.status} ${wsCallback.text}`);
 		check("长连接模式下 HTTP 回调提示改用 WebSocket", wsCallback.text.includes("long connection mode"), wsCallback.text);
 
+		// Drop the socket from the server side: the client must rediscover and reconnect.
+		const endpointsBeforeReconnect = fakeFeishu.endpointCalls.length;
+		serverSocket.close();
+		await waitFor(() => connectionCount >= 2, { label: "long-connection reconnect", timeout: 30_000 });
+		check("长连接：断线后自动重连", connectionCount >= 2, `${connectionCount} connections`);
+		check("长连接：重连时重新请求发现端点", fakeFeishu.endpointCalls.length > endpointsBeforeReconnect, `${fakeFeishu.endpointCalls.length} endpoint calls`);
+		const repliesBeforeReconnect = fakeFeishu.replies.length;
+		const reconnectBody = JSON.stringify(messageEvent({ eventId: "evt_feishu_long_connection_reconnect" }));
+		const reconnectHalf = Math.ceil(reconnectBody.length / 2);
+		[reconnectBody.slice(0, reconnectHalf), reconnectBody.slice(reconnectHalf)].forEach((fragment, index) => {
+			serverSocket.send(
+				encodeFrame({
+					service: 42,
+					method: 1,
+					headers: [
+						{ key: "type", value: "event" },
+						{ key: "message_id", value: "lc-msg-2" },
+						{ key: "sum", value: "2" },
+						{ key: "seq", value: String(index + 1) },
+					],
+					payload: Buffer.from(fragment, "utf8"),
+				}),
+			);
+		});
+		await waitFor(() => fakeFeishu.replies.length > repliesBeforeReconnect, { label: "reply after reconnect", timeout: 30_000 });
+		check("长连接：重连后仍能收事件并回复", fakeFeishu.replies.length > repliesBeforeReconnect);
+
 		await stop(wsServe.child);
 		wss.close();
 		check("长连接：停止服务后连接关闭", true);
+
+		// Bad credentials are fatal: one discovery attempt, then the client stops
+		// retrying and the admin gateway reports the state.
+		const fatalServe = start("serve-fatal", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(FATAL_SERVE_PORT), "--token", TOKEN], {
+			cwd: workspace,
+			env: { ...process.env, ...mockEnv, ...feishuEnv, FEISHU_MODE: "ws", FEISHU_APP_ID: FATAL_APP_ID, HOME: home, MOCK_PORT: String(MOCK_PORT) },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		children.push(fatalServe);
+		await waitForPort(FATAL_SERVE_PORT, "fatal serve /health", TOKEN);
+		const gateway = await waitFor(
+			async () => {
+				const response = await fetch(`http://127.0.0.1:${FATAL_SERVE_PORT}/admin/api/gateways`, { headers: { authorization: `Bearer ${TOKEN}` } });
+				if (!response.ok) return undefined;
+				const body = await response.json();
+				return body?.feishu?.connection?.fatal === true ? body.feishu.connection : undefined;
+			},
+			{ label: "fatal gateway state", timeout: 20_000 },
+		);
+		check("长连接：错误凭证标记为 fatal", gateway.fatal === true);
+		check("长连接：错误凭证记录原因", String(gateway.lastError ?? "").includes("514") || String(gateway.lastError ?? "").includes("auth_failed"), String(gateway.lastError));
+		const fatalCalls = fakeFeishu.endpointCalls.filter((call) => call.body.AppID === FATAL_APP_ID).length;
+		await sleepAsync(1_200);
+		const fatalCallsAfter = fakeFeishu.endpointCalls.filter((call) => call.body.AppID === FATAL_APP_ID).length;
+		check("长连接：错误凭证不再重试", fatalCallsAfter === fatalCalls, `${fatalCalls} -> ${fatalCallsAfter}`);
+		const fatalHealth = await fetch(`http://127.0.0.1:${FATAL_SERVE_PORT}/health`, { headers: { authorization: `Bearer ${TOKEN}` } });
+		check("长连接：错误凭证不影响 HTTP 服务", fatalHealth.status === 200, `status ${fatalHealth.status}`);
+		await stop(fatalServe.child);
 	}
 
 	// G. Disabled without credentials

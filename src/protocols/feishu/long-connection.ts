@@ -221,6 +221,8 @@ export interface FeishuLongConnectionClientConfig {
 export interface FeishuLongConnectionStatus {
 	connected: boolean;
 	attempts: number;
+	/** True once discovery reported bad credentials; the client stops retrying. */
+	fatal: boolean;
 	lastError?: string;
 	connectedAt?: number;
 	serviceId?: string;
@@ -268,6 +270,12 @@ function describe(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** Bad app credentials: retrying cannot help, so the client stops instead. */
+class FatalDiscoveryError extends Error {}
+
+/** Codes meaning "operator must fix the app configuration", not "try again". */
+const FATAL_DISCOVERY_CODES = new Set([403, 514]);
+
 /**
  * Opens and maintains the long connection. `start()` is fire-and-forget: it
  * discovers the endpoint, connects, pings on Feishu's schedule and reconnects
@@ -286,7 +294,7 @@ export function createFeishuLongConnection(options: FeishuLongConnectionOptions)
 	let reconnectTimer: NodeJS.Timeout | undefined;
 	let watchdog: NodeJS.Timeout | undefined;
 	let clientConfig: FeishuLongConnectionClientConfig | undefined;
-	let status: FeishuLongConnectionStatus = { connected: false, attempts: 0 };
+	let status: FeishuLongConnectionStatus = { connected: false, attempts: 0, fatal: false };
 	const fragments = new Map<string, FragmentState>();
 	let serviceId: string | undefined;
 	let generation = 0;
@@ -337,7 +345,7 @@ export function createFeishuLongConnection(options: FeishuLongConnectionOptions)
 	};
 
 	const scheduleReconnect = (reason: string): void => {
-		if (!running || reconnectTimer !== undefined) return;
+		if (!running || status.fatal || reconnectTimer !== undefined) return;
 		status = { ...status, connected: false, lastError: reason };
 		const base = clientConfig?.reconnectInterval ?? DEFAULT_RECONNECT_INTERVAL;
 		const jitter = random() * (clientConfig?.reconnectNonce ?? DEFAULT_RECONNECT_INTERVAL);
@@ -465,9 +473,19 @@ export function createFeishuLongConnection(options: FeishuLongConnectionOptions)
 			headers: { "content-type": "application/json", locale: "zh", "user-agent": DEFAULT_USER_AGENT },
 			body: JSON.stringify({ AppID: options.appId, AppSecret: options.appSecret }),
 		});
-		if (!response.ok) throw new Error(`endpoint returned HTTP ${response.status}`);
-		const body = (await response.json()) as { code?: number; msg?: string; data?: { URL?: string; ClientConfig?: Record<string, unknown> } };
-		if (body.code !== undefined && body.code !== 0) throw new Error(`endpoint rejected credentials: code=${body.code} ${body.msg ?? ""}`.trim());
+		const body = (await response.json().catch(() => ({}))) as { code?: number; msg?: string; data?: { URL?: string; ClientConfig?: Record<string, unknown> } };
+		if (!response.ok) {
+			const detail = `endpoint returned HTTP ${response.status}${body.code !== undefined ? ` code=${body.code}` : ""}`;
+			if (FATAL_DISCOVERY_CODES.has(response.status) || (body.code !== undefined && FATAL_DISCOVERY_CODES.has(body.code))) {
+				throw new FatalDiscoveryError(detail);
+			}
+			throw new Error(detail);
+		}
+		if (body.code !== undefined && body.code !== 0) {
+			const detail = `endpoint rejected credentials: code=${body.code} ${body.msg ?? ""}`.trim();
+			if (FATAL_DISCOVERY_CODES.has(body.code)) throw new FatalDiscoveryError(detail);
+			throw new Error(detail);
+		}
 		const url = body.data?.URL;
 		if (typeof url !== "string" || url === "") throw new Error("endpoint response is missing URL");
 		const raw = body.data?.ClientConfig ?? {};
@@ -499,8 +517,8 @@ export function createFeishuLongConnection(options: FeishuLongConnectionOptions)
 		active.on("open", () => {
 			if (current !== generation || !running) return;
 			opened = true;
-			status = { ...status, connected: true, connectedAt: Date.now(), lastError: undefined, ...(serviceId !== undefined ? { serviceId } : {}) };
-			logger("[feishu] long connection established");
+			status = { ...status, connected: true, attempts: 0, connectedAt: Date.now(), lastError: undefined, ...(serviceId !== undefined ? { serviceId } : {}) };
+			logger(`[feishu] long connection ready${serviceId !== undefined ? ` (service_id=${serviceId})` : ""}`);
 			pingLoop();
 		});
 		active.on("message", (...args: unknown[]) => {
@@ -547,6 +565,12 @@ export function createFeishuLongConnection(options: FeishuLongConnectionOptions)
 			}
 			await connect(discovered.url);
 		} catch (error) {
+			if (error instanceof FatalDiscoveryError) {
+				status = { ...status, connected: false, fatal: true, lastError: describe(error) };
+				running = false;
+				logger(`[feishu] long connection disabled: ${describe(error)} (check FEISHU_APP_ID / FEISHU_APP_SECRET)`);
+				return;
+			}
 			scheduleReconnect(describe(error));
 		}
 	};

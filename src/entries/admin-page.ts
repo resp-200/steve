@@ -1532,7 +1532,10 @@ pre.code {
       var rows = "";
       rows += kvRow("事件接收方式", mode === "ws" ? badge("长连接", "ok") : badge("HTTP 回调", "warn"));
       if (mode === "ws") {
-        var link = connection.connected ? badge("已连接", "ok") : badge("连接中" + (connection.attempts ? "（第 " + connection.attempts + " 次）" : ""), "warn");
+        var link;
+        if (connection.fatal) link = badge("已停止（配置错误）", "warn");
+        else if (connection.connected) link = badge("已连接", "ok");
+        else link = badge("连接中" + (connection.attempts ? "（第 " + connection.attempts + " 次）" : ""), "warn");
         rows += kvRow("连接状态", link + (connection.lastError ? ' <span class="muted small">' + escapeHtml(String(connection.lastError)) + "</span>" : ""));
       }
       rows += kvRow("API Base", '<span class="mono">' + escapeHtml(display(feishu.apiBase)) + "</span>");

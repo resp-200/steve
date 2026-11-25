@@ -83,8 +83,11 @@ FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 **长连接行为**：
 
 - 启动时用 App ID / App Secret 调 `POST /callback/ws/endpoint` 换取 WebSocket 地址，随后主动连接（不校验 Verification Token，连接本身用应用凭据认证）。
-- ping/pong 保活，断线按飞书下发的间隔指数退避重连；大事件按 `sum`/`seq` 分片，收齐后重组。
-- 每条事件处理完回 ack `{"code":200}`；事件到流的映射与回复逻辑和 HTTP 模式完全一致。
+- ping/pong 保活；断线后**重新请求发现端点**（地址可能变化），并按飞书下发的间隔做指数退避重连，连接成功日志为 `long connection ready (service_id=…)`。
+- 大事件按 `sum`/`seq` 分片，收齐后重组；每条事件处理完回 ack `{"code":200}`。
+- **凭据错误视为 fatal**：发现端点返回 HTTP 403 或飞书 code 403/514 时只尝试一次就停止重连，日志写明原因，管理后台「网关」页显示「已停止（配置错误）」；HTTP 服务与其它功能不受影响。改好凭证重启即可。
+- 国际版 Lark 用 `FEISHU_API_BASE=https://open.larksuite.com` 即可，协议与飞书一致。
+- 事件到流的映射与回复逻辑和 HTTP 模式完全一致。
 
 **HTTP 回调模式额外说明**：`/feishu/events` 必须先 `200` ACK（飞书 3 秒超时重投）；该路径不走 `--token` 的 Bearer 鉴权（飞书回调无法带自定义头），改用 Verification Token 与（开启加密时的）`X-Lark-Signature` 校验；其余接口仍然要 token。长连接模式下不再注册 `/feishu/events`（返回 404）。
 

@@ -52,6 +52,7 @@ export interface AdminDeps {
 		configured?: boolean;
 		connected?: boolean;
 		attempts?: number;
+		fatal?: boolean;
 		lastError?: string;
 	};
 }
@@ -393,6 +394,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 							mode: live.mode ?? feishu.mode,
 							connected: live.connected ?? false,
 							attempts: live.attempts ?? 0,
+							fatal: live.fatal ?? false,
 							...(live.lastError !== undefined ? { lastError: live.lastError } : {}),
 						},
 					},
