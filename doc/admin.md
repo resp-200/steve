@@ -38,6 +38,11 @@ steve-serve --port 8892 --token <你的-token>
 每个供应商包含：名称、Base URL、API Key、默认模型、可用模型列表、是否开启思考
 （reasoning）。可以新增 / 编辑 / 删除，并**一键激活**一个供应商。
 
+可用模型列表旁的「一键获取可用模型」会调用供应商的 `GET {baseUrl}/v1/models`
+（Base URL 已以 `/v1` 结尾时直接拼 `/models`；Anthropic 兼容端点改用 `x-api-key`
+与 `anthropic-version`），把返回的模型 id 填进列表。编辑供应商时 API Key 留空会复用
+已保存的 Key；供应商不提供该端点或鉴权失败时，按钮会提示错误，仍可手工填写。
+
 - 数据保存在 `.steve/admin.json` 的 `providers` 与 `activeProviderId`。
 - 激活的供应商优先于 `.steve/.env` 里的 `LLM_*`；第一次部署时可以完全没有 `.env`，
   直接在后台填一个供应商就能跑（仍建议保留 `.env` 作为兜底）。

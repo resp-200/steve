@@ -9,6 +9,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,7 @@ const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).ver
 
 const MOCK_PORT = 8951;
 const SERVE_PORT = 8952;
+const MODELS_PORT = 8953;
 const TOKEN = "admin-test-token";
 const RAW_KEY = "sk-admin-test-1234567890";
 
@@ -76,6 +78,24 @@ async function stop(child) {
 }
 
 const auth = { authorization: `Bearer ${TOKEN}` };
+
+/** A minimal OpenAI-compatible `/v1/models` endpoint for the fetch-models button. */
+const modelsServer = createServer((req, res) => {
+	const send = (status, payload) => {
+		res.writeHead(status, { "content-type": "application/json" });
+		res.end(JSON.stringify(payload));
+	};
+	if (req.method !== "GET" || req.url !== "/v1/models") {
+		send(404, { error: "not found" });
+		return;
+	}
+	if (req.headers.authorization !== `Bearer ${RAW_KEY}`) {
+		send(401, { error: "unauthorized" });
+		return;
+	}
+	send(200, { object: "list", data: [{ id: "zeta-model" }, { id: "alpha-model" }] });
+});
+await new Promise((resolve) => modelsServer.listen(MODELS_PORT, "127.0.0.1", resolve));
 
 async function request(method, path, { body, headers = auth, port = SERVE_PORT } = {}) {
 	const response = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -181,7 +201,7 @@ try {
 			provider: {
 				id: first.id,
 				name: "Test Provider Renamed",
-				baseUrl: "https://api.example.com/v1",
+				baseUrl: `http://127.0.0.1:${MODELS_PORT}`,
 				apiKey: "",
 				defaultModel: "test-model",
 				models: ["test-model"],
@@ -192,6 +212,26 @@ try {
 	check("编辑供应商成功", edited.status === 200 && edited.body.provider.name === "Test Provider Renamed");
 	const afterEdit = JSON.parse(readFileSync(adminFile, "utf8"));
 	check("编辑留空 apiKey 时保留原值", afterEdit.providers[0].apiKey === RAW_KEY);
+
+	const fetchedModels = await request("POST", "/admin/api/providers/models", { body: { baseUrl: `http://127.0.0.1:${MODELS_PORT}`, apiKey: RAW_KEY } });
+	check("一键获取模型成功", fetchedModels.status === 200 && fetchedModels.body.count === 2, describe(fetchedModels.body));
+	check("模型列表去重排序", JSON.stringify(fetchedModels.body.models) === JSON.stringify(["alpha-model", "zeta-model"]));
+	check("baseUrl 无 /v1 后缀时补 /v1/models", String(fetchedModels.body.url).endsWith("/v1/models"));
+
+	const fetchedWithV1 = await request("POST", "/admin/api/providers/models", { body: { baseUrl: `http://127.0.0.1:${MODELS_PORT}/v1`, apiKey: RAW_KEY } });
+	check("baseUrl 已含 /v1 时不再重复拼接", fetchedWithV1.status === 200 && fetchedWithV1.body.url === `http://127.0.0.1:${MODELS_PORT}/v1/models`);
+
+	const fetchedWithStoredKey = await request("POST", "/admin/api/providers/models", { body: { id: first.id } });
+	check("编辑时用已存 baseUrl 与 apiKey 获取模型", fetchedWithStoredKey.status === 200 && fetchedWithStoredKey.body.count === 2);
+
+	const modelsUnknownProvider = await request("POST", "/admin/api/providers/models", { body: { id: "nope", baseUrl: `http://127.0.0.1:${MODELS_PORT}` } });
+	check("未知供应商获取模型返回 404", modelsUnknownProvider.status === 404);
+	const modelsBadUrl = await request("POST", "/admin/api/providers/models", { body: { baseUrl: "ftp://example.com" } });
+	check("非法 baseUrl 获取模型返回 400", modelsBadUrl.status === 400);
+	const modelsNoUrl = await request("POST", "/admin/api/providers/models", { body: {} });
+	check("缺少 baseUrl 获取模型返回 400", modelsNoUrl.status === 400);
+	const modelsBadKey = await request("POST", "/admin/api/providers/models", { body: { baseUrl: `http://127.0.0.1:${MODELS_PORT}`, apiKey: "wrong-key" } });
+	check("上游鉴权失败时返回 502", modelsBadKey.status === 502 && String(modelsBadKey.body.error).includes("HTTP 401"), describe(modelsBadKey.body));
 
 	const deletedUnknown = await request("POST", "/admin/api/providers/delete", { body: { id: "nope" } });
 	check("删除未知供应商返回 404", deletedUnknown.status === 404);
@@ -311,6 +351,7 @@ try {
 } catch (error) {
 	check("测试执行未抛异常", false, describe(error));
 } finally {
+	modelsServer.close();
 	await stop(serve.child);
 	await stop(mock.child);
 	if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true });

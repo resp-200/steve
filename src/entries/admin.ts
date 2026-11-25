@@ -32,6 +32,7 @@ import { isSessionId } from "../features/session-store.js";
 import type { StreamLog } from "../features/stream-log.js";
 import { isValidTimezone, parseCron } from "../features/trigger-schedule.js";
 import type { RunWorker } from "../features/worker.js";
+import { resolveApi } from "../model/config.js";
 import { VERSION } from "../model/version.js";
 import type { HttpExchange, HttpRoute } from "../protocols/http/events.js";
 
@@ -234,6 +235,28 @@ function feishuState(): { mode: "ws" | "http"; configured: boolean; appId: strin
 	return { mode, configured, appId, appSecret, verificationToken, encryptKey, apiBase };
 }
 
+/** Standard OpenAI-compatible listing path; tolerate a base that already has /v1. */
+function modelsEndpoint(baseUrl: string): string {
+	const trimmed = baseUrl.replace(/\/+$/, "");
+	return /\/v\d+$/.test(trimmed) ? `${trimmed}/models` : `${trimmed}/v1/models`;
+}
+
+function extractModelIds(payload: unknown): string[] {
+	const record = asObject(payload);
+	const list = Array.isArray(record?.data) ? record.data : Array.isArray(record?.models) ? record.models : [];
+	const ids: string[] = [];
+	for (const item of list) {
+		const id =
+			typeof item === "string"
+				? item
+				: item !== null && typeof item === "object" && typeof (item as { id?: unknown }).id === "string"
+					? (item as { id: string }).id
+					: undefined;
+		if (id !== undefined && id !== "" && !ids.includes(id)) ids.push(id);
+	}
+	return ids.sort((left, right) => left.localeCompare(right));
+}
+
 export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 	const { cwd, logger } = deps;
 
@@ -289,6 +312,68 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					providers: config.providers.map((provider) => providerView(provider, config.activeProviderId)),
 					activeProviderId: config.activeProviderId ?? null,
 				});
+			},
+		},
+		{
+			method: "POST",
+			path: `${ADMIN_API}/providers/models`,
+			handle: async (exchange) => {
+				let body: Record<string, unknown>;
+				try {
+					body = parseBody(exchange);
+				} catch (error) {
+					fail(exchange, 400, describe(error));
+					return;
+				}
+				const config = await readConfig();
+				const id = asString(body.id);
+				const known = id !== "" ? config.providers.find((provider) => provider.id === id) : undefined;
+				if (id !== "" && known === undefined) {
+					fail(exchange, 404, `unknown provider "${id}"`);
+					return;
+				}
+				const baseUrl = asString(body.baseUrl) || known?.baseUrl || "";
+				if (!/^https?:\/\//i.test(baseUrl)) {
+					fail(exchange, 400, "baseUrl must be an http(s) URL");
+					return;
+				}
+				// Editing an existing provider: a blank key means "use the stored one".
+				const apiKey = asString(body.apiKey) || known?.apiKey || "";
+				if (apiKey === "") {
+					fail(exchange, 400, "API key is required to list models");
+					return;
+				}
+				const url = modelsEndpoint(baseUrl);
+				const api = resolveApi(baseUrl);
+				const headers: Record<string, string> =
+					api === "anthropic-messages"
+						? { "x-api-key": apiKey, "anthropic-version": "2023-06-01", accept: "application/json" }
+						: { authorization: `Bearer ${apiKey}`, accept: "application/json" };
+				let response: Response;
+				try {
+					response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+				} catch (error) {
+					fail(exchange, 502, `could not reach ${url}: ${describe(error)}`);
+					return;
+				}
+				const text = await response.text();
+				if (!response.ok) {
+					fail(exchange, 502, `provider returned HTTP ${response.status}: ${text.slice(0, 200).trim()}`);
+					return;
+				}
+				let payload: unknown;
+				try {
+					payload = JSON.parse(text);
+				} catch {
+					fail(exchange, 502, "provider did not return JSON; /v1/models may be unsupported");
+					return;
+				}
+				const models = extractModelIds(payload);
+				if (models.length === 0) {
+					fail(exchange, 502, "no models found; the provider may not support /v1/models");
+					return;
+				}
+				exchange.json(200, { ok: true, models, count: models.length, url });
 			},
 		},
 		{

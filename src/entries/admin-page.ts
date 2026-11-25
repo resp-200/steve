@@ -379,7 +379,8 @@ input[type="text"], input[type="password"], input[type="url"], select, textarea 
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
 textarea { min-height: 96px; resize: vertical; line-height: 1.55; }
 textarea.mono, input.mono, select.mono { font-family: var(--mono); font-size: 12.5px; }
-.check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--text); cursor: pointer; }
+.check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--text); cursor: pointer; }
+.label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .check input { width: 16px; height: 16px; min-height: 0; accent-color: var(--primary); flex: 0 0 auto; }
 .check-inline { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .check-inline input { width: 15px; height: 15px; accent-color: var(--primary); }
@@ -633,9 +634,12 @@ pre.code {
                 <input id="pv-defaultModel" type="text" placeholder="例如 gpt-4.1" autocomplete="off">
               </div>
               <div class="field full">
-                <label for="pv-models">可用模型</label>
+                <div class="label-row">
+                  <label for="pv-models">可用模型</label>
+                  <button type="button" class="btn ghost small" id="pv-fetchModels">一键获取可用模型</button>
+                </div>
                 <textarea id="pv-models" class="mono" placeholder="逗号或换行分隔，例如 gpt-4.1, gpt-4.1-mini"></textarea>
-                <span class="hint">逗号或换行分隔，保存时自动去重。</span>
+                <span class="hint" id="pv-modelsHint">逗号或换行分隔，保存时自动去重；也可点上方按钮从供应商的 /v1/models 拉取。</span>
               </div>
               <div class="field full">
                 <label class="check"><input type="checkbox" id="pv-reasoning"> 开启思考（reasoning）</label>
@@ -1431,6 +1435,38 @@ pre.code {
     if (nameInput) nameInput.focus();
   }
 
+  function fetchProviderModels() {
+    var baseUrl = valueOf("pv-baseUrl").trim();
+    if (!baseUrl) {
+      toast("先填写 Base URL 再获取模型", "error");
+      var baseInput = byId("pv-baseUrl");
+      if (baseInput) baseInput.focus();
+      return;
+    }
+    var button = byId("pv-fetchModels");
+    var payload = { baseUrl: baseUrl };
+    if (state.editingProviderId) payload.id = state.editingProviderId;
+    var apiKey = valueOf("pv-apiKey").trim();
+    if (apiKey) payload.apiKey = apiKey;
+    setBusy(button, true, "获取中…");
+    api("/admin/api/providers/models", { method: "POST", body: payload }).then(function (data) {
+      setBusy(button, false);
+      var models = data && Array.isArray(data.models) ? data.models : [];
+      if (models.length === 0) {
+        toast("没有获取到模型", "error");
+        return;
+      }
+      var input = byId("pv-models");
+      if (input) input.value = models.join(NEWLINE);
+      var hint = byId("pv-modelsHint");
+      if (hint) hint.textContent = "已从 " + (data.url || "/v1/models") + " 获取 " + models.length + " 个模型，保存时自动去重。";
+      toast("已获取 " + models.length + " 个模型", "success");
+    }).catch(function (error) {
+      setBusy(button, false);
+      fail(error);
+    });
+  }
+
   function closeProviderForm() {
     state.editingProviderId = "";
     var card = byId("providerFormCard");
@@ -1979,6 +2015,8 @@ pre.code {
     });
     var providerCancelBtn = byId("providerCancelBtn");
     if (providerCancelBtn) providerCancelBtn.addEventListener("click", closeProviderForm);
+    var fetchModelsBtn = byId("pv-fetchModels");
+    if (fetchModelsBtn) fetchModelsBtn.addEventListener("click", fetchProviderModels);
     var providerForm = byId("providerForm");
     if (providerForm) providerForm.addEventListener("submit", function (event) {
       event.preventDefault();
