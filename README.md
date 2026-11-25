@@ -46,7 +46,7 @@ src/features/agent-assembly.ts L3 工具/权限/插件钩子装配：runtime 与
 src/features/trigger.ts L3 触发器引擎：predicate / fs / cron / webhook -> trigger.fired + 带前缀的 user.message（去重/限速/因果深度三道防线）
 src/features/trigger-schedule.ts L3 触发器调度辅助：cron 5 段解析与下次时间、glob 匹配、路径收敛
 src/features/approval.ts L3 后台审批闸门：需要授权时追加 approval.pending 并挂起，等 approval.granted（默认 10 分钟超时）
-src/features/logging.ts  L3 分级日志：级别 + 可选文件 sink，支持运行时调级（管理后台用）
+src/features/logging.ts  L3 分级日志：级别 + 按小时切分的目录 sink（默认 .steve/logs），支持运行时调级/改目录（管理后台用）
 src/features/admin-config.ts L3 管理后台配置：`.steve/admin.json` 读写、供应商 -> AppConfig、`.env` 原子更新、密钥掩码
 src/features/session-store.ts L3 会话存储：JSONL 为准 + 过渡期 `<id>.json` 兼容产物
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
@@ -700,7 +700,7 @@ steve-serve --port 8892 --token "$STEVE_TOKEN"   # 非回环地址必须给 toke
 steve-serve --no-watch                            # 不加载 .steve/watch.json
 steve-serve --audience full                       # SSE 给完整事件（默认 user 只给摘要）
 steve-serve --no-admin                            # 不挂管理后台 /admin
-steve-serve --log-level debug --log-file .steve/steve.log   # 日志级别与文件（后台里也能改）
+steve-serve --log-level debug --log-dir .steve/logs        # 日志级别与目录（后台里也能改；按小时切分）
 steve-serve --feishu-mode ws                      # 飞书事件传输：ws（默认长连接）/ http（回调）/ off
 ```
 

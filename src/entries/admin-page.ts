@@ -814,7 +814,7 @@ pre.code {
             <div class="card-head">
               <div>
                 <div class="card-title">日志设置</div>
-                <div class="card-sub">控制日志级别与日志文件；日志文件留空表示只输出到 stderr。</div>
+                <div class="card-sub">控制日志级别与日志目录；日志按小时切分写入该目录，留空用默认的 .steve/logs。</div>
               </div>
             </div>
             <form id="logForm" novalidate>
@@ -829,8 +829,8 @@ pre.code {
                   </select>
                 </div>
                 <div class="field">
-                  <label for="logFile">日志文件路径</label>
-                  <input id="logFile" type="text" class="mono" placeholder="留空表示只输出到 stderr">
+                  <label for="logDir">日志目录</label>
+                  <input id="logDir" type="text" class="mono" placeholder="留空用默认的 .steve/logs">
                 </div>
               </div>
               <div class="form-actions">
@@ -1331,7 +1331,7 @@ pre.code {
     html += statCard("日志级别", badge(display(overview.logLevel), "info"), { small: true });
     html += statCard("工作目录", escapeHtml(display(overview.cwd)), { mono: true, small: true, wide: true });
     html += statCard("streams 目录", escapeHtml(display(overview.streamsDir)), { mono: true, small: true, wide: true });
-    html += statCard("日志文件", escapeHtml(display(overview.logFile)), { mono: true, small: true, wide: true });
+    html += statCard("日志目录", escapeHtml(display(overview.logDir)), { mono: true, small: true, wide: true });
     grid.innerHTML = html;
   }
 
@@ -1850,8 +1850,8 @@ pre.code {
     }
     var levelInput = byId("logLevel");
     if (levelInput) levelInput.value = system.logLevel || "info";
-    var logFileInput = byId("logFile");
-    if (logFileInput) logFileInput.value = system.logFile || "";
+    var logDirInput = byId("logDir");
+    if (logDirInput) logDirInput.value = system.logDir || "";
   }
 
   function findSysFile(path) {
@@ -1896,10 +1896,10 @@ pre.code {
 
   function saveSystem() {
     var level = valueOf("logLevel") || "info";
-    var logFile = valueOf("logFile").trim();
+    var logDir = valueOf("logDir").trim();
     var button = byId("logSaveBtn");
     setBusy(button, true, "保存中…");
-    api("/admin/api/system/save", { method: "POST", body: { logLevel: level, logFile: logFile } }).then(function () {
+    api("/admin/api/system/save", { method: "POST", body: { logLevel: level, logDir: logDir } }).then(function () {
       setBusy(button, false);
       toast("日志设置已保存", "success");
       return loadSystem();

@@ -15,7 +15,7 @@ import { createApprovalGate } from "../features/approval.js";
 import { activeProvider, applyProvider, configFromProvider, readAdminConfig } from "../features/admin-config.js";
 import { assembleAgent } from "../features/agent-assembly.js";
 import type { AgentTool } from "../features/contract.js";
-import { createLogger, isLogLevel, type LogLevel } from "../features/logging.js";
+import { createLogger, defaultLogDir, isLogLevel, type LogLevel } from "../features/logging.js";
 import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "../features/projection.js";
 import { snapshotEnvironment } from "../features/environment.js";
 import { createTriggerEngine, type TriggerEngine } from "../features/trigger.js";
@@ -62,7 +62,7 @@ const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch 
                        http 兼容旧的回调地址，需要 FEISHU_VERIFICATION_TOKEN）
   --no-admin           不启用管理后台 /admin（默认启用）
   --log-level <debug|info|warn|error>  日志级别（默认读 .steve/admin.json，兜底 info）
-  --log-file <path>    同时把日志追加到文件（默认只写 stderr）
+  --log-dir <dir>      日志目录（默认 <cwd>/.steve/logs；按小时切分文件）
   --help               显示本帮助
   --version            显示版本
 
@@ -106,7 +106,7 @@ interface ServeOptions {
 	feishuModeExplicit: boolean;
 	admin: boolean;
 	logLevel?: LogLevel;
-	logFile?: string;
+	logDir?: string;
 }
 
 function valueFor(argv: readonly string[], index: number, flag: string): string {
@@ -151,8 +151,8 @@ function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
 				index += 1;
 				break;
 			}
-			case "--log-file":
-				options.logFile = valueFor(argv, index, arg);
+			case "--log-dir":
+				options.logDir = valueFor(argv, index, arg);
 				index += 1;
 				break;
 			case "--port": {
@@ -262,10 +262,12 @@ async function main(): Promise<void> {
 	// The admin file is read before anything else: it carries the logging
 	// preferences and the optional provider override.
 	const adminConfig = await readAdminConfig(cwd, (message) => process.stderr.write(`${message}\n`));
-	const logFile = parsed.logFile ?? adminConfig.logFile;
+	// Logs always land in a directory (`<cwd>/.steve/logs` by default); the
+	// logger creates one file per hour under it.
+	const logDir = resolve(parsed.logDir ?? adminConfig.logDir ?? defaultLogDir(cwd));
 	const logger = createLogger({
 		level: parsed.logLevel ?? adminConfig.logLevel,
-		...(logFile !== undefined ? { file: logFile } : {}),
+		dir: logDir,
 	});
 	const log = (message: string): void => logger.info(message);
 	const restart = (): void => {

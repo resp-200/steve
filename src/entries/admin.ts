@@ -298,7 +298,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					activeProvider: provider?.name ?? null,
 					providerCount: config.providers.length,
 					logLevel: config.logLevel,
-					logFile: config.logFile ?? "",
+					logDir: config.logDir ?? deps.logger.dir ?? "",
 					streams: streams.length,
 				});
 			},
@@ -440,7 +440,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 				const next: AdminConfig = {
 					providers,
 					logLevel: config.logLevel,
-					...(config.logFile !== undefined ? { logFile: config.logFile } : {}),
+					...(config.logDir !== undefined ? { logDir: config.logDir } : {}),
 					...(config.activeProviderId !== undefined && config.activeProviderId !== id ? { activeProviderId: config.activeProviderId } : {}),
 				};
 				await writeAdminConfig(cwd, next);
@@ -720,7 +720,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					cwd,
 					streamsDir: deps.streamsDir,
 					logLevel: config.logLevel,
-					logFile: config.logFile ?? "",
+					logDir: config.logDir ?? deps.logger.dir ?? "",
 					watchEnabled: deps.watchEnabled,
 					adminFile: adminConfigPath(cwd),
 					envFile: envFilePath(cwd),
@@ -746,21 +746,21 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					fail(exchange, 400, "logLevel must be debug, info, warn or error");
 					return;
 				}
-				let logFile: string | undefined = config.logFile;
-				if (body.logFile !== undefined) {
-					if (typeof body.logFile !== "string") {
-						fail(exchange, 400, "logFile must be a string");
+				let logDir: string | undefined = config.logDir;
+				if (body.logDir !== undefined) {
+					if (typeof body.logDir !== "string") {
+						fail(exchange, 400, "logDir must be a string");
 						return;
 					}
-					logFile = asString(body.logFile) === "" ? undefined : asString(body.logFile);
+					logDir = asString(body.logDir) === "" ? undefined : asString(body.logDir);
 				}
-				const next: AdminConfig = { ...config, ...(isLogLevel(rawLevel) ? { logLevel: rawLevel } : {}), ...(logFile !== undefined ? { logFile } : {}) };
-				if (logFile === undefined) delete next.logFile;
+				const next: AdminConfig = { ...config, ...(isLogLevel(rawLevel) ? { logLevel: rawLevel } : {}), ...(logDir !== undefined ? { logDir } : {}) };
+				if (logDir === undefined) delete next.logDir;
 				await writeAdminConfig(cwd, next);
 				deps.logger.setLevel(next.logLevel);
-				deps.logger.setFile(next.logFile);
-				logger.info(`[admin] logging set to ${next.logLevel}${next.logFile !== undefined ? ` -> ${next.logFile}` : ""}`);
-				exchange.json(200, { ok: true, logLevel: next.logLevel, logFile: next.logFile ?? "" });
+				deps.logger.setDir(next.logDir);
+				logger.info(`[admin] logging set to ${next.logLevel} -> ${next.logDir ?? "default"}`);
+				exchange.json(200, { ok: true, logLevel: next.logLevel, logDir: next.logDir ?? "" });
 			},
 		},
 		{

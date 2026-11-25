@@ -33,7 +33,8 @@ export interface AdminConfig {
 	providers: ProviderEntry[];
 	activeProviderId?: string;
 	logLevel: LogLevel;
-	logFile?: string;
+	/** Log **directory**; one file per hour is created under it. Absent = `<cwd>/.steve/logs`. */
+	logDir?: string;
 }
 
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = { providers: [], logLevel: "info" };
@@ -221,7 +222,7 @@ export async function readAdminConfig(cwd = process.cwd(), logger?: Logger): Pro
 		providers,
 		...(activeId !== undefined ? { activeProviderId: activeId } : {}),
 		logLevel: isLogLevel(raw.logLevel) ? raw.logLevel : "info",
-		...(nonEmptyString(raw.logFile) !== undefined ? { logFile: nonEmptyString(raw.logFile) as string } : {}),
+		...(nonEmptyString(raw.logDir) !== undefined ? { logDir: nonEmptyString(raw.logDir) as string } : {}),
 	};
 }
 
@@ -237,7 +238,7 @@ export async function writeAdminConfig(cwd: string, config: AdminConfig): Promis
 		providers: config.providers,
 		...(config.activeProviderId !== undefined ? { activeProviderId: config.activeProviderId } : {}),
 		logLevel: config.logLevel,
-		...(config.logFile !== undefined ? { logFile: config.logFile } : {}),
+		...(config.logDir !== undefined ? { logDir: config.logDir } : {}),
 	};
 	await writeFileAtomic(adminConfigPath(cwd), `${JSON.stringify(body, null, 2)}\n`);
 }

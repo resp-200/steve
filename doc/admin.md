@@ -82,9 +82,12 @@ steve-serve --port 8892 --token <你的-token>
 ### 5. 系统
 
 - 版本 / Node / PID / 工作目录 / streams 目录。
-- **日志**：级别 `debug|info|warn|error` 与日志文件路径（留空只写 stderr）。级别**立即
-  生效**，文件路径也立即切换（下一次写日志时创建目录）。设置持久化到
-  `.steve/admin.json` 的 `logLevel` / `logFile`，`--log-level` / `--log-file` 可临时覆盖。
+- **日志**：级别 `debug|info|warn|error` 与**日志目录**（只接受文件夹路径，留空用默认的
+  `<cwd>/.steve/logs`）。日志始终同时写 stderr，并按**小时**在目录下切分文件：
+  `<dir>/<YYYY-MM-DD>/steve-<YYYY-MM-DD>T<HH>.log`（本地时间，目录按天分层）。级别
+  **立即生效**，目录也立即切换（下一次写日志时创建目录与文件）。设置持久化到
+  `.steve/admin.json` 的 `logLevel` / `logDir`，`--log-level` / `--log-dir` 可临时覆盖。
+  路径不可写时只告警一次并退回 stderr，绝不影响进程。
 - **原始配置文件**：查看 `.steve/.env`、`.steve/admin.json`、`.steve/watch.json`、
   `.steve/mcp.json`。默认掩码 `API_KEY` / `SECRET` / `TOKEN` / `ENCRYPT_KEY` 一类值，
   勾选「显示敏感值」才返回原文。
@@ -111,7 +114,7 @@ steve-serve --port 8892 --token <你的-token>
 | POST | `/admin/api/schedules/delete` | 删除 `{name}` |
 | POST | `/admin/api/schedules/run` | 立即运行 `{name}` → `{runId}` |
 | GET | `/admin/api/system` | 系统信息与配置文件列表 |
-| POST | `/admin/api/system/save` | `{logLevel?,logFile?}` |
+| POST | `/admin/api/system/save` | `{logLevel?,logDir?}` |
 | GET | `/admin/api/files?path=...&reveal=0\|1` | 读取白名单配置文件 |
 | POST | `/admin/api/system/restart` | 重启（退出码 75） |
 
