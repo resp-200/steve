@@ -51,8 +51,11 @@ steve-serve --port 8892 --token <你的-token>
   可读错误，不影响手动填写。
 
 - 数据保存在 `~/.steve/admin.json` 的 `providers` 与 `activeProviderId`。
-- 激活的供应商优先于 `~/.steve/.env` 里的 `LLM_*`；第一次部署时可以完全没有 `.env`，
-  直接在后台填一个供应商就能跑（仍建议保留 `.env` 作为兜底）。
+- 激活的供应商优先于 `~/.steve/.env` 里的 `LLM_*`，**所有入口**都这样解析（`steve`、
+  `steve-acp`、`steve-serve`）：后台里配好一次，CLI 与编辑器插件也跟着用同一个模型。
+- 第一次部署时可以完全没有 `.env`：直接在后台填一个已激活的供应商就能启动。此时日志会
+  有一条 `environment config unavailable (...); using provider "..."` 的 warn，属正常；
+  仍有 `.env` 时两者会合并（保留 `.env` 的上下文窗口/最大输出，换上供应商的 key 与模型）。
 - 编辑时 API Key 留空表示**保持原值**；列表和接口只返回 `****xxxx` 掩码。
 - 切换后需要重启服务生效（页面会提示并给出重启按钮）。
 

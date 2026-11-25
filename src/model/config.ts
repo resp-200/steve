@@ -125,7 +125,10 @@ export interface AppConfig {
 function requireEnv(name: string): string {
 	const value = process.env[name]?.trim();
 	if (!value) {
-		throw new Error(`Missing required environment variable ${name}. Copy .env.example to .steve/.env and fill it in.`);
+		throw new Error(
+			`Missing required environment variable ${name}. Put it in ${envFileCandidates()[0]} (copy .env.example there), ` +
+				"or save a provider in the admin console (steve-serve, then /admin).",
+		);
 	}
 	return value;
 }

@@ -12,7 +12,7 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { createApprovalGate } from "../features/approval.js";
-import { activeProvider, applyProvider, configFromProvider, readAdminConfig, withPersona } from "../features/admin-config.js";
+import { readAdminConfig, resolveRuntimeConfig } from "../features/admin-config.js";
 import { assembleAgent } from "../features/agent-assembly.js";
 import type { AgentTool } from "../features/contract.js";
 import { createLogger, defaultLogDir, isLogLevel, type LogLevel } from "../features/logging.js";
@@ -287,23 +287,9 @@ async function main(): Promise<void> {
 
 	// A provider saved from the console wins over `~/.steve/.env`; without one the
 	// environment keeps driving the model exactly as before (and a first run can
-	// start from the console alone, with no `.env` yet).
-	const provider = activeProvider(adminConfig);
-	let config: AppConfig;
-	if (provider === undefined) {
-		config = loadConfig();
-	} else {
-		let base: AppConfig | undefined;
-		try {
-			base = loadConfig();
-		} catch (error) {
-			logger.warn(`environment config unavailable (${error instanceof Error ? error.message : String(error)}); using provider "${provider.name}"`);
-		}
-		config = base === undefined ? configFromProvider(provider) : applyProvider(base, adminConfig);
-	}
-	// The console's persona rides with the config so every entry point (CLI, ACP,
-	// background runs) layers the same user instructions onto its own scene.
-	config = withPersona(config, adminConfig);
+	// start from the console alone, with no `.env` yet). The console's persona
+	// rides along, so every entry point layers the same user instructions.
+	const config = resolveRuntimeConfig(loadConfig, adminConfig, (message) => logger.warn(message));
 	const streamsDir = parsed.streamsDir !== undefined ? resolve(parsed.streamsDir) : join(steveHomeDir(), "streams");
 	mkdirSync(streamsDir, { recursive: true });
 

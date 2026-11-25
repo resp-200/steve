@@ -149,6 +149,37 @@ export function configFromProvider(provider: ProviderEntry): AppConfig {
 }
 
 /**
+ * The config every entry point should run on: a provider saved in the console
+ * wins over `~/.steve/.env`, and a persona (if any) rides along.
+ *
+ * Three cases, in order:
+ *   1. no active provider     -> the environment must answer (`loadConfig()` throws);
+ *   2. provider saved, and `~/.steve/.env` also works -> merge (keeps the env's
+ *      context window, max tokens and gateway compatibility flags, swaps in the
+ *      provider's key/model);
+ *   3. provider saved but no usable environment -> build from the provider alone,
+ *      so a fresh machine can be configured straight from the console.
+ *
+ * The result is the same whichever binary started (CLI, ACP, serve), which is the
+ * point: configure once in the console, every entry point follows.
+ */
+export function resolveRuntimeConfig(
+	loadEnvironment: () => AppConfig,
+	admin: AdminConfig,
+	onWarning?: (message: string) => void,
+): AppConfig {
+	const provider = activeProvider(admin);
+	if (provider === undefined) return withPersona(loadEnvironment(), admin);
+	let base: AppConfig | undefined;
+	try {
+		base = loadEnvironment();
+	} catch (error) {
+		onWarning?.(`environment config unavailable (${describe(error)}); using provider "${provider.name}"`);
+	}
+	return withPersona(base === undefined ? configFromProvider(provider) : applyProvider(base, admin), admin);
+}
+
+/**
  * Layers the console's persona onto a config. Kept in one place so every entry
  * point (CLI, ACP, serve) applies the user's role instructions the same way.
  */

@@ -8,7 +8,7 @@
  * process exit code a supervisor would act on.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,6 +21,7 @@ const VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).ver
 const MOCK_PORT = 8951;
 const SERVE_PORT = 8952;
 const MODELS_PORT = 8953;
+const ENV_LESS_PORT = 8954;
 const TOKEN = "admin-test-token";
 const RAW_KEY = "sk-admin-test-1234567890";
 
@@ -125,6 +126,9 @@ async function request(method, path, { body, headers = auth, port = SERVE_PORT }
 
 const workspace = mkdtempSync(join(tmpdir(), "steve-admin-"));
 mkdirSync(join(workspace, ".steve"), { recursive: true });
+// Every entry point reads the same global directory: point it at the scratch
+// workspace so the test never touches the developer's real ~/.steve.
+const steveHome = join(workspace, ".steve");
 const adminFile = join(workspace, ".steve", "admin.json");
 const envFile = join(workspace, ".steve", ".env");
 const watchFile = join(workspace, ".steve", "watch.json");
@@ -139,6 +143,7 @@ const serve = start("serve", process.execPath, [join(ROOT, "dist", "entries", "s
 	env: {
 		...process.env,
 		HOME: workspace,
+		STEVE_HOME: steveHome,
 		STEVE_DISCOVERY: "off",
 		LLM_API_KEY: "mock",
 		LLM_MODEL_ID: "mock-model",
@@ -149,6 +154,7 @@ const serve = start("serve", process.execPath, [join(ROOT, "dist", "entries", "s
 	},
 	stdio: ["ignore", "pipe", "pipe"],
 });
+const extraChildren = [];
 
 try {
 	await waitFor(() => serve.stderr.includes("listening on"), { label: "serve boot" });
@@ -403,6 +409,52 @@ try {
 	const personaGone = JSON.parse(readFileSync(adminFile, "utf8"));
 	check("清空后 admin.json 不再保留该字段", personaGone.persona === undefined, JSON.stringify(personaGone.persona));
 
+	/* ---------------------------------------------------------------- */
+	/* F. 只靠控制台也能启动（没有 .env）                                  */
+	/* ---------------------------------------------------------------- */
+	// The console writes providers; an entry point must then start from that
+	// alone, otherwise a fresh machine can never be configured from the UI.
+	// Earlier sections delete the only provider, so save and activate one again:
+	// this is the state a real user is in after configuring the console.
+	const consoleProvider = await request("POST", "/admin/api/providers/save", {
+		body: {
+			provider: {
+				name: "Console Only",
+				baseUrl: `http://127.0.0.1:${MODELS_PORT}/v1`,
+				apiKey: "sk-console-only",
+				defaultModel: "console-model",
+				models: ["console-model"],
+				reasoning: false,
+			},
+		},
+	});
+	check("为启动检查保存一个供应商", consoleProvider.status === 200, describe(consoleProvider.body));
+	await request("POST", "/admin/api/providers/activate", { body: { id: consoleProvider.body.provider.id } });
+	const savedProvider = JSON.parse(readFileSync(adminFile, "utf8"));
+	check("控制台里留着激活的供应商", savedProvider.activeProviderId !== undefined && savedProvider.providers.length >= 1, JSON.stringify(savedProvider.activeProviderId));
+	// Keep the contents: the file viewer below checks masking against this file.
+	const envBackup = readFileSync(envFile, "utf8");
+	rmSync(envFile, { force: true });
+	const noEnv = start("serve-noenv", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(ENV_LESS_PORT)], {
+		cwd: workspace,
+		env: {
+			...process.env,
+			HOME: workspace,
+			STEVE_HOME: steveHome,
+			STEVE_DISCOVERY: "off",
+			LLM_API_KEY: "",
+			LLM_MODEL_ID: "",
+			LLM_BASE_URL: "",
+		},
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	extraChildren.push(noEnv.child);
+	const booted = await waitFor(() => (noEnv.stderr.includes("listening on") ? true : undefined), { timeout: 10_000, label: "serve boot without .env" }).catch(() => false);
+	check("没有 .env 时用控制台里的供应商启动", booted === true, noEnv.stderr.slice(-300));
+	check("启动日志说明环境配置不可用", noEnv.stderr.includes("environment config unavailable"), noEnv.stderr.slice(-200));
+	await stop(noEnv.child);
+	writeFileSync(envFile, envBackup);
+
 	const maskedFile = await request("GET", `/admin/api/files?path=${encodeURIComponent(envFile)}&reveal=0`);
 	check("文件查看默认掩码", maskedFile.status === 200 && maskedFile.body.masked === true && String(maskedFile.body.content).includes("****5678"), describe(maskedFile.body));
 	check("掩码内容不含明文 secret", !String(maskedFile.body.content).includes("new-secret-5678"));
@@ -422,6 +474,7 @@ try {
 	check("测试执行未抛异常", false, describe(error));
 } finally {
 	modelsServer.close();
+	for (const child of extraChildren) await stop(child);
 	await stop(serve.child);
 	await stop(mock.child);
 	if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true });
