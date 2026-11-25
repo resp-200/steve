@@ -149,7 +149,7 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `LLM_PROVIDER` | | 传给 pi 的 provider id，默认 `custom` |
 | `LLM_REASONING` | | `true` 时显式请求 reasoning/thinking（网关自带思考的模型不设也会输出） |
 | `LLM_CONTEXT_WINDOW` / `LLM_MAX_TOKENS` | | 默认 128000 / 8192；Anthropic 协议必须带 `max_tokens` |
-| `LLM_SYSTEM_PROMPT` | | 覆盖默认 system prompt |
+| `LLM_SYSTEM_PROMPT` | | 替换提示词的身份正文（身份+工作方式）；场景层与环境信息仍会附加，见下文「系统提示词」 |
 
 ## REPL 命令
 
@@ -194,6 +194,22 @@ compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningE
 // Anthropic 兼容网关若只暴露部分能力，可关掉 eager_input_streaming / cache_control
 compat: { supportsEagerToolInputStreaming: false, supportsCacheControlOnTools: false }
 ```
+
+### 1.5 系统提示词：四层组装
+
+`src/model/prompt.ts` 的 `composeSystemPrompt()` 按入口拼提示词，顺序固定：
+
+| 层 | 内容 | 来源 |
+| --- | --- | --- |
+| 身份 | 谁是史蒂夫 + `# 怎么工作` / `# 怎么说话` | `DEFAULT_IDENTITY`，可被 `LLM_SYSTEM_PROMPT` 整段替换 |
+| 用户额外要求 | `# 用户的额外要求` | 管理后台「角色设定」（`.steve/admin.json` 的 `persona`） |
+| 场景 | `# 当前场景` | 按入口选：`cli` / `acp` / `worker` / `feishu` |
+| 环境 | 工作目录、可访问目录 | 会话启动时传入 |
+
+- 场景是**真实约束**不是措辞：后台 run（定时、文件变化、webhook）标 `worker`，明说无人值守、需要批准的调用会被拒，所以它不会停下来等人；飞书消息标 `feishu`；ACP 带 cwd 与可访问根目录。
+- 身份正文被 `LLM_SYSTEM_PROMPT` 替换后，场景层与环境层仍然附加 —— 否则换掉的提示词会假装拥有进程里并不存在的环境。
+- 角色设定**只在下一次会话生效**：提示词在每个会话启动时组装一次，运行中的会话保留原样。
+- 空字符串等同于没填，不会产生空的 `#` 标题，也不会破坏可缓存的提示词前缀。
 
 ### 2. 鉴权：Anthropic SDK 的 `x-api-key` vs 网关的 `Authorization: Bearer`
 
@@ -654,6 +670,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
 | `npm run environments:test` | 环境快照 25 项断言：JSON 往返与 `structuredClone` 无损、快照里没有函数/运行时对象、roots 去重与顺序、tools 排序去重与权限/kind 透传、plugins 排序去重、投影与 workspace 的深拷贝隔离、CLI 与 ACP 两入口同策略产出相同快照 |
 | `npm run workers:test` | 运行执行器 53 项断言：submit 立即返回但输入与 `run.started` 已落盘、事件顺序与 seq 连续、一次性 Agent 从日志重建上下文、`wait(runId)` 等终态、重试失败不进 transcript、取消（`run.cancel_requested` -> `run.cancelled`，不重试）、serial 顶掉 / queue 排队、后台 run 的审批闸门（未配 approvals 拒绝执行、allow 放行、deny 拒绝、timeout 取消）、工具目录可随 MCP 后接动态增长、非法 stream id 被拒 |
+| `npm run prompt:test` | 系统提示词 27 项断言：四层顺序（身份→角色设定→场景→环境）、空串等同缺省且不改变提示词、`LLM_SYSTEM_PROMPT` 只换身份正文而场景层仍在、四个场景各不相同、`worker` 场景明说无人值守/审批会被拒/不做不可逆操作/用最终回复说明卡点，并断言提示词里不出现任何渲染相关的说法 |
 | `npm run headers:test` | 服务商请求头 34 项断言：模板展开与 `${sessionId}` 别名、未知占位符/非法头名/换行被拒、按 host 匹配（`hosts` 与 Base URL 自身）、会话头「自动优先手填兜底」、已有头不被覆盖、控制台往返（`admin.json` 落盘、坏条目只丢请求头不丢供应商）、`.env` 供应商与"没配会话头的 OpenCode 供应商"都不多发一个头，以及真实 stream 打到本地 mock 网关时头的落点 |
 | `npm run config:test` | 凭据来源 10 项：`.steve/.env` 查找链（安装目录 / `~/.steve` / `$PWD`）、真实环境变量优先、**裸 `.env` 被忽略**、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 25 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、版本号只有 `package.json` 一处且 `steve --version` 打印它、`.env` 与 `.steve/` 不入库、内网信息不泄露 |

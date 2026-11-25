@@ -10,7 +10,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { DEFAULT_SYSTEM_PROMPT, resolveApi, type AppConfig } from "../model/config.js";
+import { resolveApi, type AppConfig } from "../model/config.js";
 import type { Logger } from "../types.js";
 import { isLogLevel, type LogLevel } from "./logging.js";
 import { coerceRequestHeaders, normalizeRequestHeaders } from "./request-headers.js";
@@ -45,6 +45,8 @@ export interface AdminConfig {
 	logLevel: LogLevel;
 	/** Log **directory**; one file per hour is created under it. Absent = `<cwd>/.steve/logs`. */
 	logDir?: string;
+	/** The user's own role instructions, layered on top of the built-in identity. Absent = none. */
+	persona?: string;
 }
 
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = { providers: [], logLevel: "info" };
@@ -138,7 +140,15 @@ export function configFromProvider(provider: ProviderEntry): AppConfig {
 		maxTokens: 8_192,
 		...(provider.reasoning ? {} : { thinkingLevelMap: { ...THINKING_OFF } }),
 	};
-	return { apiKey: provider.apiKey, model, systemPrompt: DEFAULT_SYSTEM_PROMPT, authStyle: "auto", requestHeaders: { provider } };
+	return { apiKey: provider.apiKey, model, authStyle: "auto", requestHeaders: { provider } };
+}
+
+/**
+ * Layers the console's persona onto a config. Kept in one place so every entry
+ * point (CLI, ACP, serve) applies the user's role instructions the same way.
+ */
+export function withPersona(config: AppConfig, admin: AdminConfig): AppConfig {
+	return admin.persona === undefined ? config : { ...config, persona: admin.persona };
 }
 
 const PROVIDER_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -273,6 +283,7 @@ export async function readAdminConfig(cwd = process.cwd(), logger?: Logger): Pro
 		...(activeId !== undefined ? { activeProviderId: activeId } : {}),
 		logLevel: isLogLevel(raw.logLevel) ? raw.logLevel : "info",
 		...(nonEmptyString(raw.logDir) !== undefined ? { logDir: nonEmptyString(raw.logDir) as string } : {}),
+		...(nonEmptyString(raw.persona) !== undefined ? { persona: nonEmptyString(raw.persona) as string } : {}),
 	};
 }
 
@@ -289,6 +300,7 @@ export async function writeAdminConfig(cwd: string, config: AdminConfig): Promis
 		...(config.activeProviderId !== undefined ? { activeProviderId: config.activeProviderId } : {}),
 		logLevel: config.logLevel,
 		...(config.logDir !== undefined ? { logDir: config.logDir } : {}),
+		...(config.persona !== undefined ? { persona: config.persona } : {}),
 	};
 	await writeFileAtomic(adminConfigPath(cwd), `${JSON.stringify(body, null, 2)}\n`);
 }

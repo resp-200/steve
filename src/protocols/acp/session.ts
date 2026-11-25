@@ -29,6 +29,7 @@ import { createAcpTools } from "./tools.js";
 import { createAcpPublisher, type AcpPublisher } from "./publish.js";
 import { DEFAULT_POLICIES, project, type ProjectionHooks, type ProjectionPolicy } from "../../features/projection.js";
 import { snapshotEnvironment, type EnvironmentSnapshot } from "../../features/environment.js";
+import { composeSystemPrompt } from "../../model/prompt.js";
 import { modelInfo, workspacePolicy } from "../../features/session-policy.js";
 
 export type PermissionMode = "ask" | "allow";
@@ -540,13 +541,12 @@ export class AcpSession {
 	/* ------------------------------- internals ------------------------------ */
 
 	private systemPrompt(): string {
-		const roots = [this.cwd, ...this.options.additionalDirectories];
-		return [
-			this.options.config.systemPrompt,
-			`You are connected to an ACP client (an editor, a terminal, or an app) through the Agent Client Protocol. The session working directory is ${this.cwd}.`,
-			`Workspace roots you may touch with file tools: ${roots.join(", ")}.`,
-			"File and terminal tools require absolute paths; the client asks the user for permission before writes and commands.",
-		].join("\n");
+		return composeSystemPrompt({
+			scene: "acp",
+			...(this.options.config.identity !== undefined ? { identity: this.options.config.identity } : {}),
+			...(this.options.config.persona !== undefined ? { persona: this.options.config.persona } : {}),
+			details: { cwd: this.cwd, roots: [this.cwd, ...this.options.additionalDirectories] },
+		});
 	}
 
 	private accountUsage(usage: TurnUsage | undefined): void {

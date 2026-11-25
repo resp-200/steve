@@ -11,6 +11,7 @@ import { createSessionStore, isSessionId, sessionRecord } from "../features/sess
 import { snapshotEnvironment } from "../features/environment.js";
 import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "../features/projection.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
+import { readAdminConfig, withPersona } from "../features/admin-config.js";
 import { loadConfig, type AppConfig } from "../model/config.js";
 import { VERSION } from "../model/version.js";
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -387,8 +388,10 @@ async function main(): Promise<void> {
 	}
 	const parsed = argv.options;
 
-	const config = loadConfig();
 	const cwd = process.cwd();
+	// The console's persona applies here too: a role the user wrote once should not
+	// depend on which entry point they happen to start.
+	const config = withPersona(loadConfig(), await readAdminConfig(cwd));
 
 	// Transcript persistence, same store and file format the ACP server uses.
 	// A run never resumes on its own: it gets a fresh id, prints it, and the exit

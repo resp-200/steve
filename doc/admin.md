@@ -121,6 +121,10 @@ steve-serve --port 8892 --token <你的-token>
   **立即生效**，目录也立即切换（下一次写日志时创建目录与文件）。设置持久化到
   `.steve/admin.json` 的 `logLevel` / `logDir`，`--log-level` / `--log-dir` 可临时覆盖。
   路径不可写时只告警一次并退回 stderr，绝不影响进程。
+- **角色设定**（`persona`）：用户自己的额外要求，叠加在内置提示词的身份层之后
+  （`# 用户的额外要求`）。留空表示不加；清空会从 `admin.json` 删除该字段。它**只在下一次
+  会话生效**——提示词在每个会话启动时组装一次，运行中的会话保留原样。层级与场景说明见
+  README「系统提示词：四层组装」。
 - **原始配置文件**：查看 `.steve/.env`、`.steve/admin.json`、`.steve/watch.json`、
   `.steve/mcp.json`。默认掩码 `API_KEY` / `SECRET` / `TOKEN` / `ENCRYPT_KEY` 一类值，
   勾选「显示敏感值」才返回原文。
@@ -148,7 +152,7 @@ steve-serve --port 8892 --token <你的-token>
 | POST | `/admin/api/schedules/delete` | 删除 `{name}` |
 | POST | `/admin/api/schedules/run` | 立即运行 `{name}` → `{runId}` |
 | GET | `/admin/api/system` | 系统信息与配置文件列表 |
-| POST | `/admin/api/system/save` | `{logLevel?,logDir?}` |
+| POST | `/admin/api/system/save` | `{logLevel?,logDir?,persona?}`；`persona` 传空串即清除 |
 | GET | `/admin/api/files?path=...&reveal=0\|1` | 读取白名单配置文件 |
 | POST | `/admin/api/system/restart` | 重启（退出码 75） |
 

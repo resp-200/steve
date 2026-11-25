@@ -346,6 +346,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					providerCount: config.providers.length,
 					logLevel: config.logLevel,
 					logDir: config.logDir ?? deps.logger.dir ?? "",
+					persona: config.persona ?? "",
 					streams: streams.length,
 				});
 			},
@@ -506,6 +507,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					providers,
 					logLevel: config.logLevel,
 					...(config.logDir !== undefined ? { logDir: config.logDir } : {}),
+					...(config.persona !== undefined ? { persona: config.persona } : {}),
 					...(config.activeProviderId !== undefined && config.activeProviderId !== id ? { activeProviderId: config.activeProviderId } : {}),
 				};
 				await writeAdminConfig(cwd, next);
@@ -786,6 +788,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					streamsDir: deps.streamsDir,
 					logLevel: config.logLevel,
 					logDir: config.logDir ?? deps.logger.dir ?? "",
+					persona: config.persona ?? "",
 					watchEnabled: deps.watchEnabled,
 					adminFile: adminConfigPath(cwd),
 					envFile: envFilePath(cwd),
@@ -819,13 +822,31 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					}
 					logDir = asString(body.logDir) === "" ? undefined : asString(body.logDir);
 				}
-				const next: AdminConfig = { ...config, ...(isLogLevel(rawLevel) ? { logLevel: rawLevel } : {}), ...(logDir !== undefined ? { logDir } : {}) };
+				let persona: string | undefined = config.persona;
+				if (body.persona !== undefined) {
+					if (typeof body.persona !== "string") {
+						fail(exchange, 400, "persona must be a string");
+						return;
+					}
+					const trimmed = asString(body.persona).trim();
+					persona = trimmed === "" ? undefined : trimmed;
+				}
+				const next: AdminConfig = {
+					...config,
+					...(isLogLevel(rawLevel) ? { logLevel: rawLevel } : {}),
+					...(logDir !== undefined ? { logDir } : {}),
+					...(persona !== undefined ? { persona } : {}),
+				};
 				if (logDir === undefined) delete next.logDir;
+				if (persona === undefined) delete next.persona;
 				await writeAdminConfig(cwd, next);
 				deps.logger.setLevel(next.logLevel);
 				deps.logger.setDir(next.logDir);
 				logger.info(`[admin] logging set to ${next.logLevel} -> ${next.logDir ?? "default"}`);
-				exchange.json(200, { ok: true, logLevel: next.logLevel, logDir: next.logDir ?? "" });
+				// The persona is read when a session starts, so a live session keeps the
+				// prompt it was created with; the next one picks this up.
+				if ((next.persona ?? "") !== (config.persona ?? "")) logger.info("[admin] persona updated; new sessions will use it");
+				exchange.json(200, { ok: true, logLevel: next.logLevel, logDir: next.logDir ?? "", persona: next.persona ?? "" });
 			},
 		},
 		{

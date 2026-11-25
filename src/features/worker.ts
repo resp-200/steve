@@ -22,6 +22,7 @@ import type {
 	TurnStopReason,
 	TurnUsage,
 } from "./events.js";
+import { composeSystemPrompt } from "../model/prompt.js";
 import type { EnvironmentSnapshot } from "./environment.js";
 import { normalizeKernelEvent } from "./normalize.js";
 import { foldTranscript } from "./state-fold.js";
@@ -38,6 +39,8 @@ export interface RunInput {
 	 * event is already in the stream — a trigger fired it, for instance.
 	 */
 	append?: boolean;
+	/** Channel the run answers on, when it answers a person rather than a timer. */
+	scene?: "feishu";
 }
 
 export interface SubmitResult {
@@ -76,6 +79,8 @@ export interface RunAgentContext {
 	messages: AgentMessage[];
 	tools: AgentTool<any>[];
 	config: AppConfig;
+	/** Set by the host when the run answers a message on that channel; picks the scene prompt. */
+	scene?: "feishu";
 	/** Ends the run as cancelled (used when a parked approval times out). */
 	cancel?: (reason?: string) => void;
 }
@@ -100,6 +105,10 @@ export interface RunWorkerOptions {
 	 * (MCP servers connect in the background) are visible without rebuilding.
 	 */
 	tools?: readonly AgentTool<any>[] | (() => readonly AgentTool<any>[]);
+	/**
+	 * Defaults to `composeSystemPrompt({scene: "worker"})`: a background run has no
+	 * user watching, so the prompt says so instead of letting the model ask.
+	 */
 	systemPrompt?: string;
 	/** Kernel hooks the host assembles (extension gate, permissions, context). */
 	hooks?: KernelHooks;
@@ -269,6 +278,20 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 		};
 	};
 
+	/**
+	 * A background run is the same machinery for a timer, a file change and a chat
+	 * message, so the scene comes from the context: a message run talks to a person,
+	 * anything else runs unattended.
+	 */
+	const systemPromptFor = (context: { scene?: "feishu"; config: AppConfig }): string => {
+		if (options.systemPrompt !== undefined) return options.systemPrompt;
+		const shared = {
+			...(context.config.identity !== undefined ? { identity: context.config.identity } : {}),
+			...(context.config.persona !== undefined ? { persona: context.config.persona } : {}),
+		};
+		return context.scene === "feishu" ? composeSystemPrompt({ scene: "feishu", ...shared }) : composeSystemPrompt({ scene: "worker", ...shared });
+	};
+
 	const defaultAgent = (context: RunAgentContext): WorkerAgent => {
 		const hooks = hooksFor(context);
 		const agent = createKernelAgent({
@@ -279,7 +302,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 					? options.config
 					: { ...options.config, requestHeaders: { ...options.config.requestHeaders, sessionId: context.streamId } },
 			tools: context.tools,
-			...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+			systemPrompt: systemPromptFor(context),
 			...(hooks !== undefined ? { hooks } : {}),
 		});
 		agent.state.messages = [...context.messages];
@@ -311,6 +334,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 				messages,
 				tools,
 				config: options.config,
+				...(input.scene !== undefined ? { scene: input.scene } : {}),
 				cancel: (reason) => {
 					run.cancelRequested = true;
 					logger(`run ${runId} cancelled: ${reason ?? "requested"}`);

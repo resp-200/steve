@@ -883,6 +883,24 @@ pre.code {
           <div class="card card-pad">
             <div class="card-head">
               <div>
+                <div class="card-title">角色设定</div>
+                <div class="card-sub">史蒂夫自带身份与工作方式；这里写你的额外要求，会叠加在内置提示词之上。留空表示不加。</div>
+              </div>
+            </div>
+            <form id="personaForm" novalidate>
+              <div class="field">
+                <label for="persona">额外要求</label>
+                <textarea id="persona" class="mono" rows="5" placeholder="例如：回答用中文，先给结论；涉及线上数据时先说明风险再动手。"></textarea>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn primary" id="personaSaveBtn">保存角色设定</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-head">
+              <div>
                 <div class="card-title">原始配置文件</div>
                 <div class="card-sub" id="fileMeta">选择文件查看内容，默认掩码敏感值。</div>
               </div>
@@ -2132,6 +2150,8 @@ pre.code {
     if (levelInput) levelInput.value = system.logLevel || "info";
     var logDirInput = byId("logDir");
     if (logDirInput) logDirInput.value = system.logDir || "";
+    var personaInput = byId("persona");
+    if (personaInput) personaInput.value = system.persona || "";
   }
 
   function findSysFile(path) {
@@ -2182,6 +2202,20 @@ pre.code {
     api("/admin/api/system/save", { method: "POST", body: { logLevel: level, logDir: logDir } }).then(function () {
       setBusy(button, false);
       toast("日志设置已保存", "success");
+      return loadSystem();
+    }).catch(function (error) {
+      setBusy(button, false);
+      fail(error);
+    });
+  }
+
+  function savePersona() {
+    var text = valueOf("persona");
+    var button = byId("personaSaveBtn");
+    setBusy(button, true, "保存中…");
+    api("/admin/api/system/save", { method: "POST", body: { persona: text } }).then(function () {
+      setBusy(button, false);
+      toast("角色设定已保存，新会话生效", "success");
       return loadSystem();
     }).catch(function (error) {
       setBusy(button, false);
@@ -2367,6 +2401,12 @@ pre.code {
     if (logForm) logForm.addEventListener("submit", function (event) {
       event.preventDefault();
       saveSystem();
+    });
+
+    var personaForm = byId("personaForm");
+    if (personaForm) personaForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      savePersona();
     });
 
     var fileSelect = byId("fileSelect");

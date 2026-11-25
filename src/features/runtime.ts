@@ -16,6 +16,7 @@ import type {
 } from "./contract.js";
 import type { PluginCommand, SessionAccessors } from "../extensions/api.js";
 import { assembleAgent, type AgentAssembly } from "./agent-assembly.js";
+import { composeSystemPrompt } from "../model/prompt.js";
 import { modelInfo } from "./session-policy.js";
 import type { ExtensionHost } from "../extensions/host.js";
 import type { AppConfig } from "../model/config.js";
@@ -46,7 +47,7 @@ export interface AgentRuntimeOptions {
 	 */
 	requestSessionId?: string;
 	tools?: AgentTool<any>[];
-	/** Defaults to `config.systemPrompt`. */
+	/** Defaults to `composeSystemPrompt({scene: "cli"})`. */
 	systemPrompt?: string;
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 	/** Plugins loaded for this session (their tools, hooks, commands and events). */
@@ -132,10 +133,17 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 	/** Same array identity for the session lifetime: `/mcp` sees background updates. */
 	const mcpServers: McpServerStatus[] = [...(options.mcpServers ?? [])];
 
+	const systemPrompt = options.systemPrompt ?? composeSystemPrompt({
+			scene: "cli",
+			...(config.identity !== undefined ? { identity: config.identity } : {}),
+			...(config.persona !== undefined ? { persona: config.persona } : {}),
+			details: { cwd: process.cwd() },
+		});
+
 	const agent = createKernelAgent({
 		config,
 		tools: agentTools,
-		...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+		systemPrompt,
 		hooks: assembly.hooks,
 	});
 
@@ -220,7 +228,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
 		reset: () => {
 			agent.reset();
-			agent.state.systemPrompt = options.systemPrompt ?? config.systemPrompt;
+			agent.state.systemPrompt = systemPrompt;
 			agent.state.tools = agentTools;
 		},
 

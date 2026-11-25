@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AppConfig } from "../model/config.js";
+import { composeSystemPrompt } from "../model/prompt.js";
 import { createStreamFn } from "../model/stream.js";
 
 /** Seams the layers above may hook into without touching the wiring below. */
@@ -34,7 +35,7 @@ export interface KernelHooks {
 export interface KernelAgentOptions {
 	config: AppConfig;
 	tools: AgentTool<any>[];
-	/** Defaults to `config.systemPrompt` (ACP sessions compose their own prompt). */
+	/** Defaults to `composeSystemPrompt({scene: "acp"})`; every caller passes its own. */
 	systemPrompt?: string;
 	hooks?: KernelHooks;
 }
@@ -71,7 +72,11 @@ export function createKernelAgent(options: KernelAgentOptions): Agent {
 		beforeToolCall: options.hooks?.beforeToolCall,
 		afterToolCall: options.hooks?.afterToolCall,
 		initialState: {
-			systemPrompt: options.systemPrompt ?? options.config.systemPrompt,
+			systemPrompt: options.systemPrompt ?? composeSystemPrompt({
+				scene: "acp",
+				...(options.config.identity !== undefined ? { identity: options.config.identity } : {}),
+				...(options.config.persona !== undefined ? { persona: options.config.persona } : {}),
+			}),
 			model: options.config.model,
 			thinkingLevel: options.config.model.reasoning ? "low" : "off",
 			tools: options.tools,

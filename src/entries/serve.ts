@@ -12,7 +12,7 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { createApprovalGate } from "../features/approval.js";
-import { activeProvider, applyProvider, configFromProvider, readAdminConfig } from "../features/admin-config.js";
+import { activeProvider, applyProvider, configFromProvider, readAdminConfig, withPersona } from "../features/admin-config.js";
 import { assembleAgent } from "../features/agent-assembly.js";
 import type { AgentTool } from "../features/contract.js";
 import { createLogger, defaultLogDir, isLogLevel, type LogLevel } from "../features/logging.js";
@@ -301,6 +301,9 @@ async function main(): Promise<void> {
 		}
 		config = base === undefined ? configFromProvider(provider) : applyProvider(base, adminConfig);
 	}
+	// The console's persona rides with the config so every entry point (CLI, ACP,
+	// background runs) layers the same user instructions onto its own scene.
+	config = withPersona(config, adminConfig);
 	const streamsDir = parsed.streamsDir !== undefined ? resolve(parsed.streamsDir) : join(cwd, ".steve", "streams");
 	mkdirSync(streamsDir, { recursive: true });
 
@@ -390,7 +393,7 @@ async function main(): Promise<void> {
 			await log2.append(streamId, [{ type: "stream.created", streamId, cwd, title: `Feishu ${message.chatType}` }]);
 		}
 		const from = (await log2.read(streamId)).at(-1)?.seq ?? 0;
-		const submitted = await worker.submit(streamId, { text: message.text }, "foreground");
+		const submitted = await worker.submit(streamId, { text: message.text, scene: "feishu" }, "foreground");
 		if (!submitted.accepted) {
 			await feishuClient.replyText(message.messageId, `现在不能开始执行：${submitted.reason ?? "busy"}`);
 			return;

@@ -386,6 +386,23 @@ try {
 	const adminAfter = JSON.parse(readFileSync(adminFile, "utf8"));
 	check("日志级别持久化到 admin.json", adminAfter.logLevel === "debug");
 
+	const personaSaved = await request("POST", "/admin/api/system/save", { body: { persona: "  回答用中文，先给结论。  " } });
+	check("保存角色设定成功", personaSaved.status === 200 && personaSaved.body.persona === "回答用中文，先给结论。", JSON.stringify(personaSaved.body));
+	const personaBack = await request("GET", "/admin/api/system");
+	check("角色设定可读回（已去首尾空白）", personaBack.body.persona === "回答用中文，先给结论。", JSON.stringify(personaBack.body.persona));
+	const overviewPersona = await request("GET", "/admin/api/overview");
+	check("概览也带角色设定", overviewPersona.body.persona === "回答用中文，先给结论。", JSON.stringify(overviewPersona.body.persona));
+	const personaPersisted = JSON.parse(readFileSync(adminFile, "utf8"));
+	check("角色设定持久化到 admin.json", personaPersisted.persona === "回答用中文，先给结论。", JSON.stringify(personaPersisted.persona));
+	const personaBad = await request("POST", "/admin/api/system/save", { body: { persona: 42 } });
+	check("角色设定拒绝非字符串", personaBad.status === 400);
+	const personaKeptLevel = await request("GET", "/admin/api/system");
+	check("只改角色设定不动日志级别", personaKeptLevel.body.logLevel === "debug");
+	const personaCleared = await request("POST", "/admin/api/system/save", { body: { persona: "   " } });
+	check("清空角色设定返回空串", personaCleared.status === 200 && personaCleared.body.persona === "");
+	const personaGone = JSON.parse(readFileSync(adminFile, "utf8"));
+	check("清空后 admin.json 不再保留该字段", personaGone.persona === undefined, JSON.stringify(personaGone.persona));
+
 	const maskedFile = await request("GET", "/admin/api/files?path=.steve%2F.env&reveal=0");
 	check("文件查看默认掩码", maskedFile.status === 200 && maskedFile.body.masked === true && String(maskedFile.body.content).includes("****5678"), describe(maskedFile.body));
 	check("掩码内容不含明文 secret", !String(maskedFile.body.content).includes("new-secret-5678"));
