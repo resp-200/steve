@@ -18,7 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { createStreamLog } from "../dist/features/stream-log.js";
-import { createTriggerEngine } from "../dist/features/trigger.js";
+import { createTriggerEngine, webhookSignature } from "../dist/features/trigger.js";
+import { createApprovalGate } from "../dist/features/approval.js";
 import { loadExtensions } from "../dist/extensions/host.js";
 
 const checks = [];
@@ -272,6 +273,104 @@ async function configChecks(log, scratchDir) {
 	await engine.stop();
 }
 
+async function fsChecks(log, scratchDir) {
+	const engine = createTriggerEngine({ log, cwd: scratchDir, roots: [scratchDir], logger: () => {} });
+	engine.register({
+		name: "fs-change",
+		spec: {
+			kind: "fs",
+			paths: ["**/*.txt"],
+			events: ["change", "rename"],
+			debounceMs: 150,
+			emit: { type: "user.message", text: "file changed: {{path}}" },
+		},
+		targetStream: "files",
+		mode: "background",
+	});
+	await engine.start();
+	const note = join(scratchDir, "note.txt");
+	writeFileSync(note, "one");
+	await waitFor(async () => (await log.read("files", 1)).some((event) => event.type === "trigger.fired"), 5000);
+	let events = await log.read("files", 1);
+	const fired = events.find((event) => event.type === "trigger.fired");
+	check("fs：文件变化触发", fired?.source === "fs");
+	check("fs：detail 带文件路径", String(fired?.detail?.path ?? "").endsWith("note.txt"));
+	check("fs：模板渲染 {{path}}", events.some((event) => event.type === "user.message" && String(event.text).includes("note.txt")));
+
+	const before = countType(events, "trigger.fired");
+	writeFileSync(note, "two");
+	writeFileSync(note, "three");
+	await waitFor(async () => countType(await log.read("files", 1), "trigger.fired") > before, 5000);
+	await sleep(400);
+	events = await log.read("files", 1);
+	check("fs：debounce 窗口内合并为一次", countType(events, "trigger.fired") === before + 1);
+
+	const settled = countType(events, "trigger.fired");
+	await engine.stop();
+	writeFileSync(note, "four");
+	await sleep(400);
+	check("fs：stop() 关闭 watcher 后不再触发", countType(await log.read("files", 1), "trigger.fired") === settled);
+}
+
+async function webhookChecks(log, scratchDir) {
+	const engine = createTriggerEngine({ log, cwd: scratchDir, roots: [scratchDir], logger: () => {} });
+	engine.register({
+		name: "hook-secret",
+		spec: { kind: "webhook", path: "/hooks/deploy", secret: "topsecret123", emit: { type: "user.message", text: "deploy hook: {{body.env}}" } },
+		targetStream: "hooks",
+		mode: "background",
+	});
+	engine.register({
+		name: "hook-open",
+		spec: { kind: "webhook", path: "/hooks/ping", emit: { type: "user.message", text: "ping" } },
+		targetStream: "hooks-open",
+		mode: "background",
+	});
+	await engine.start();
+
+	const body = JSON.stringify({ env: "prod", sha: "abc" });
+	const signature = webhookSignature("topsecret123", body);
+	const accepted = await engine.handleWebhook("/hooks/deploy", body, { "x-signature": signature });
+	await waitFor(async () => (await log.read("hooks", 1)).some((event) => event.type === "trigger.fired"));
+	let events = await log.read("hooks", 1);
+	check("webhook：签名正确时接受", accepted === true);
+	check("webhook：source 为 webhook", events.find((event) => event.type === "trigger.fired")?.source === "webhook");
+	check("webhook：detail 带解析后的 body 并被模板渲染", events.some((event) => event.type === "user.message" && event.text === "[watch:hook-secret] deploy hook: prod"));
+
+	const rejected = await engine.handleWebhook("/hooks/deploy", body, { "x-signature": "deadbeef" });
+	check("webhook：签名错误拒绝", rejected === false && countType(await log.read("hooks", 1), "trigger.fired") === 1);
+
+	const open = await engine.handleWebhook("/hooks/ping", "", {});
+	await waitFor(async () => (await log.read("hooks-open", 1)).some((event) => event.type === "trigger.fired"));
+	check("webhook：未配 secret 的路径接受", open === true);
+	check("webhook：未注册路径返回 false", (await engine.handleWebhook("/hooks/missing", "", {})) === false);
+	await engine.stop();
+}
+
+async function approvalChecks(log) {
+	const stream = "approval-stream";
+	const gate = createApprovalGate({ log, streamId: stream, runId: "run-approval", timeoutMs: 400, logger: () => {} });
+
+	const first = gate.ask({ toolName: "write_file", args: { path: "x" }, preview: { summary: "write x" } });
+	await waitFor(async () => (await log.read(stream, 1)).some((event) => event.type === "approval.pending"));
+	const pending = (await log.read(stream, 1)).find((event) => event.type === "approval.pending");
+	check("approval：挂起时记录 approval.pending", pending?.toolName === "write_file" && pending?.runId === "run-approval");
+	check("approval：pending 带预览", pending?.preview?.summary === "write x");
+	await log.append(stream, [{ type: "approval.granted", requestId: pending.requestId, toolName: "write_file", decision: "allow_once" }]);
+	const allowed = await first;
+	check("approval：approval.granted 后放行（allow_once）", allowed.allowed === true && allowed.decision === "allow_once");
+
+	const second = gate.ask({ toolName: "run_command" });
+	await waitFor(async () => countType(await log.read(stream, 1), "approval.pending") >= 2);
+	const pendingSecond = (await log.read(stream, 1)).filter((event) => event.type === "approval.pending")[1];
+	await log.append(stream, [{ type: "approval.granted", requestId: pendingSecond.requestId, toolName: "run_command", decision: "deny" }]);
+	check("approval：deny 时拒绝", (await second).allowed === false);
+
+	const third = await gate.ask({ toolName: "edit_file" });
+	check("approval：超时按拒绝处理", third.decision === "timeout" && third.allowed === false);
+	gate.dispose();
+}
+
 async function main() {
 	try {
 		const dir = scratch("steve-trigger-");
@@ -281,6 +380,9 @@ async function main() {
 			await guardChecks(log, dir);
 			await cronChecks(log, dir);
 			await configChecks(log, dir);
+			await fsChecks(log, dir);
+			await webhookChecks(log, dir);
+			await approvalChecks(log);
 		} finally {
 			log.close();
 		}

@@ -1,6 +1,6 @@
 # 技术方案：把 steve 改造成 Personal Agent
 
-> 状态：**设计稿（分批实施中）**。S0 拆文件、S0′ 架构断言、S1 事件日志 + 兼容层、S2 事件投影、S3 环境快照、S4 运行执行器（`worker.ts`）与 ACP `session/prompt` 接线、S5 状态折叠（`foldStatus` 的 usage/turnCount 与 `/stats` 同口径，`worker.ts` 默认按日志 fold 构造上下文）、S6 触发器（`trigger.ts` 引擎 + `registerTrigger` + `.steve/watch.json` 内置插件）已落地；其余阶段仍只写「要做什么、怎么做、怎么验收」。
+> 状态：**设计稿（分批实施中）**。S0 拆文件、S0′ 架构断言、S1 事件日志 + 兼容层、S2 事件投影、S3 环境快照、S4 运行执行器（`worker.ts`）与 ACP `session/prompt` 接线、S5 状态折叠（`foldStatus` 的 usage/turnCount 与 `/stats` 同口径，`worker.ts` 默认按日志 fold 构造上下文）、S6 触发器（`trigger.ts` 引擎 + `registerTrigger` + `.steve/watch.json` 内置插件）、S7 文件/webhook 触发与后台审批闸门（`approval.ts`）已落地；其余阶段仍只写「要做什么、怎么做、怎么验收」。
 > 目标读者：改代码的人（需要知道改哪里）与评审的人（需要知道为什么这么改）。
 > steve 现有架构见 [README](../README.md)；本文所有「现状」都指 `0.1.2` 的实现，并且能在源码里逐条对上。
 
