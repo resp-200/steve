@@ -65,7 +65,7 @@ export interface ProjectionHooks {
 /* ------------------------------ user view ------------------------------- */
 
 /** Event types whose shape is narrowed for the `user` audience. */
-type NarrowedType = "thinking_delta" | "tool_start" | "tool_update" | "tool_end" | "turn_end" | "approval.pending";
+type NarrowedType = "thinking_delta" | "tool_start" | "tool_update" | "tool_end" | "turn_end" | "run.failed" | "approval.pending";
 
 /** Every event we pass through unchanged: its original body type survives. */
 type WithoutNarrowed<T> = T extends { type: NarrowedType } ? never : T;
@@ -112,6 +112,13 @@ export interface ProjectedTurnEndEvent {
 	retries: number;
 }
 
+/** A retryable failure is internal bookkeeping: the error text stays inside. */
+export interface ProjectedRunFailedEvent {
+	type: "run.failed";
+	runId: string;
+	retryable?: boolean;
+}
+
 export interface ProjectedApprovalPendingEvent {
 	type: "approval.pending";
 	requestId: string;
@@ -130,6 +137,7 @@ export type UserProjectedBody =
 	| ProjectedToolUpdateEvent
 	| ProjectedToolEndEvent
 	| ProjectedTurnEndEvent
+	| ProjectedRunFailedEvent
 	| ProjectedApprovalPendingEvent;
 
 /** One event as a specific audience sees it; `full`/`audit` keep the original body. */
@@ -239,6 +247,19 @@ function projectUser(event: StreamEventBody, policy: ProjectionPolicy, hooks: Pr
 						contextTokens: event.contextTokens,
 						failed: event.failed,
 						retries: event.retries,
+					},
+				},
+			];
+
+		case "run.failed":
+			// Provider errors are internal; a run id and whether it could be retried suffice.
+			return [
+				{
+					audience,
+					event: {
+						type: "run.failed",
+						runId: event.runId,
+						...(event.retryable !== undefined ? { retryable: event.retryable } : {}),
 					},
 				},
 			];

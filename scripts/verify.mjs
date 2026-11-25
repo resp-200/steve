@@ -72,6 +72,7 @@ run("会话持久化", "node", ["scripts/session-test.mjs"]);
 run("事件日志（stream-log + 兼容层）", "node", ["scripts/stream-log-test.mjs"]);
 run("事件投影（projection）", "node", ["scripts/projection-test.mjs"]);
 run("环境快照（environment）", "node", ["scripts/environment-test.mjs"]);
+run("运行执行器（worker）", "node", ["scripts/worker-test.mjs"]);
 run("MCP", "node", ["scripts/mcp-test.mjs"]);
 
 if (!fast) {

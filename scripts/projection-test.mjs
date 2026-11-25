@@ -121,6 +121,13 @@ function userChecks() {
 	check("user: turn_end 去掉 errorMessage", !("errorMessage" in settled) && settled.failed === false && settled.retries === 0);
 	check("user: turn_end 保留 usage/contextTokens", settled.usage.total === 15 && settled.contextTokens === 42);
 	check("user: run.turn.settled 不投影给 user", projectOne({ type: "run.turn.settled", runId: "r", message: {} }, user).length === 0);
+	const failed = bodies({ type: "run.failed", runId: "run-1", error: "provider said 429: secret-ish", retryable: true }, user)[0];
+	check("user: run.failed 去掉错误原文", failed.type === "run.failed" && !("error" in failed) && failed.runId === "run-1");
+	check("user: run.failed 保留 retryable 分类", failed.retryable === true);
+	check(
+		"full: run.failed 保留错误原文",
+		bodies({ type: "run.failed", runId: "run-1", error: "boom" }, DEFAULT_POLICIES.full)[0].error === "boom",
+	);
 
 	check("user: text_delta 原样通过", bodies({ type: "text_delta", text: "hi" }, user)[0].text === "hi");
 	check("user: user.message 原样通过", bodies({ type: "user.message", text: "hi" }, user)[0].text === "hi");
