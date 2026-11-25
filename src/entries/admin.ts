@@ -241,20 +241,52 @@ function modelsEndpoint(baseUrl: string): string {
 	return /\/v\d+$/.test(trimmed) ? `${trimmed}/models` : `${trimmed}/v1/models`;
 }
 
-function extractModelIds(payload: unknown): string[] {
+interface ModelCandidate {
+	id: string;
+	ownedBy?: string;
+	type?: string;
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+	const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
+	return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined;
+}
+
+/** Pull the model id plus the spec fields providers commonly publish on /v1/models. */
+function extractModels(payload: unknown): ModelCandidate[] {
 	const record = asObject(payload);
 	const list = Array.isArray(record?.data) ? record.data : Array.isArray(record?.models) ? record.models : [];
-	const ids: string[] = [];
+	const byId = new Map<string, ModelCandidate>();
 	for (const item of list) {
-		const id =
-			typeof item === "string"
-				? item
-				: item !== null && typeof item === "object" && typeof (item as { id?: unknown }).id === "string"
-					? (item as { id: string }).id
-					: undefined;
-		if (id !== undefined && id !== "" && !ids.includes(id)) ids.push(id);
+		if (typeof item === "string") {
+			if (item !== "" && !byId.has(item)) byId.set(item, { id: item });
+			continue;
+		}
+		const model = asObject(item);
+		if (model === undefined) continue;
+		const id = asString(model.id);
+		if (id === "" || byId.has(id)) continue;
+		const ownedBy = asString(model.owned_by) || asString(model.ownedBy) || asString(model.provider) || asString(model.organization);
+		const type = asString(model.type) || asString(model.object);
+		const contextWindow =
+			positiveNumber(model.context_window) ??
+			positiveNumber(model.context_length) ??
+			positiveNumber(model.max_context_length) ??
+			positiveNumber(model.max_input_tokens) ??
+			positiveNumber(model.input_token_limit);
+		const maxTokens =
+			positiveNumber(model.max_tokens) ?? positiveNumber(model.max_output_tokens) ?? positiveNumber(model.output_token_limit);
+		byId.set(id, {
+			id,
+			...(ownedBy !== "" ? { ownedBy } : {}),
+			...(type !== "" ? { type } : {}),
+			...(contextWindow !== undefined ? { contextWindow } : {}),
+			...(maxTokens !== undefined ? { maxTokens } : {}),
+		});
 	}
-	return ids.sort((left, right) => left.localeCompare(right));
+	return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
@@ -368,12 +400,13 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					fail(exchange, 502, "provider did not return JSON; /v1/models may be unsupported");
 					return;
 				}
-				const models = extractModelIds(payload);
-				if (models.length === 0) {
+				const items = extractModels(payload);
+				if (items.length === 0) {
 					fail(exchange, 502, "no models found; the provider may not support /v1/models");
 					return;
 				}
-				exchange.json(200, { ok: true, models, count: models.length, url });
+				const models = items.map((model) => model.id);
+				exchange.json(200, { ok: true, models, items, count: models.length, url });
 			},
 		},
 		{

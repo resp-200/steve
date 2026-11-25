@@ -93,7 +93,13 @@ const modelsServer = createServer((req, res) => {
 		send(401, { error: "unauthorized" });
 		return;
 	}
-	send(200, { object: "list", data: [{ id: "zeta-model" }, { id: "alpha-model" }] });
+	send(200, {
+		object: "list",
+		data: [
+			{ id: "zeta-model", owned_by: "zeta-labs", context_window: 1000000 },
+			{ id: "alpha-model", owned_by: "alpha-labs", context_length: 200000, max_output_tokens: 8192 },
+		],
+	});
 });
 await new Promise((resolve) => modelsServer.listen(MODELS_PORT, "127.0.0.1", resolve));
 
@@ -150,6 +156,10 @@ try {
 	check("GET /admin 不需要 token", page.status === 200, `status ${page.status}`);
 	check("GET /admin 返回 HTML 页面", String(page.headers.get("content-type")).includes("text/html"));
 	check("页面包含管理后台标记", typeof page.body === "string" && page.body.includes("Steve 管理后台"));
+	check(
+		"页面包含模型选择弹窗与可用模型行",
+		typeof page.body === "string" && page.body.includes('id="modelPicker"') && page.body.includes('id="pv-modelRows"') && page.body.includes('id="pv-pickModels"'),
+	);
 
 	const unauthorized = await request("GET", "/admin/api/overview", { headers: {} });
 	check("管理 API 缺少 token 返回 401", unauthorized.status === 401, `status ${unauthorized.status}`);
@@ -217,6 +227,10 @@ try {
 	check("一键获取模型成功", fetchedModels.status === 200 && fetchedModels.body.count === 2, describe(fetchedModels.body));
 	check("模型列表去重排序", JSON.stringify(fetchedModels.body.models) === JSON.stringify(["alpha-model", "zeta-model"]));
 	check("baseUrl 无 /v1 后缀时补 /v1/models", String(fetchedModels.body.url).endsWith("/v1/models"));
+	const alpha = fetchedModels.body.items.find((item) => item.id === "alpha-model");
+	const zeta = fetchedModels.body.items.find((item) => item.id === "zeta-model");
+	check("返回模型规格（上下文/最大输出/厂商）", alpha !== undefined && alpha.contextWindow === 200000 && alpha.maxTokens === 8192 && alpha.ownedBy === "alpha-labs", describe(alpha));
+	check("兼容 context_window 字段名", zeta !== undefined && zeta.contextWindow === 1000000);
 
 	const fetchedWithV1 = await request("POST", "/admin/api/providers/models", { body: { baseUrl: `http://127.0.0.1:${MODELS_PORT}/v1`, apiKey: RAW_KEY } });
 	check("baseUrl 已含 /v1 时不再重复拼接", fetchedWithV1.status === 200 && fetchedWithV1.body.url === `http://127.0.0.1:${MODELS_PORT}/v1/models`);

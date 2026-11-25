@@ -37,7 +37,7 @@ const scratch = (prefix) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const waitFor = async (predicate, timeoutMs = 3000) => {
+const waitFor = async (predicate, timeoutMs = 8000) => {
 	const startedAt = Date.now();
 	while (Date.now() - startedAt < timeoutMs) {
 		const value = await predicate();

@@ -381,6 +381,27 @@ textarea { min-height: 96px; resize: vertical; line-height: 1.55; }
 textarea.mono, input.mono, select.mono { font-family: var(--mono); font-size: 12.5px; }
 .check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--text); cursor: pointer; }
 .label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.btn-row { display: flex; align-items: center; gap: 8px; }
+.model-rows { display: flex; flex-direction: column; gap: 8px; }
+.model-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.model-row input[type="text"] { height: 34px; }
+.model-spec { font-size: 12px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-row { padding: 14px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); color: var(--text-faint); font-size: 12.5px; text-align: center; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(9, 12, 20, 0.55); display: flex; align-items: center; justify-content: center; padding: 18px; z-index: 80; }
+.modal-backdrop[hidden] { display: none; }
+.modal { width: min(680px, 100%); max-height: 84vh; display: flex; flex-direction: column; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.modal-title { font-size: 15px; font-weight: 700; }
+.modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.modal-foot { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.modal-foot .muted { flex: 1; }
+.picker-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 140px; max-height: 46vh; }
+.picker-row { display: grid; grid-template-columns: auto minmax(0, 1.5fr) minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; font-weight: 400; }
+.picker-row:hover { background: var(--bg-hover); }
+.picker-row.selected { border-color: var(--primary); background: var(--primary-soft); }
+.picker-row input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; accent-color: var(--primary); }
+.picker-id { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-spec { font-size: 12px; color: var(--text-faint); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .check input { width: 16px; height: 16px; min-height: 0; accent-color: var(--primary); flex: 0 0 auto; }
 .check-inline { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .check-inline input { width: 15px; height: 15px; accent-color: var(--primary); }
@@ -635,11 +656,14 @@ pre.code {
               </div>
               <div class="field full">
                 <div class="label-row">
-                  <label for="pv-models">可用模型</label>
-                  <button type="button" class="btn ghost small" id="pv-fetchModels">一键获取可用模型</button>
+                  <label>可用模型</label>
+                  <div class="btn-row">
+                    <button type="button" class="btn ghost small" id="pv-pickModels">选择模型</button>
+                    <button type="button" class="btn ghost small" id="pv-addModel">手动添加</button>
+                  </div>
                 </div>
-                <textarea id="pv-models" class="mono" placeholder="逗号或换行分隔，例如 gpt-4.1, gpt-4.1-mini"></textarea>
-                <span class="hint" id="pv-modelsHint">逗号或换行分隔，保存时自动去重；也可点上方按钮从供应商的 /v1/models 拉取。</span>
+                <div class="model-rows" id="pv-modelRows"></div>
+                <span class="hint" id="pv-modelsHint">「选择模型」从供应商的 /v1/models 拉取并按需勾选；也可以手动添加模型 ID。</span>
               </div>
               <div class="field full">
                 <label class="check"><input type="checkbox" id="pv-reasoning"> 开启思考（reasoning）</label>
@@ -887,6 +911,24 @@ pre.code {
       <button type="submit" class="btn primary">保存并登录</button>
     </form>
   </div>
+  <div class="modal-backdrop" id="modelPicker" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modelPickerTitle">
+      <div class="modal-head">
+        <div class="modal-title" id="modelPickerTitle">选择模型</div>
+        <button type="button" class="icon-btn" id="modelPickerClose" aria-label="关闭">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="text" id="modelPickerSearch" placeholder="搜索模型 ID 或厂商…" autocomplete="off">
+        <div class="hint" id="modelPickerHint">正在加载模型…</div>
+        <div class="picker-list" id="modelPickerList"></div>
+      </div>
+      <div class="modal-foot">
+        <span class="muted small" id="modelPickerCount">已选 0 个</span>
+        <button type="button" class="btn ghost" id="modelPickerCancel">取消</button>
+        <button type="button" class="btn primary" id="modelPickerConfirm">确认</button>
+      </div>
+    </div>
+  </div>
   <div class="toasts" id="toasts" aria-live="polite"></div>
 </div>
 <script>
@@ -907,6 +949,10 @@ pre.code {
     providers: [],
     activeProviderId: "",
     editingProviderId: "",
+    modelRows: [],
+    catalog: [],
+    catalogUrl: "",
+    pickerSelected: {},
     gateways: null,
     schedules: [],
     watchFile: "",
@@ -1423,8 +1469,11 @@ pre.code {
     }
     var modelInput = byId("pv-defaultModel");
     if (modelInput) modelInput.value = provider ? String(provider.defaultModel || "") : "";
-    var modelsInput = byId("pv-models");
-    if (modelsInput) modelsInput.value = provider && Array.isArray(provider.models) ? provider.models.join(NEWLINE) : "";
+    state.modelRows = provider && Array.isArray(provider.models) ? provider.models.map(function (id) { return { id: String(id) }; }) : [];
+    renderModelRows();
+    var modelsHint = byId("pv-modelsHint");
+    if (modelsHint) modelsHint.textContent = "「选择模型」从供应商的 /v1/models 拉取并按需勾选；也可以手动添加模型 ID。";
+    enrichModelRows(provider);
     var reasoningInput = byId("pv-reasoning");
     if (reasoningInput) reasoningInput.checked = !!(provider && provider.reasoning);
     try {
@@ -1435,40 +1484,203 @@ pre.code {
     if (nameInput) nameInput.focus();
   }
 
-  function fetchProviderModels() {
-    var baseUrl = valueOf("pv-baseUrl").trim();
-    if (!baseUrl) {
-      toast("先填写 Base URL 再获取模型", "error");
-      var baseInput = byId("pv-baseUrl");
-      if (baseInput) baseInput.focus();
+  function formatModelSize(value) {
+    if (typeof value !== "number" || !isFinite(value) || value <= 0) return "";
+    if (value >= 1000000) return String(Math.round((value / 1000000) * 10) / 10) + "M";
+    if (value >= 1000) return String(Math.round(value / 1000)) + "K";
+    return String(value);
+  }
+
+  function formatModelSpec(model) {
+    var parts = [];
+    var context = formatModelSize(model.contextWindow);
+    if (context) parts.push(context + " 上下文");
+    var output = formatModelSize(model.maxTokens);
+    if (output) parts.push("输出 " + output);
+    if (model.ownedBy) parts.push(String(model.ownedBy));
+    return parts.length ? parts.join(" · ") : "规格未知";
+  }
+
+  function renderModelRows() {
+    var wrap = byId("pv-modelRows");
+    if (!wrap) return;
+    if (!state.modelRows.length) {
+      wrap.innerHTML = '<div class="empty-row">还没有模型，点击“选择模型”拉取，或“手动添加”。</div>';
       return;
     }
-    var button = byId("pv-fetchModels");
+    var html = "";
+    for (var index = 0; index < state.modelRows.length; index++) {
+      var row = state.modelRows[index];
+      var spec = formatModelSpec(row);
+      html += '<div class="model-row" data-index="' + index + '">';
+      html += '<input type="text" class="mono" data-role="id" value="' + escapeHtml(row.id) + '" placeholder="模型 ID（实际请求名）" autocomplete="off">';
+      html += '<span class="model-spec" title="' + escapeHtml(spec) + '">' + escapeHtml(spec) + "</span>";
+      html += '<button type="button" class="icon-btn" data-role="remove" aria-label="删除这个模型">✕</button>';
+      html += "</div>";
+    }
+    wrap.innerHTML = html;
+  }
+
+  function addManualModel() {
+    state.modelRows.push({ id: "" });
+    renderModelRows();
+    var wrap = byId("pv-modelRows");
+    var inputs = wrap ? wrap.querySelectorAll('[data-role="id"]') : [];
+    var last = inputs.length ? inputs[inputs.length - 1] : null;
+    if (last) last.focus();
+  }
+
+  function currentModelPayload() {
+    var baseUrl = valueOf("pv-baseUrl").trim();
+    if (!baseUrl) return null;
     var payload = { baseUrl: baseUrl };
     if (state.editingProviderId) payload.id = state.editingProviderId;
     var apiKey = valueOf("pv-apiKey").trim();
     if (apiKey) payload.apiKey = apiKey;
-    setBusy(button, true, "获取中…");
-    api("/admin/api/providers/models", { method: "POST", body: payload }).then(function (data) {
-      setBusy(button, false);
-      var models = data && Array.isArray(data.models) ? data.models : [];
-      if (models.length === 0) {
-        toast("没有获取到模型", "error");
-        return;
+    return payload;
+  }
+
+  function requestModelCatalog() {
+    var payload = currentModelPayload();
+    if (payload === null) return Promise.reject(new Error("先填写 Base URL 再选择模型"));
+    return api("/admin/api/providers/models", { method: "POST", body: payload });
+  }
+
+  /** Fill spec columns for already-selected models when the provider can be queried. */
+  function enrichModelRows(provider) {
+    if (!provider || !provider.id || !Array.isArray(provider.models) || provider.models.length === 0) return;
+    requestModelCatalog().then(function (data) {
+      var items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) return;
+      for (var index = 0; index < state.modelRows.length; index++) {
+        var row = state.modelRows[index];
+        for (var itemIndex = 0; itemIndex < items.length; itemIndex++) {
+          if (String(items[itemIndex].id) !== String(row.id)) continue;
+          row.contextWindow = items[itemIndex].contextWindow;
+          row.maxTokens = items[itemIndex].maxTokens;
+          row.ownedBy = items[itemIndex].ownedBy;
+          break;
+        }
       }
-      var input = byId("pv-models");
-      if (input) input.value = models.join(NEWLINE);
-      var hint = byId("pv-modelsHint");
-      if (hint) hint.textContent = "已从 " + (data.url || "/v1/models") + " 获取 " + models.length + " 个模型，保存时自动去重。";
-      toast("已获取 " + models.length + " 个模型", "success");
-    }).catch(function (error) {
-      setBusy(button, false);
-      fail(error);
+      renderModelRows();
+    }).catch(function () {
+      /* 供应商不可达时静默：规格列显示“规格未知”，模型 ID 仍然可编辑。 */
     });
+  }
+
+  function updatePickerCount() {
+    var element = byId("modelPickerCount");
+    if (!element) return;
+    element.textContent = "已选 " + pickedModelIds().length + " 个";
+  }
+
+  function pickedModelIds() {
+    var ids = [];
+    for (var id in state.pickerSelected) {
+      if (Object.prototype.hasOwnProperty.call(state.pickerSelected, id) && state.pickerSelected[id] === true) ids.push(id);
+    }
+    return ids;
+  }
+
+  function renderPickerList() {
+    var list = byId("modelPickerList");
+    if (!list) return;
+    var search = byId("modelPickerSearch");
+    var keyword = search ? String(search.value || "").trim().toLowerCase() : "";
+    var html = "";
+    var visible = 0;
+    for (var index = 0; index < state.catalog.length; index++) {
+      var model = state.catalog[index];
+      var haystack = String(model.id).toLowerCase();
+      var owner = model.ownedBy ? String(model.ownedBy).toLowerCase() : "";
+      if (keyword !== "" && haystack.indexOf(keyword) === -1 && owner.indexOf(keyword) === -1) continue;
+      visible += 1;
+      var checked = state.pickerSelected[model.id] === true;
+      html += '<label class="picker-row' + (checked ? " selected" : "") + '">';
+      html += '<input type="checkbox" data-model="' + escapeHtml(model.id) + '"' + (checked ? " checked" : "") + ">";
+      html += '<span class="picker-id mono">' + escapeHtml(model.id) + "</span>";
+      html += '<span class="picker-spec">' + escapeHtml(formatModelSpec(model)) + "</span>";
+      html += "</label>";
+    }
+    if (visible === 0) html = '<div class="empty-row">没有匹配的模型。</div>';
+    list.innerHTML = html;
+    updatePickerCount();
+  }
+
+  function openModelPicker() {
+    var modal = byId("modelPicker");
+    var list = byId("modelPickerList");
+    var hint = byId("modelPickerHint");
+    if (!modal || !list) return;
+    var search = byId("modelPickerSearch");
+    if (search) search.value = "";
+    state.pickerSelected = {};
+    for (var index = 0; index < state.modelRows.length; index++) {
+      if (state.modelRows[index].id !== "") state.pickerSelected[state.modelRows[index].id] = true;
+    }
+    state.catalog = [];
+    state.catalogUrl = "";
+    modal.hidden = false;
+    list.innerHTML = '<div class="loading">正在从供应商获取模型…</div>';
+    if (hint) hint.textContent = "正在请求 /v1/models…";
+    requestModelCatalog().then(function (data) {
+      var items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length && Array.isArray(data.models)) {
+        for (var modelIndex = 0; modelIndex < data.models.length; modelIndex++) items.push({ id: data.models[modelIndex] });
+      }
+      state.catalog = items;
+      state.catalogUrl = data.url || "";
+      if (hint) hint.textContent = "已从 " + (state.catalogUrl || "/v1/models") + " 获取 " + items.length + " 个模型，勾选后点确认。";
+      renderPickerList();
+    }).catch(function (error) {
+      list.innerHTML = '<div class="empty-row">' + escapeHtml(error && error.message ? error.message : "获取模型失败") + "</div>";
+      if (hint) hint.textContent = "没有取到模型列表；可以直接用“手动添加”填写模型 ID。";
+    });
+    if (search) search.focus();
+  }
+
+  function closeModelPicker() {
+    var modal = byId("modelPicker");
+    if (modal) modal.hidden = true;
+  }
+
+  function onPickerChange(event) {
+    var input = event.target;
+    if (!input || input.getAttribute("data-model") === null) return;
+    var id = input.getAttribute("data-model");
+    if (input.checked) state.pickerSelected[id] = true;
+    else delete state.pickerSelected[id];
+    var row = input.parentElement;
+    if (row && row.classList) row.classList.toggle("selected", !!input.checked);
+    updatePickerCount();
+  }
+
+  function confirmModelPicker() {
+    var ids = pickedModelIds();
+    var rows = [];
+    for (var idIndex = 0; idIndex < ids.length; idIndex++) {
+      var id = ids[idIndex];
+      var found = null;
+      for (var catalogIndex = 0; catalogIndex < state.catalog.length; catalogIndex++) {
+        if (String(state.catalog[catalogIndex].id) === id) {
+          found = state.catalog[catalogIndex];
+          break;
+        }
+      }
+      rows.push({ id: id, contextWindow: found ? found.contextWindow : undefined, maxTokens: found ? found.maxTokens : undefined, ownedBy: found ? found.ownedBy : undefined });
+    }
+    rows.sort(function (left, right) { return String(left.id).localeCompare(String(right.id)); });
+    state.modelRows = rows;
+    closeModelPicker();
+    renderModelRows();
+    toast(ids.length === 0 ? "已清空模型列表" : "已选择 " + ids.length + " 个模型", "success");
   }
 
   function closeProviderForm() {
     state.editingProviderId = "";
+    state.modelRows = [];
+    renderModelRows();
+    closeModelPicker();
     var card = byId("providerFormCard");
     if (card) card.hidden = true;
     var keyInput = byId("pv-apiKey");
@@ -1487,7 +1699,7 @@ pre.code {
       name: name,
       baseUrl: valueOf("pv-baseUrl").trim(),
       defaultModel: valueOf("pv-defaultModel").trim(),
-      models: parseList(valueOf("pv-models")),
+      models: state.modelRows.map(function (row) { return String(row.id || "").trim(); }).filter(function (id) { return id !== ""; }),
       reasoning: !!(byId("pv-reasoning") && byId("pv-reasoning").checked)
     };
     if (state.editingProviderId) provider.id = state.editingProviderId;
@@ -2015,8 +2227,44 @@ pre.code {
     });
     var providerCancelBtn = byId("providerCancelBtn");
     if (providerCancelBtn) providerCancelBtn.addEventListener("click", closeProviderForm);
-    var fetchModelsBtn = byId("pv-fetchModels");
-    if (fetchModelsBtn) fetchModelsBtn.addEventListener("click", fetchProviderModels);
+    var pickModelsBtn = byId("pv-pickModels");
+    if (pickModelsBtn) pickModelsBtn.addEventListener("click", openModelPicker);
+    var addModelBtn = byId("pv-addModel");
+    if (addModelBtn) addModelBtn.addEventListener("click", addManualModel);
+    var modelRowsWrap = byId("pv-modelRows");
+    if (modelRowsWrap) {
+      modelRowsWrap.addEventListener("input", function (event) {
+        var input = event.target;
+        if (!input || input.getAttribute("data-role") !== "id") return;
+        var rowElement = input.parentElement;
+        var rowIndex = rowElement ? Number(rowElement.getAttribute("data-index")) : -1;
+        if (rowIndex >= 0 && state.modelRows[rowIndex]) state.modelRows[rowIndex].id = input.value;
+      });
+      modelRowsWrap.addEventListener("click", function (event) {
+        var button = event.target && event.target.closest ? event.target.closest("[data-role=remove]") : null;
+        if (!button) return;
+        var rowElement = button.parentElement;
+        var rowIndex = rowElement ? Number(rowElement.getAttribute("data-index")) : -1;
+        if (rowIndex >= 0) {
+          state.modelRows.splice(rowIndex, 1);
+          renderModelRows();
+        }
+      });
+    }
+    var pickerCloseBtn = byId("modelPickerClose");
+    if (pickerCloseBtn) pickerCloseBtn.addEventListener("click", closeModelPicker);
+    var pickerCancelBtn = byId("modelPickerCancel");
+    if (pickerCancelBtn) pickerCancelBtn.addEventListener("click", closeModelPicker);
+    var pickerConfirmBtn = byId("modelPickerConfirm");
+    if (pickerConfirmBtn) pickerConfirmBtn.addEventListener("click", confirmModelPicker);
+    var pickerSearchInput = byId("modelPickerSearch");
+    if (pickerSearchInput) pickerSearchInput.addEventListener("input", renderPickerList);
+    var pickerListElement = byId("modelPickerList");
+    if (pickerListElement) pickerListElement.addEventListener("change", onPickerChange);
+    var pickerBackdrop = byId("modelPicker");
+    if (pickerBackdrop) pickerBackdrop.addEventListener("click", function (event) {
+      if (event.target === pickerBackdrop) closeModelPicker();
+    });
     var providerForm = byId("providerForm");
     if (providerForm) providerForm.addEventListener("submit", function (event) {
       event.preventDefault();
