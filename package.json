@@ -25,7 +25,8 @@
 	"bin": {
 		"steve": "dist/entries/cli.js",
 		"steve-acp": "dist/protocols/acp/main.js",
-		"steve-acp-serve": "scripts/steve-acp-serve.mjs"
+		"steve-acp-serve": "scripts/steve-acp-serve.mjs",
+		"steve-serve": "dist/entries/serve.js"
 	},
 	"files": [
 		"dist",
@@ -51,10 +52,23 @@
 		"acp:probe": "node scripts/acp-http-probe.mjs",
 		"acp:ui-test": "node scripts/acp-ui-test.mjs",
 		"acp:serve": "node scripts/steve-acp-serve.mjs",
+		"serve": "node dist/entries/serve.js",
+		"serve:dev": "tsx src/entries/serve.ts",
 		"plugins:test": "node scripts/plugin-test.mjs",
 		"tools:test": "node scripts/local-tools-test.mjs",
 		"sessions:test": "node scripts/session-test.mjs",
+		"streams:test": "node scripts/stream-log-test.mjs",
+		"folds:test": "node scripts/state-fold-test.mjs",
+		"triggers:test": "node scripts/trigger-test.mjs",
+		"serve:test": "node scripts/serve-test.mjs",
+		"feishu:test": "node scripts/feishu-test.mjs",
+		"admin:test": "node scripts/admin-test.mjs",
+		"projections:test": "node scripts/projection-test.mjs",
+		"environments:test": "node scripts/environment-test.mjs",
+		"workers:test": "node scripts/worker-test.mjs",
 		"config:test": "node scripts/config-test.mjs",
+		"prompt:test": "node scripts/prompt-test.mjs",
+		"headers:test": "node scripts/request-headers-test.mjs",
 		"mcp:test": "node scripts/mcp-test.mjs",
 		"arch:test": "node scripts/arch-test.mjs",
 		"verify": "node scripts/verify.mjs",

@@ -10,7 +10,8 @@ import { streamSimple as anthropicStreamSimple } from "@earendil-works/pi-ai/api
 import { streamSimple as completionsStreamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import { streamSimple as responsesStreamSimple } from "@earendil-works/pi-ai/api/openai-responses";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import type { AuthStyle } from "./config.js";
+import type { RequestHeaderConfig, AuthStyle } from "./config.js";
+import { applyHeaders, providerHeaders } from "./request-headers.js";
 
 function emptyUsage(): AssistantMessage["usage"] {
 	return {
@@ -71,6 +72,12 @@ export function createStreamFn(
 	authStyle: AuthStyle = "auto",
 	/** Mutates provider request headers in place; must be synchronous (the stream fn cannot await). */
 	onHeaders?: (headers: Record<string, string>, model: Model<Api>) => void,
+	/**
+	 * Headers configured on the active provider (`features/request-headers.ts`).
+	 * Applied before `onHeaders`, only for requests to the provider's own host,
+	 * and never over headers that are already set (auth, caller overrides).
+	 */
+	requestHeaders?: () => RequestHeaderConfig | undefined,
 ): StreamFn {
 	return (model, context, options) => {
 		const apiKey = options?.apiKey ?? getApiKey();
@@ -84,6 +91,22 @@ export function createStreamFn(
 			if (bearer || onHeaders) {
 				headers = { ...headers };
 				if (bearer) headers.Authorization = `Bearer ${apiKey}`;
+			}
+			const configured = requestHeaders?.();
+			if (configured?.provider) {
+				// Match on the host the request actually goes to, not on the provider
+				// name: a proxy in front of provider A must not send A's headers to B.
+				let host: string | undefined;
+				try {
+					host = new URL(model.baseUrl).hostname;
+				} catch {
+					host = undefined;
+				}
+				const extra = providerHeaders(configured.provider, host, { sessionId: configured.sessionId });
+				if (Object.keys(extra).length > 0) {
+					headers = { ...headers };
+					applyHeaders(headers, extra);
+				}
 			}
 			onHeaders?.(headers ?? {}, model);
 			const streamOptions = { ...options, apiKey, headers };

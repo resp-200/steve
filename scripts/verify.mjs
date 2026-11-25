@@ -66,9 +66,20 @@ run("构建", "npm", ["run", "build"]);
 run("架构契约", "node", ["scripts/arch-test.mjs"]);
 run("UI 内联客户端同步", "node", ["scripts/sync-ui-client.mjs", "--check"]);
 run("配置（.env 链）", "node", ["scripts/config-test.mjs"]);
+run("服务商请求头", "node", ["scripts/request-headers-test.mjs"]);
 run("本地工具", "node", ["scripts/local-tools-test.mjs"]);
 run("插件", "node", ["scripts/plugin-test.mjs"]);
 run("会话持久化", "node", ["scripts/session-test.mjs"]);
+run("事件日志（stream-log + 兼容层）", "node", ["scripts/stream-log-test.mjs"]);
+run("状态折叠（state-fold）", "node", ["scripts/state-fold-test.mjs"]);
+run("触发器（trigger）", "node", ["scripts/trigger-test.mjs"]);
+run("常驻服务（serve）", "node", ["scripts/serve-test.mjs"]);
+run("飞书机器人（feishu）", "node", ["scripts/feishu-test.mjs"]);
+run("系统提示词（prompt）", "node", ["scripts/prompt-test.mjs"]);
+run("管理后台（admin）", "node", ["scripts/admin-test.mjs"]);
+run("事件投影（projection）", "node", ["scripts/projection-test.mjs"]);
+run("环境快照（environment）", "node", ["scripts/environment-test.mjs"]);
+run("运行执行器（worker）", "node", ["scripts/worker-test.mjs"]);
 run("MCP", "node", ["scripts/mcp-test.mjs"]);
 
 if (!fast) {

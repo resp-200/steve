@@ -90,7 +90,7 @@ Anthropic 协议的 baseUrl 不能填成 `.../v1`），否则会 404。
 | `LLM_REASONING` | bool | 是否声明该模型支持扩展思考，见 §6 | `false` |
 | `LLM_CONTEXT_WINDOW` | int > 0 | `Model.contextWindow`，pi 用它估算上下文占用、决定何时压缩 | `128000` |
 | `LLM_MAX_TOKENS` | int > 0 | `Model.maxTokens`，即请求的 `max_tokens`；Anthropic 协议必须带 | `8192` |
-| `LLM_SYSTEM_PROMPT` | string | 覆盖默认 system prompt | `DEFAULT_SYSTEM_PROMPT`（见 `src/model/config.ts`） |
+| `LLM_SYSTEM_PROMPT` | string | 替换提示词的身份正文；场景层与工作目录等环境信息仍会附加 | `DEFAULT_IDENTITY`（见 `src/model/prompt.ts`） |
 
 解析细节：
 
@@ -252,6 +252,7 @@ npm run build && node -e 'import("./dist/model/config.js").then(m => console.log
 | 文件 | 职责 |
 | --- | --- |
 | `src/model/config.ts` | `.env` 链读取（`envFileCandidates` / `loadEnvFiles`）、`buildModel()`、`resolveApi()`、`resolveAuthStyle()` |
+| `src/model/prompt.ts` | `composeSystemPrompt()`：身份 / 角色设定 / 场景 / 环境四层组装（`DEFAULT_IDENTITY`、`SCENE_PROMPTS`） |
 | `src/model/stream.ts` | `createStreamFn()`：按 `model.api` 路由到 pi-ai 适配器、补 Bearer 头、把失败编码成 stream 错误事件 |
 | `src/kernel/agent.ts` | 把 `config`（apiKey / authStyle / model）交给 `Agent` |
 | `src/entries/cli.ts` | CLI 入口，启动时 `loadConfig()` |

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Model, ProviderId } from "@earendil-works/pi-ai";
+import type { RequestHeadersProvider } from "./request-headers.js";
 
 /**
  * Parses one .env file into key/value pairs (no expansion, no interpolation).
@@ -80,11 +81,30 @@ export type SupportedApi = (typeof SUPPORTED_APIS)[number];
  */
 export type AuthStyle = "auto" | "bearer" | "api-key";
 
+/**
+ * Per-provider request headers (see `model/request-headers.ts`). `provider` is
+ * the selected console entry — absent when the provider comes from `.env`, where
+ * there is no entry to configure.
+ *
+ * `sessionId` is the conversation every request of this run belongs to: a
+ * session id for chat surfaces, a stream id for one-shot runs, `undefined` when
+ * neither exists. It feeds the `${sessionId}` placeholder; the last resort when
+ * it is missing is the provider id.
+ */
+export interface RequestHeaderConfig {
+	provider?: RequestHeadersProvider;
+	sessionId?: string;
+}
+
 export interface AppConfig {
 	apiKey: string;
 	model: Model<SupportedApi>;
-	systemPrompt: string;
+	/** Replaces the identity body of the system prompt; see `model/prompt.ts`. */
+	identity?: string;
+	/** The console's role instructions, layered on top of the identity. */
+	persona?: string;
 	authStyle: AuthStyle;
+	requestHeaders?: RequestHeaderConfig;
 }
 
 function requireEnv(name: string): string {
@@ -105,12 +125,6 @@ function intEnv(name: string, fallback: number): number {
 	const value = Number.parseInt(process.env[name]?.trim() ?? "", 10);
 	return Number.isFinite(value) && value > 0 ? value : fallback;
 }
-
-export const DEFAULT_SYSTEM_PROMPT = [
-	"You are a concise, friendly assistant running inside a small CLI demo built on pi-agent-core.",
-	"Use the provided tools whenever they can answer the question more accurately than reasoning alone.",
-	"Prefer short answers. Reply in the same language the user writes in.",
-].join(" ");
 
 /** `LLM_API` wins, otherwise the base URL decides (Anthropic-style gateways are recognisable). */
 export function resolveApi(baseUrl: string): SupportedApi {
@@ -190,7 +204,7 @@ export function loadConfig(): AppConfig {
 	return {
 		apiKey: requireEnv("LLM_API_KEY"),
 		model: buildModel(),
-		systemPrompt: process.env.LLM_SYSTEM_PROMPT?.trim() || DEFAULT_SYSTEM_PROMPT,
+		...(process.env.LLM_SYSTEM_PROMPT?.trim() ? { identity: process.env.LLM_SYSTEM_PROMPT.trim() } : {}),
 		authStyle: resolveAuthStyle(),
 	};
 }

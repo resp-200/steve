@@ -17,9 +17,9 @@
 
 | 层 | 目录 | 职责 |
 | --- | --- | --- |
-| L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）与 ACP 的启动参数 |
-| L2 协议 | `src/protocols/acp/` | ACP 服务端：传输、方法处理、`session/update` 映射、由客户端执行的工具 |
-| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计 |
+| L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）、ACP 的启动参数，以及常驻服务 `serve.ts`（流 + worker + watch + HTTP/SSE）与管理后台（`admin.ts` + 内嵌单文件页面 `admin-page.ts`） |
+| L2 协议 | `src/protocols/` | ACP 服务端（`acp/`：传输、方法处理、`session/update` 映射、由客户端执行的工具）、HTTP/SSE 基础层（`http/`：路由、JSON、SSE 帧、token）与飞书机器人（`feishu/`：HTTP 回调解析/签名/加密、长连接 WebSocket + protobuf 帧、Open API 客户端） |
+| L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计；会话状态 = 可追加事件日志（`stream-log.ts`）+ 折叠（`state-fold.ts`）；`projection.ts` 决定每类受众能看到什么；`environment.ts` 把一次运行的外部条件落成可序列化快照；`worker.ts` 把「一条流 + 一次输入」执行成 run 生命周期事件（一次性 Agent，可取消、可重放）；`trigger.ts` 把外部变化（事件谓词/文件/定时/webhook）变成投递到流上的输入 |
 | L3′ 拓展 | `src/extensions/` | 插件宿主 + **内置插件**（会话命令就住在这里）；一切能力都通过插件贡献 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
 | L5 模型 | `src/model/` | pi-ai 对接：`.env` / `AppConfig`、`Model` 构造、`StreamFn`（协议路由 + 鉴权 + 错误编码进流） |
@@ -27,9 +27,29 @@
 ```
 src/types.ts             跨层共享类型（Logger 等，零依赖）
 src/entries/cli.ts       L1 CLI：REPL / 单次提问 / slash 命令 / Ctrl+C 中断
-src/entries/render.ts    L1 归一化事件 -> 终端渲染（文本、thinking、工具调用、失败）
+src/entries/render.ts    L1 投影后事件 -> 终端渲染（按受众决定显示多少）
+src/entries/serve.ts     L1 常驻服务：事件日志 + 运行执行器 + watch 触发器 + HTTP/SSE（steve-serve）
+src/entries/admin.ts     L1 管理后台 API：概览/供应商/网关/定时任务/系统（只改配置文件，不绕功能层）
+src/entries/admin-page.ts L1 管理后台单文件页面：内嵌 HTML/CSS/JS，日/夜间主题，无构建
 src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content / tool-call）
-src/features/runtime.ts  L3 会话运行时：事件归一化、失败重试与回滚、reset、统计
+src/protocols/http/*     L2 HTTP/SSE 基础层：路由匹配、JSON 响应、SSE 帧、Bearer token
+src/protocols/feishu/*   L2 飞书机器人：回调解析（challenge/解密/签名/去重）、长连接 WebSocket（protobuf 帧/ping/分片/ack）、tenant token 与消息回复
+src/features/runtime.ts  L3 会话运行时：agent 装配、工具表、reset、统计
+src/features/retry.ts    L3 失败重试与回滚：一轮 prompt 的重试循环（退避、未跑工具才重试）
+src/features/normalize.ts L3 事件归一化：pi 事件 -> 功能层词表、transcript 摘要
+src/features/stream-log.ts L3 事件日志：append/read/subscribe/轮转/订阅（会话状态的唯一真相）
+src/features/state-fold.ts L3 状态折叠：事件 -> 消息 / 状态摘要（回放、分叉、续期都走它；turnCount/usage 与 /stats 同口径）
+src/features/projection.ts L3 事件投影：同一事件流按受众（user / full / audit / internal）收窄，隐藏思考与原始工具 I/O
+src/features/environment.ts L3 环境快照：一次运行的外部条件（cwd/roots/工具/权限/模型/投影）落成可序列化数据
+src/features/worker.ts  L3 运行执行器：submit -> 一次性 Agent -> run 生命周期事件（串行/排队/取消/重试）
+src/features/agent-assembly.ts L3 工具/权限/插件钩子装配：runtime 与 worker 共用同一套工具表与审批规则
+src/features/trigger.ts L3 触发器引擎：predicate / fs / cron / webhook -> trigger.fired + 带前缀的 user.message（去重/限速/因果深度三道防线）
+src/features/trigger-schedule.ts L3 触发器调度辅助：cron 5 段解析与下次时间、glob 匹配、路径收敛
+src/features/approval.ts L3 后台审批闸门：需要授权时追加 approval.pending 并挂起，等 approval.granted（默认 10 分钟超时）
+src/model/request-headers.ts L1 服务商请求头标准：模板展开、host 匹配、会话头 opt-in（被 model/stream 与 features/admin-config 共用）
+src/features/logging.ts  L3 分级日志：级别 + 按小时切分的目录 sink（默认 .steve/logs），支持运行时调级/改目录（管理后台用）
+src/features/admin-config.ts L3 管理后台配置：`.steve/admin.json` 读写、供应商 -> AppConfig、`.env` 原子更新、密钥掩码
+src/features/session-store.ts L3 会话存储：JSONL 为准 + 过渡期 `<id>.json` 兼容产物
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
 src/features/contract.ts  L3 工具契约：协议层定义工具的唯一入口（TypeBox/AgentTool）
@@ -37,16 +57,17 @@ src/features/session-policy.ts L3 会话策略装配：modelInfo() + workspacePo
 src/features/tool-annotations.ts L3 工具声明（permission / metadata / describe）的注册表
 src/features/local-tools.ts L3 本地工具的实现（read_file / glob / grep / write_file / edit_file / run_command）
                           —— 由内置插件 local-tools 按会话策略注册，入口不再直接使用
-src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / ctx
+src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / registerMcpServer / registerTrigger / ctx
 src/extensions/discovery.ts L3′ 插件发现与 STEVE_EXTENSIONS / STEVE_DISCOVERY 的解析（两个前端共用）
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
-src/extensions/builtin/*  L3′ 内置插件（Tier 1）：会话命令（含 /mcp）、本地工具、演示工具、.steve/mcp.json 读取
+src/extensions/builtin/*  L3′ 内置插件（Tier 1）：会话命令（含 /mcp）、本地工具、演示工具、.steve/mcp.json、.steve/watch.json 触发器
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
 src/model/version.ts      L5 版本号：唯一从 package.json 读取的地方（--version / ACP 握手 / MCP clientInfo）
-doc/*                    专题文档：模型接入 / ACP server / MCP / 插件（见 doc/README.md）
+doc/*                    专题文档：模型接入 / ACP server / 常驻服务 / MCP / 插件（见 doc/README.md）
+docs/personal-agent.md   技术方案：把 steve 改造成 Personal Agent（事件驱动 / 异步 ReAct / 状态分离 / 投影 / 主动 Watch）—— 设计稿；S0 拆文件 / S0′ 架构断言 / S1 事件日志 + 兼容层 / S2 事件投影 / S3 环境快照 / S4 运行执行器与 ACP 接线 / S5 状态折叠 / S6 触发器与 watch.json / S7 文件与 webhook 触发 + 后台审批 / S8 HTTP 服务（`steve-serve`）已落地
 mcp.example.json         MCP 配置模板（复制到 .steve/mcp.json，见「MCP 接入」）
 web/*                    ACP over HTTP 浏览器/Node 通用 client（测试页与 probe 共用）
 test-acp-jsonrpc.html    浏览器 ACP 测试页（由 --ui 提供）
@@ -108,9 +129,11 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `~/.steve/.env` | 全局，对所有项目生效 |
 | `$PWD/.steve/.env` | **推荐** |
 
+设计稿与实施记录：[`docs/personal-agent.md`](docs/personal-agent.md)（把 steve 改造成 Personal Agent 的技术方案，含阶段划分与兼容矩阵；S0–S8 已全部落地，常驻服务的用法见 [`doc/serve.md`](doc/serve.md)，其后的管理后台见 [`doc/admin.md`](doc/admin.md)）。
+
 专题文档都在 [`doc/`](doc/README.md)：**[模型接入](doc/model-integration.md)**（每个变量的含义、三种协议、常见配方）、
 **[ACP server](doc/acp-server.md)**（客户端接入、线协议、排查）、**[MCP](doc/mcp.md)**（来源与优先级、`/mcp`、没实现什么）、
-**[插件](doc/plugins.md)**（API、钩子、失败语义、判据）。
+**[插件](doc/plugins.md)**（API、钩子、失败语义、判据）、**[常驻服务](doc/serve.md)**（`steve-serve` 的 HTTP/SSE、watch、审批）、**[管理后台](doc/admin.md)**（`/admin` 的供应商/网关/定时任务/系统与重启语义）。
 
 > 旧的写法（项目根目录或安装目录下的裸 `.env`）**已不再读取** —— 留着不会报错，只是被忽略；缺变量时的报错信息会直接指向 `.steve/.env`（`config:test` 有断言盯着这件事）。
 
@@ -126,7 +149,7 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `LLM_PROVIDER` | | 传给 pi 的 provider id，默认 `custom` |
 | `LLM_REASONING` | | `true` 时显式请求 reasoning/thinking（网关自带思考的模型不设也会输出） |
 | `LLM_CONTEXT_WINDOW` / `LLM_MAX_TOKENS` | | 默认 128000 / 8192；Anthropic 协议必须带 `max_tokens` |
-| `LLM_SYSTEM_PROMPT` | | 覆盖默认 system prompt |
+| `LLM_SYSTEM_PROMPT` | | 替换提示词的身份正文（身份+工作方式）；场景层与环境信息仍会附加，见下文「系统提示词」 |
 
 ## REPL 命令
 
@@ -171,6 +194,22 @@ compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningE
 // Anthropic 兼容网关若只暴露部分能力，可关掉 eager_input_streaming / cache_control
 compat: { supportsEagerToolInputStreaming: false, supportsCacheControlOnTools: false }
 ```
+
+### 1.5 系统提示词：四层组装
+
+`src/model/prompt.ts` 的 `composeSystemPrompt()` 按入口拼提示词，顺序固定：
+
+| 层 | 内容 | 来源 |
+| --- | --- | --- |
+| 身份 | 谁是史蒂夫 + `# 怎么工作` / `# 怎么说话` | `DEFAULT_IDENTITY`，可被 `LLM_SYSTEM_PROMPT` 整段替换 |
+| 用户额外要求 | `# 用户的额外要求` | 管理后台「角色设定」（`.steve/admin.json` 的 `persona`） |
+| 场景 | `# 当前场景` | 按入口选：`cli` / `acp` / `worker` / `feishu` |
+| 环境 | 工作目录、可访问目录 | 会话启动时传入 |
+
+- 场景是**真实约束**不是措辞：后台 run（定时、文件变化、webhook）标 `worker`，明说无人值守、需要批准的调用会被拒，所以它不会停下来等人；飞书消息标 `feishu`；ACP 带 cwd 与可访问根目录。
+- 身份正文被 `LLM_SYSTEM_PROMPT` 替换后，场景层与环境层仍然附加 —— 否则换掉的提示词会假装拥有进程里并不存在的环境。
+- 角色设定**只在下一次会话生效**：提示词在每个会话启动时组装一次，运行中的会话保留原样。
+- 空字符串等同于没填，不会产生空的 `#` 标题，也不会破坏可缓存的提示词前缀。
 
 ### 2. 鉴权：Anthropic SDK 的 `x-api-key` vs 网关的 `Authorization: Bearer`
 
@@ -252,7 +291,10 @@ npm run dev                     # 默认：写/执行前在终端问 y/n（非�
 npm run dev -- --resume 9f3a1c7e  # 续上次的会话（id 在退出时打印）
 npm run dev -- --yes            # 自动批准所有写/执行（危险，慎用）
 npm run dev -- --read-only      # 只注册读工具，没有审批提示
+npm run dev -- --audience full  # 显示 thinking 与原始工具参数/输出（默认 user 只给摘要）
 ```
+
+终端默认用 `user` 受众投影（`features/projection.ts`）：模型思考、工具参数原文与工具输出原文都不上屏，只留 `tool › read_file` 这样的标题与一行结果摘要；`--audience full` 恢复成改造前的完整视图，`--audience audit` 另外把原始事件追加到 `<cwd>/.steve/audit.jsonl`。ACP 端固定 `full`，客户端行为逐条不变。
 
 ACP 侧沿用客户端提供的授权弹窗；只有客户端**没有**声明 `fs`/`terminal` 能力时，才可用 `--allow-local-tools` 让会话回退到本地工具（默认关闭，避免客户端环境里的 agent 绕过沙箱改本机文件）。同名工具不会重复注册：客户端提供了就用客户端的。
 
@@ -434,11 +476,13 @@ export default function (pi) {
 src/protocols/acp/main.ts      CLI：--transport stdio|http、--port、--token、--permissions、--ui、--cors
 src/protocols/acp/transport.ts 传输层：stdio（ndJsonStream）/ Streamable HTTP + WebSocket（experimental/server + node 适配器）/ 静态托管测试页
 src/protocols/acp/agent.ts     每个连接一个 AgentApp：initialize / session/new / session/prompt / session/cancel
-src/protocols/acp/session.ts   一个 ACP session = 一个 Agent（经 createKernelAgent）；事件流转成 session/update，权限走 hooks.beforeToolCall
+src/protocols/acp/session.ts   一个 ACP session = 一条事件流 + 一个 worker 执行器；session/prompt = submit + 等终态，事件经投影变成 session/update，权限走 hooks.beforeToolCall
 src/protocols/acp/tools.ts     由**客户端**执行的工具：read_file / write_file / run_command
 src/protocols/acp/content.ts   ACP ContentBlock <-> 与 provider 无关的文本/图片
 src/protocols/acp/tool-call.ts 工具卡片呈现：kind / 标题 / 内容块（含终端内嵌）
 web/acp-http-client.js   ACP over Streamable HTTP client（浏览器与 Node 共用，测试页和 probe 都跑它）
+
+会话状态：ACP 与 CLI 写的是同一份事件日志（`<cwd>/.steve/streams/`）。`session/load` 回放的是折叠后的事件流；如果目标会话只有旧版 `<id>.json`（S1 之前的产物），加载时会先把它导入事件日志再回放，续聊也走新日志。`--no-sessions` 或没有 session-dir 时退回内存内的 runtime 路径，行为与改造前一致。
 test-acp-jsonrpc.html    浏览器测试页：连接、对话、原始 JSON-RPC 日志、client 能力模拟
 ```
 
@@ -482,7 +526,7 @@ npm i -g @zhyoung/steve       # 已发布的话，直接从 registry 装
 # 或者只在本机试用：npm link
 ```
 
-`bin` 三个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）。`steve --version`（`-v`）只打印版本号，便于脚本比对；`steve-acp --help` 的表头同样带版本。**版本号只有 `package.json` 一处**（`src/model/version.ts` 运行时读它），`--version`、ACP `initialize` 握手与 MCP `clientInfo` 都走这里，所以不会出现「包发了 0.1.2、握手还自报 0.1.0」这种走岔。于是客户端配置可以简单到：
+`bin` 四个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）、`steve-serve`（常驻 Personal Agent 服务，见 [serve.md](./doc/serve.md)）。`steve --version`（`-v`）只打印版本号，便于脚本比对；`steve-acp --help` 的表头同样带版本。**版本号只有 `package.json` 一处**（`src/model/version.ts` 运行时读它），`--version`、ACP `initialize` 握手与 MCP `clientInfo` 都走这里，所以不会出现「包发了 0.1.2、握手还自报 0.1.0」这种走岔。于是客户端配置可以简单到：
 
 ```jsonc
 // ~/.jetbrains/acp.json
@@ -616,11 +660,22 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run acp:ui-sync` | 从 `web/acp-http-client.js` 重新生成页面里内联的那份 client |
 | `npm run plugins:test` | 插件层 26 项断言：发现/加载/隔离、四个钩子、事件派发，以及 ACP 端到端（命令播报、`/command` 本地执行、guard 在权限询问前拦下危险命令） |
 | `npm run tools:test` | 本地工具 52 项断言：路径收敛（读/写/cwd/相对逃逸）、读写改、glob/grep、二进制与图片、命令退出码与超时、审批 diff 预览、CLI `--yes`/默认拒绝/`--read-only`/交互式审批、ACP 无能力时的本地回退与 diff 审批 |
-| `npm run sessions:test` | 会话持久化 35 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、续聊、未知 id 报错）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`（含无值/非法 id/未知 id/与 `--no-sessions` 冲突四种报错）、`/new` 清空、`--no-sessions` |
+| `npm run sessions:test` | 会话持久化 38 项断言：store 往返/列表/删除/id 安全/损坏文件、runtime 快照与 transcript 归一化、ACP `session/load`（落盘、历史回放、用户消息文本、续聊、未知 id 报错、只有 `<id>.json` 的旧会话被导入事件日志）、CLI 的 sessionId 展示、退出续期提示、显式 `--resume`（含无值/非法 id/未知 id/与 `--no-sessions` 冲突四种报错）、`/new` 清空、`--no-sessions` |
+| `npm run streams:test` | 事件日志 51 项断言：append/read/seq 连续性、`fromSeq` 增量、订阅补历史与取消、轮转跨文件、崩溃撕裂行跳过与续写、fork 独立编号、超限事件截断后折叠跳过，以及兼容层双写/旧 json 回退/两条读路径折叠一致 |
+| `npm run folds:test` | 状态折叠 35 项断言：每类事件产不产消息逐条、`run.failed` 不产生消息（等价旧回滚）、截断事件跳过、图片/详情/错误透传、`foldStatus` 的 activeRun/queued/usage/turnCount/toolCallCount、`forkEvents` 截断与重排、真实 mock 对话折叠结果与旧 `runtime.snapshot()` 逐条相等（toolCallId 链接一致）、重放流续跑与连续两轮结果相同 |
+| `npm run serve:test` | 常驻服务 40 项断言：health/version、token 鉴权（缺失/错误/非回环无 token 拒绝启动）、流创建与列表、SSE 头（`text/event-stream` 与 `X-Accel-Buffering: no`）、用户投影（无工具参数/无 details/无 `run.turn.settled`）、历史回放与实时一致、消息投递 `202 {runId}`、非法/未知流报错、取消活动 run 与未知 run 404、审批端点、webhook 签名接受与拒绝、触发后台 run 落盘（`trigger.fired`/`[watch:name]` 前缀/background 模式）、`--no-watch` 关闭 hooks |
+| `npm run feishu:test` | 飞书机器人 48 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
+| `npm run admin:test` | 管理后台 72 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化、模型选择弹窗调用 `/v1/models`）、网关读取与写回 `.steve/.env`（保留未修改字段、保存后立即回显、清空后回显未配置）、模型选择弹窗与规格展示（`/v1/models` 的 `items` 规格解析、页面结构）、定时任务写 `.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出 |
+| `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
+| `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
+| `npm run environments:test` | 环境快照 25 项断言：JSON 往返与 `structuredClone` 无损、快照里没有函数/运行时对象、roots 去重与顺序、tools 排序去重与权限/kind 透传、plugins 排序去重、投影与 workspace 的深拷贝隔离、CLI 与 ACP 两入口同策略产出相同快照 |
+| `npm run workers:test` | 运行执行器 53 项断言：submit 立即返回但输入与 `run.started` 已落盘、事件顺序与 seq 连续、一次性 Agent 从日志重建上下文、`wait(runId)` 等终态、重试失败不进 transcript、取消（`run.cancel_requested` -> `run.cancelled`，不重试）、serial 顶掉 / queue 排队、后台 run 的审批闸门（未配 approvals 拒绝执行、allow 放行、deny 拒绝、timeout 取消）、工具目录可随 MCP 后接动态增长、非法 stream id 被拒 |
+| `npm run prompt:test` | 系统提示词 27 项断言：四层顺序（身份→角色设定→场景→环境）、空串等同缺省且不改变提示词、`LLM_SYSTEM_PROMPT` 只换身份正文而场景层仍在、四个场景各不相同、`worker` 场景明说无人值守/审批会被拒/不做不可逆操作/用最终回复说明卡点，并断言提示词里不出现任何渲染相关的说法 |
+| `npm run headers:test` | 服务商请求头 34 项断言：模板展开与 `${sessionId}` 别名、未知占位符/非法头名/换行被拒、按 host 匹配（`hosts` 与 Base URL 自身）、会话头「自动优先手填兜底」、已有头不被覆盖、控制台往返（`admin.json` 落盘、坏条目只丢请求头不丢供应商）、`.env` 供应商与"没配会话头的 OpenCode 供应商"都不多发一个头，以及真实 stream 打到本地 mock 网关时头的落点 |
 | `npm run config:test` | 凭据来源 10 项：`.steve/.env` 查找链（安装目录 / `~/.steve` / `$PWD`）、真实环境变量优先、**裸 `.env` 被忽略**、引号与注释处理 |
-| `npm run arch:test` | 架构契约与发布卫生 20 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、版本号只有 `package.json` 一处且 `steve --version` 打印它、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
+| `npm run arch:test` | 架构契约与发布卫生 25 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、版本号只有 `package.json` 一处且 `steve --version` 打印它、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |
-| `npm run mcp:test` | MCP 与会话管理 41 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
+| `npm run mcp:test` | MCP 与会话管理 42 项断言：stdio 连接与工具映射（文本/schema/错误/图片）、坏 server 隔离、非 stdio 传输的明确拒绝、ACP 端到端（工具进表、模型调用、权限确认）、`session/list` 过滤与 `session/delete` 幂等 |
 
 ```bash
 npm run acp:probe    -- --url http://127.0.0.1:8890/acp "run ls"
@@ -651,9 +706,30 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 - **每条连接独立**：HTTP/WS 传输下每个连接有自己的 `AgentApp` 和 session 表，session 之间不串上下文。
 - **stdout 只走协议**：stdio 模式下所有日志都写到 stderr，`--quiet` 可只留错误。
 - **斜杠命令**：`session/new` 之后 agent 会发 `available_commands_update`，把 `/help` `/tools` `/model` `/stats` `/mcp` `/new` 与插件命令一起播报；这些命令由会话本地执行，不消耗模型调用。
-- **会话持久化**：每个 session 的 transcript 存到 `<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）；**CLI 与 ACP 共用同一个 store 与文件格式**（`features/session-store.ts` 的 `sessionRecord()` 是唯一的记录装配处），所以终端里也能续聊。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，客户端重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
+- **会话持久化**：每个 session 的真相是**可追加事件日志**（`<cwd>/.steve/streams/<id>/*.jsonl`，每行一个事件、`seq` 单调递增、8 MiB 轮转、fsync 落盘）；`<session-dir>/<id>.json`（默认 `<cwd>/.steve/sessions`，`--session-dir` 可改，`--no-sessions` 关闭）在过渡期继续写，作为旧读路径的兼容产物，读侧优先用日志折叠、没有日志时回退读 json。**CLI 与 ACP 共用同一个 store**（`features/session-store.ts` 的 `sessionRecord()` 是唯一的记录装配处），所以终端里也能续聊。客户端 `session/load` 时 agent 回放历史（`user_message_chunk` / `agent_message_chunk` / `agent_thought_chunk` / `tool_call*`）并把该 session 重新挂上，客户端重启后可以接着聊。initialize 里的 `loadSession` 能力就取决于有没有开持久化。
 - **会话管理**：`session/list`（可按 `cwd` 过滤，返回 `sessionId`/`cwd`/`updatedAt`）与 `session/delete`（先 dispose 活会话——顺带 abort 并关掉它的 MCP 子进程——再删文件）。两者都在 initialize 的 `sessionCapabilities` 里声明。
 - **MCP 透传**：来源有两个 —— ACP 客户端在 `session/new` / `session/load` 传的 `mcpServers`，以及插件用 `registerMcpServer()` 声明的（**这是 CLI 侧唯一入口**，终端里没有客户端可传）。两者都连（**stdio 传输**，零依赖实现），工具以 `mcp__<server>__<tool>` 命名进工具表；`/mcp` 会列出每个 server 的来源（`plugin` / `client`）、传输、命令行与工具，连不上的把原因也列出来，MCP 的 `inputSchema` 直接当参数 schema 用；`isError` 结果变成工具错误，图片结果摘要成文本。坏 server 只记日志跳过，不影响会话；**MCP 工具一律先问权限**（它们能做的事和 server 一样多）。`http`/`sse`/`acp` 传输目前明确报「不支持」而不是静默忽略。
+
+## 常驻服务：`steve-serve`（HTTP/SSE + Watch）
+
+`npm run build && npm run serve`（或 `steve-serve`）起一个长驻进程：事件日志、运行执行器、watch 触发器与 HTTP/SSE 接口都在一个进程里，任何前端只要能发 HTTP 就能用，不要求编辑器或 ACP 客户端。
+
+```bash
+steve-serve --port 8892 --token "$STEVE_TOKEN"   # 非回环地址必须给 token
+steve-serve --no-watch                            # 不加载 .steve/watch.json
+steve-serve --audience full                       # SSE 给完整事件（默认 user 只给摘要）
+steve-serve --no-admin                            # 不挂管理后台 /admin
+steve-serve --log-level debug --log-dir .steve/logs        # 日志级别与目录（后台里也能改；按小时切分）
+steve-serve --feishu-mode ws                      # 飞书事件传输：ws（默认长连接）/ http（回调）/ off
+```
+
+接口：`GET /health`、`GET/POST /streams`、`GET /streams/:id/events?from=N`（SSE，先回放历史再推增量）、`POST /streams/:id/messages`（立即返回 `runId`）、`POST /streams/:id/cancel`、`POST /streams/:id/approvals`、`POST /hooks/:name`（watch webhook），以及可选的 `POST /feishu/events`（飞书 HTTP 回调；长连接模式不注册）。SSE 默认按 **user 投影**，隐藏思考与原始工具参数/输出，并带 `X-Accel-Buffering: no` 以便反代；token 走 `Authorization: Bearer`。
+
+管理后台在 `GET /admin`：一个内嵌的单文件页面（无前端构建、无新依赖），覆盖**概览**（版本/运行时长/激活供应商/网关状态）、**模型供应商**（增删改 + 一键激活，切换后重启生效）、**网关**（飞书 `FEISHU_*`，其余留架子）、**定时任务**（写 `.steve/watch.json` 的 cron 触发器，可立即运行一次）、**系统**（日志级别热更新、日志文件、原始配置文件查看/掩码、重启服务）以及日/夜间主题。接口在 `/admin/api/*`，与其它接口共用 Bearer token（页面本身免 token）；重启返回 202 后进程以退出码 **75** 退出，交给 supervisor 拉起。详见 [`doc/admin.md`](doc/admin.md)。
+
+watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` 开头的输入，常驻进程把它交给 worker 以 `background` 模式执行；后台 run 遇到需要审批的工具会挂起为 `approval.pending`，由 `POST /streams/:id/approvals` 放行，默认 10 分钟超时按拒绝处理。详见 [doc/serve.md](./doc/serve.md)。
+
+**飞书机器人**（可选）：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 后，`steve-serve` 默认用**长连接**（WebSocket）主动连飞书接收事件——不需要公网地址、回调 URL 或 Verification Token；把飞书开放平台的事件订阅方式设为「长连接」即可。也可用 `--feishu-mode http`（或 `FEISHU_MODE=http`）切回旧的回调模式（此时需要 `FEISHU_VERIFICATION_TOKEN`，可选 `FEISHU_ENCRYPT_KEY`），进程会挂上 `POST /feishu/events`。两种方式都把飞书私聊/群聊消息映射到一条事件流并跑 worker，回答通过 Open API 回复到原消息线程；一个 chat 固定一条流，按 `event_id` 去重，`--no-feishu` 可关闭。设置步骤见 [doc/serve.md](./doc/serve.md#飞书机器人)。
 
 ## 约定与规范
 
@@ -667,7 +743,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 规则 | 为什么 | 检查 |
 | --- | --- | --- |
 | 只允许上层 import 下层，禁止反向 | 反向依赖意味着内核/功能层知道协议，换个协议就得改内核 | `arch:test` |
-| 横向边只有两条：`features/runtime.ts → extensions/*`（必须 `import type`）、`extensions/* → features/{contract,events,tool-annotations}.ts` | 插件宿主必须能被功能层调用；插件只能用「契约文件」里的词汇，不能碰运行时实现 | `arch:test` |
+| 横向边只有两条：`features/{runtime,worker,agent-assembly}.ts → extensions/*`（必须 `import type`）、`extensions/* → features/{contract,events,tool-annotations,trigger,environment}.ts`（或它自己的能力实现，如 `local-tools.ts`） | 插件宿主必须能被功能层调用；插件只能用「契约文件」里的词汇，不能碰运行时实现 | `arch:test` |
 | `protocols/` 与 `entries/` 零 `@earendil-works/*` | 协议层与入口层不认识 pi；换掉 pi 时这两层不用动 | `arch:test` |
 | `@agentclientprotocol/sdk` 只出现在 `protocols/` | ACP 只是「一种」协议实现，不能渗进功能层 | `arch:test` |
 | `new Agent({ ... })` 只允许出现在 `kernel/agent.ts` | 「接 pi 的位置」只有一处，CLI 与 ACP 客户端行为天然一致 | `arch:test` |
@@ -680,7 +756,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 
 四条对应的「实现约定」：
 
-- **契约文件**：`features/contract.ts`（TypeBox / `AgentTool`）、`features/events.ts`（事件词表）、`features/tool-annotations.ts`（工具声明）、`extensions/api.ts`（插件契约）——它们是层与层之间唯一的词汇表。
+- **契约文件**：`features/contract.ts`（TypeBox / `AgentTool`）、`features/events.ts`（事件词表）、`features/tool-annotations.ts`（工具声明）、`extensions/api.ts`（插件契约）——它们是层与层之间唯一的词汇表。personal agent 阶段新增 `features/trigger.ts`（触发器 spec）与 `features/environment.ts`（环境快照）两个纯类型 + 纯函数契约：插件要注册触发器、要读环境，但不能拿到功能层的运行时装配。
 - **事件词表是唯一的对外语言**：协议层与入口层只说 `features/events.ts` 里那套事件，不吐 pi 的原始事件，也不吐 ACP 专属事件。
 - **内核是唯一的装配点**：`createKernelAgent()` 负责 systemPrompt、工具表、hooks 组合（含内置失败轮过滤 + 插件 `transformContext` 的顺序）。
 - **错误编码进流**：`StreamFn` 不 throw，见下文第 5 节。
@@ -733,7 +809,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 
 代码风格（仓库没有 lint/format 配置，全靠约定）：**tab 缩进、双引号、语句带分号、`import type` 优先**、ESM 相对导入带 `.js` 后缀（NodeNext）、注释与标识符**英文**、README 与提交信息**中文**。
 
-单文件超过约 300 行就考虑拆（`features/local-tools.ts` 541 行是当前上限；再往里加能力先拆文件）。
+单文件超过约 300 行就考虑拆（`features/local-tools.ts` 568 行是当前上限；再往里加能力先拆文件）。
 
 ### 4. 依赖纪律
 
@@ -779,6 +855,15 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | `npm run plugins:test` | 8898 | 8893 |
 | `npm run mcp:test` | 8894 | 8892 |
 | `npm run sessions:test` | 8896 | 8895 |
+| `npm run streams:test` | — | — |
+| `npm run folds:test` | 8898 | — |
+| `npm run triggers:test` | — | — |
+| `npm run serve:test` | 8903 | 8911 / 8912 |
+| `npm run feishu:test` | 8943 | 8941（伪飞书 API）/ 8942、8944、8945、8947（serve）/ 8946（假 WebSocket） |
+| `npm run admin:test` | 8951 | 8952（serve）、8953（伪 models API） |
+| `npm run projections:test` | — | — |
+| `npm run environments:test` | — | — |
+| `npm run workers:test` | — | — |
 
 ### 8. 提交与发布
 
@@ -831,7 +916,7 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 | 1 | 给插件 API 补会话策略（`workspace.{roots,access,shell}`、`session.model.supportsImages`） | 判据 ①②：本地工具变体真实存在、两个入口各装配一遍 | ✅ 已做 |
 | 2 | 本地工具变成 Tier 1 内置插件，入口只发布策略 | 同上；也是唯一的 dogfooding 检验 | ✅ 已做（它当场暴露了一个真 bug：插件工具的声明在进运行时被丢掉） |
 | 3 | `registerTool({ override: true })`：显式替换宿主工具 | 同名冲突已规则化（前端优先 + 记日志），但"故意替换"还没有出口 | 待做 |
-| 4 | 拆超长文件：`runtime.ts`、`acp/session.ts` 仍超 300 行口径；`features/local-tools.ts`（578）也该按 fs/search/exec 拆 | 命名与目录一节的规模口径 | 待做 |
+| 4 | 拆超长文件：`runtime.ts` / `acp/session.ts` 已在 S0 拆分；`features/local-tools.ts`（>500 行）仍该按 fs/search/exec 拆 | 命名与目录一节的规模口径 | 部分完成 |
 | 4b | 客户端工具也做成插件（需要 `ctx.client.{fs,terminal}`） | 判据 ①②：它俩现在仍写在协议层；但协议层是宿主，暂可接受 | 待定 |
 | 5b | ~~消除前端重复配置~~ | 已完成：`modelInfo`/`workspacePolicy` 收进 `features/session-policy.ts`，env 解析收进 `extensions/discovery.ts`，CLI 不再重复实现插件命令 | ✅ 已做 |
 | 5c | ~~CLI 会话持久化 + 显式续期~~ | 已完成：每次运行新 id、退出打印 `steve --resume <id>`、`--resume` 恢复；与 ACP 共用 `sessionRecord()` 与同一份 store | ✅ 已做 |

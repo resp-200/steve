@@ -3,6 +3,7 @@ import process from "node:process";
 import { join } from "node:path";
 import { createAcpAgentApp, AGENT_NAME, AGENT_VERSION } from "./agent.js";
 import { discoveryEnabled, pluginPaths } from "../../extensions/discovery.js";
+import { readAdminConfig, withPersona } from "../../features/admin-config.js";
 import { createSessionStore } from "../../features/session-store.js";
 import { loadConfig } from "../../model/config.js";
 import type { PermissionMode } from "./session.js";
@@ -140,7 +141,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const config = loadConfig();
+	const config = withPersona(loadConfig(), await readAdminConfig(process.cwd()));
 	const log = (message: string): void => {
 		if (!parsed.quiet) process.stderr.write(`[acp] ${message}\n`);
 	};

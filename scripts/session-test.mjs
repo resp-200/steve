@@ -11,7 +11,7 @@
 //
 //   npm run build && node scripts/session-test.mjs
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -206,8 +206,10 @@ async function acpChecks() {
 			.filter((update) => update.sessionUpdate === "agent_message_chunk")
 			.map((update) => update.content?.text ?? "")
 			.join("");
-		const replayedUser = replay.filter((update) => update.sessionUpdate === "user_message_chunk").length;
-		check("session/load 回放用户消息", replayedUser >= 1, `user chunks=${replayedUser}`);
+		const replayedUser = replay.filter((update) => update.sessionUpdate === "user_message_chunk");
+		const replayedUserText = replayedUser.map((update) => update.content?.text ?? "").join("");
+		check("session/load 回放用户消息", replayedUser.length >= 1, `user chunks=${replayedUser.length}`);
+		check("回放的用户消息文本正确", replayedUserText.includes("hello there"), replayedUserText.slice(0, 60));
 		check("session/load 回放助手回复", replayedText.includes("pi-agent-core"), replayedText.slice(0, 60));
 		check("session/load 后播报命令列表", replay.some((update) => update.sessionUpdate === "available_commands_update"));
 		check("服务端记录了 session/load", serverLog.join("").includes("session/load:"), serverLog.join("").match(/session\/load:[^\n]*/)?.[0] ?? "");
@@ -224,6 +226,38 @@ async function acpChecks() {
 			(error) => String(error.message),
 		);
 		check("加载不存在的会话返回错误", typeof unknown === "string" && unknown.includes("Unknown session"), String(unknown).slice(0, 70));
+
+		// Sessions written before the event log only have `<id>.json`: loading one
+		// imports its transcript into the stream so replay and follow-ups see history.
+		const legacyId = `legacy${Date.now().toString(36)}`;
+		writeFileSync(
+			join(sessionDir, `${legacyId}.json`),
+			JSON.stringify({
+				id: legacyId,
+				cwd: ROOT,
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+				messages: [{ role: "user", content: [{ type: "text", text: "legacy question" }], timestamp: Date.now() }],
+			}),
+			"utf8",
+		);
+		const legacyClient = new AcpHttpClient(`http://127.0.0.1:${ACP_PORT}/acp`, {});
+		const legacyReplay = [];
+		legacyClient.onMessage((event) => {
+			if (event.message?.method === "session/update") legacyReplay.push(event.message.params.update);
+		});
+		await legacyClient.initialize({ clientName: "steve-session-test-3", clientVersion: "1.0.0", capabilities: {} });
+		await legacyClient.loadSession({ sessionId: legacyId, cwd: ROOT, mcpServers: [] });
+		await sleep(150);
+		const legacyText = legacyReplay
+			.filter((update) => update.sessionUpdate === "user_message_chunk")
+			.map((update) => update.content?.text ?? "")
+			.join("");
+		check("旧 json 会话被导入事件日志并回放", legacyText.includes("legacy question"), legacyText.slice(0, 60));
+		const importedStream = join(dirname(sessionDir), "streams", legacyId, "0001.jsonl");
+		check("导入后事件日志已落盘", existsSync(importedStream), importedStream);
+		await legacyClient.close();
+		rmSync(dirname(importedStream), { recursive: true, force: true });
 
 		await reloaded.close();
 		await client.close();
