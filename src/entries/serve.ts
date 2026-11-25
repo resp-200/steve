@@ -12,8 +12,10 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { createApprovalGate } from "../features/approval.js";
+import { activeProvider, applyProvider, configFromProvider, readAdminConfig } from "../features/admin-config.js";
 import { assembleAgent } from "../features/agent-assembly.js";
 import type { AgentTool } from "../features/contract.js";
+import { createLogger, isLogLevel, type LogLevel } from "../features/logging.js";
 import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "../features/projection.js";
 import { snapshotEnvironment } from "../features/environment.js";
 import { createTriggerEngine, type TriggerEngine } from "../features/trigger.js";
@@ -22,8 +24,10 @@ import { createRunWorker, type RunTerminal, type RunWorker } from "../features/w
 import { createStreamLog, isStreamId, type StreamLog } from "../features/stream-log.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
-import { loadConfig } from "../model/config.js";
+import { loadConfig, type AppConfig } from "../model/config.js";
 import { VERSION } from "../model/version.js";
+import { ADMIN_PAGE } from "./admin-page.js";
+import { ADMIN_PAGE_PATHS, createAdminRoutes } from "./admin.js";
 import { startHttpServer, type HttpExchange, type HttpRoute } from "../protocols/http/events.js";
 import {
 	createFeishuClient,
@@ -52,6 +56,9 @@ const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch 
   --streams-dir <path> 事件日志目录（默认 <cwd>/.steve/streams）
   --no-watch           不启动 .steve/watch.json 触发器
   --no-feishu          不启用飞书机器人（默认在 FEISHU_* 环境变量齐全时启用）
+  --no-admin           不启用管理后台 /admin（默认启用）
+  --log-level <debug|info|warn|error>  日志级别（默认读 .steve/admin.json，兜底 info）
+  --log-file <path>    同时把日志追加到文件（默认只写 stderr）
   --help               显示本帮助
   --version            显示版本
 
@@ -67,6 +74,17 @@ HTTP API：
   POST /feishu/events               飞书事件回调（需 FEISHU_APP_ID / FEISHU_APP_SECRET /
                                     FEISHU_VERIFICATION_TOKEN，可选 FEISHU_ENCRYPT_KEY；
                                     FEISHU_API_BASE 仅供测试覆盖，默认 ${FEISHU_API_BASE}）
+
+管理后台（默认启用；页面不需要 token，API 需要 Bearer token）：
+  GET  /admin                       控制台页面（概览 / 模型供应商 / 网关 / 定时任务 / 系统）
+  GET  /admin/api/overview          GET  /admin/api/providers
+  POST /admin/api/providers/save    POST /admin/api/providers/delete
+  POST /admin/api/providers/activate
+  GET  /admin/api/gateways          POST /admin/api/gateways/save
+  GET  /admin/api/schedules         POST /admin/api/schedules/save
+  POST /admin/api/schedules/delete  POST /admin/api/schedules/run
+  GET  /admin/api/system            POST /admin/api/system/save
+  GET  /admin/api/files             POST /admin/api/system/restart
 `;
 
 interface ServeOptions {
@@ -78,6 +96,9 @@ interface ServeOptions {
 	streamsDir?: string;
 	watch: boolean;
 	feishu: boolean;
+	admin: boolean;
+	logLevel?: LogLevel;
+	logFile?: string;
 }
 
 function valueFor(argv: readonly string[], index: number, flag: string): string {
@@ -87,7 +108,7 @@ function valueFor(argv: readonly string[], index: number, flag: string): string 
 }
 
 function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
-	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true, feishu: true };
+	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true, feishu: true, admin: true };
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index] as string;
 		switch (arg) {
@@ -100,6 +121,20 @@ function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
 				break;
 			case "--no-feishu":
 				options.feishu = false;
+				break;
+			case "--no-admin":
+				options.admin = false;
+				break;
+			case "--log-level": {
+				const value = valueFor(argv, index, arg);
+				if (!isLogLevel(value)) throw new Error(`--log-level must be debug, info, warn or error (got "${value}")`);
+				options.logLevel = value;
+				index += 1;
+				break;
+			}
+			case "--log-file":
+				options.logFile = valueFor(argv, index, arg);
+				index += 1;
 				break;
 			case "--port": {
 				const value = Number(valueFor(argv, index, arg));
@@ -203,9 +238,25 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const log = (message: string): void => {
-		process.stderr.write(`[serve] ${message}\n`);
+	const cwd = process.cwd();
+	const startedAt = Date.now();
+	// The admin file is read before anything else: it carries the logging
+	// preferences and the optional provider override.
+	const adminConfig = await readAdminConfig(cwd, (message) => process.stderr.write(`${message}\n`));
+	const logFile = parsed.logFile ?? adminConfig.logFile;
+	const logger = createLogger({
+		level: parsed.logLevel ?? adminConfig.logLevel,
+		...(logFile !== undefined ? { file: logFile } : {}),
+	});
+	const log = (message: string): void => logger.info(message);
+	const restart = (): void => {
+		const timer = setTimeout(() => {
+			logger.warn("restart requested through the admin console; exiting 75 for the supervisor");
+			process.exit(75);
+		}, 300);
+		timer.unref?.();
 	};
+
 	const configuredToken = parsed.token ?? process.env.STEVE_SERVE_TOKEN;
 	const token = configuredToken === undefined || configuredToken === "" ? undefined : configuredToken;
 	if (!isLoopback(parsed.host) && token === undefined) {
@@ -213,8 +264,22 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 
-	const cwd = process.cwd();
-	const config = loadConfig();
+	// A provider saved from the console wins over `.steve/.env`; without one the
+	// environment keeps driving the model exactly as before (and a first run can
+	// start from the console alone, with no `.env` yet).
+	const provider = activeProvider(adminConfig);
+	let config: AppConfig;
+	if (provider === undefined) {
+		config = loadConfig();
+	} else {
+		let base: AppConfig | undefined;
+		try {
+			base = loadConfig();
+		} catch (error) {
+			logger.warn(`environment config unavailable (${error instanceof Error ? error.message : String(error)}); using provider "${provider.name}"`);
+		}
+		config = base === undefined ? configFromProvider(provider) : applyProvider(base, adminConfig);
+	}
 	const streamsDir = parsed.streamsDir !== undefined ? resolve(parsed.streamsDir) : join(cwd, ".steve", "streams");
 	mkdirSync(streamsDir, { recursive: true });
 
@@ -531,15 +596,35 @@ async function main(): Promise<void> {
 		},
 	];
 
+	if (parsed.admin) {
+		routes.push(
+			...createAdminRoutes({
+				cwd,
+				adminPage: ADMIN_PAGE,
+				startedAt,
+				streamsDir,
+				watchEnabled: parsed.watch,
+				log: log2,
+				worker,
+				logger,
+				restart,
+			}),
+		);
+	}
+
+	const publicPaths: string[] = [];
+	if (feishuConfig !== undefined) publicPaths.push("/feishu/events");
+	if (parsed.admin) publicPaths.push(...ADMIN_PAGE_PATHS);
+
 	const server = await startHttpServer({
 		host: parsed.host,
 		port: parsed.port,
 		...(token !== undefined ? { token } : {}),
-		...(feishuConfig !== undefined ? { publicPaths: ["/feishu/events"] } : {}),
+		...(publicPaths.length > 0 ? { publicPaths } : {}),
 		logger: log,
 		routes,
 	});
-	log(`listening on http://${server.host}:${server.port} (streams: ${streamsDir}, watch: ${parsed.watch ? "on" : "off"})`);
+	log(`listening on http://${server.host}:${server.port} (streams: ${streamsDir}, watch: ${parsed.watch ? "on" : "off"}, admin: ${parsed.admin ? "on" : "off"})`);
 
 	let closing = false;
 	const shutdown = async (reason: string): Promise<void> => {

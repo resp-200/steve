@@ -17,7 +17,7 @@
 
 | 层 | 目录 | 职责 |
 | --- | --- | --- |
-| L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）、ACP 的启动参数，以及常驻服务 `serve.ts`（流 + worker + watch + HTTP/SSE） |
+| L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）、ACP 的启动参数，以及常驻服务 `serve.ts`（流 + worker + watch + HTTP/SSE）与管理后台（`admin.ts` + 内嵌单文件页面 `admin-page.ts`） |
 | L2 协议 | `src/protocols/` | ACP 服务端（`acp/`：传输、方法处理、`session/update` 映射、由客户端执行的工具）、HTTP/SSE 基础层（`http/`：路由、JSON、SSE 帧、token）与飞书机器人回调（`feishu/`：事件解析/签名/加密、Open API 客户端） |
 | L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计；会话状态 = 可追加事件日志（`stream-log.ts`）+ 折叠（`state-fold.ts`）；`projection.ts` 决定每类受众能看到什么；`environment.ts` 把一次运行的外部条件落成可序列化快照；`worker.ts` 把「一条流 + 一次输入」执行成 run 生命周期事件（一次性 Agent，可取消、可重放）；`trigger.ts` 把外部变化（事件谓词/文件/定时/webhook）变成投递到流上的输入 |
 | L3′ 拓展 | `src/extensions/` | 插件宿主 + **内置插件**（会话命令就住在这里）；一切能力都通过插件贡献 |
@@ -29,6 +29,8 @@ src/types.ts             跨层共享类型（Logger 等，零依赖）
 src/entries/cli.ts       L1 CLI：REPL / 单次提问 / slash 命令 / Ctrl+C 中断
 src/entries/render.ts    L1 投影后事件 -> 终端渲染（按受众决定显示多少）
 src/entries/serve.ts     L1 常驻服务：事件日志 + 运行执行器 + watch 触发器 + HTTP/SSE（steve-serve）
+src/entries/admin.ts     L1 管理后台 API：概览/供应商/网关/定时任务/系统（只改配置文件，不绕功能层）
+src/entries/admin-page.ts L1 管理后台单文件页面：内嵌 HTML/CSS/JS，日/夜间主题，无构建
 src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content / tool-call）
 src/protocols/http/*     L2 HTTP/SSE 基础层：路由匹配、JSON 响应、SSE 帧、Bearer token
 src/protocols/feishu/*   L2 飞书机器人：回调解析（challenge/解密/签名/去重）、tenant token 与消息回复
@@ -44,6 +46,8 @@ src/features/agent-assembly.ts L3 工具/权限/插件钩子装配：runtime 与
 src/features/trigger.ts L3 触发器引擎：predicate / fs / cron / webhook -> trigger.fired + 带前缀的 user.message（去重/限速/因果深度三道防线）
 src/features/trigger-schedule.ts L3 触发器调度辅助：cron 5 段解析与下次时间、glob 匹配、路径收敛
 src/features/approval.ts L3 后台审批闸门：需要授权时追加 approval.pending 并挂起，等 approval.granted（默认 10 分钟超时）
+src/features/logging.ts  L3 分级日志：级别 + 可选文件 sink，支持运行时调级（管理后台用）
+src/features/admin-config.ts L3 管理后台配置：`.steve/admin.json` 读写、供应商 -> AppConfig、`.env` 原子更新、密钥掩码
 src/features/session-store.ts L3 会话存储：JSONL 为准 + 过渡期 `<id>.json` 兼容产物
 src/features/events.ts    L3 事件词表：这以上（协议/入口）只说这套事件
 src/features/permissions.ts L3 权限策略：哪些工具要问人、allow_always 记忆
@@ -124,11 +128,11 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `~/.steve/.env` | 全局，对所有项目生效 |
 | `$PWD/.steve/.env` | **推荐** |
 
-设计稿与实施记录：[`docs/personal-agent.md`](docs/personal-agent.md)（把 steve 改造成 Personal Agent 的技术方案，含阶段划分与兼容矩阵；S0–S8 已全部落地，常驻服务的用法见 [`doc/serve.md`](doc/serve.md)）。
+设计稿与实施记录：[`docs/personal-agent.md`](docs/personal-agent.md)（把 steve 改造成 Personal Agent 的技术方案，含阶段划分与兼容矩阵；S0–S8 已全部落地，常驻服务的用法见 [`doc/serve.md`](doc/serve.md)，其后的管理后台见 [`doc/admin.md`](doc/admin.md)）。
 
 专题文档都在 [`doc/`](doc/README.md)：**[模型接入](doc/model-integration.md)**（每个变量的含义、三种协议、常见配方）、
 **[ACP server](doc/acp-server.md)**（客户端接入、线协议、排查）、**[MCP](doc/mcp.md)**（来源与优先级、`/mcp`、没实现什么）、
-**[插件](doc/plugins.md)**（API、钩子、失败语义、判据）、**[常驻服务](doc/serve.md)**（`steve-serve` 的 HTTP/SSE、watch、审批）。
+**[插件](doc/plugins.md)**（API、钩子、失败语义、判据）、**[常驻服务](doc/serve.md)**（`steve-serve` 的 HTTP/SSE、watch、审批）、**[管理后台](doc/admin.md)**（`/admin` 的供应商/网关/定时任务/系统与重启语义）。
 
 > 旧的写法（项目根目录或安装目录下的裸 `.env`）**已不再读取** —— 留着不会报错，只是被忽略；缺变量时的报错信息会直接指向 `.steve/.env`（`config:test` 有断言盯着这件事）。
 
@@ -644,6 +648,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run folds:test` | 状态折叠 35 项断言：每类事件产不产消息逐条、`run.failed` 不产生消息（等价旧回滚）、截断事件跳过、图片/详情/错误透传、`foldStatus` 的 activeRun/queued/usage/turnCount/toolCallCount、`forkEvents` 截断与重排、真实 mock 对话折叠结果与旧 `runtime.snapshot()` 逐条相等（toolCallId 链接一致）、重放流续跑与连续两轮结果相同 |
 | `npm run serve:test` | 常驻服务 40 项断言：health/version、token 鉴权（缺失/错误/非回环无 token 拒绝启动）、流创建与列表、SSE 头（`text/event-stream` 与 `X-Accel-Buffering: no`）、用户投影（无工具参数/无 details/无 `run.turn.settled`）、历史回放与实时一致、消息投递 `202 {runId}`、非法/未知流报错、取消活动 run 与未知 run 404、审批端点、webhook 签名接受与拒绝、触发后台 run 落盘（`trigger.fired`/`[watch:name]` 前缀/background 模式）、`--no-watch` 关闭 hooks |
 | `npm run feishu:test` | 飞书机器人 30 项断言：URL 校验 challenge（正确 token/错误 token/缺 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘（user.message/run.settled/assistant 输出）、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token 而普通接口仍校验 token、加密回调（AES + `X-Lark-Signature`）、`--no-feishu` 关闭 |
+| `npm run admin:test` | 管理后台 53 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化）、网关读取与写回 `.steve/.env`（保留未修改字段）、定时任务写 `.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出 |
 | `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
 | `npm run environments:test` | 环境快照 25 项断言：JSON 往返与 `structuredClone` 无损、快照里没有函数/运行时对象、roots 去重与顺序、tools 排序去重与权限/kind 透传、plugins 排序去重、投影与 workspace 的深拷贝隔离、CLI 与 ACP 两入口同策略产出相同快照 |
@@ -694,9 +699,13 @@ npm run acp:ui-test  -- --url http://127.0.0.1:8890/ --smoke "用一句话介绍
 steve-serve --port 8892 --token "$STEVE_TOKEN"   # 非回环地址必须给 token
 steve-serve --no-watch                            # 不加载 .steve/watch.json
 steve-serve --audience full                       # SSE 给完整事件（默认 user 只给摘要）
+steve-serve --no-admin                            # 不挂管理后台 /admin
+steve-serve --log-level debug --log-file .steve/steve.log   # 日志级别与文件（后台里也能改）
 ```
 
 接口：`GET /health`、`GET/POST /streams`、`GET /streams/:id/events?from=N`（SSE，先回放历史再推增量）、`POST /streams/:id/messages`（立即返回 `runId`）、`POST /streams/:id/cancel`、`POST /streams/:id/approvals`、`POST /hooks/:name`（watch webhook），以及可选的 `POST /feishu/events`（飞书机器人回调）。SSE 默认按 **user 投影**，隐藏思考与原始工具参数/输出，并带 `X-Accel-Buffering: no` 以便反代；token 走 `Authorization: Bearer`。
+
+管理后台在 `GET /admin`：一个内嵌的单文件页面（无前端构建、无新依赖），覆盖**概览**（版本/运行时长/激活供应商/网关状态）、**模型供应商**（增删改 + 一键激活，切换后重启生效）、**网关**（飞书 `FEISHU_*`，其余留架子）、**定时任务**（写 `.steve/watch.json` 的 cron 触发器，可立即运行一次）、**系统**（日志级别热更新、日志文件、原始配置文件查看/掩码、重启服务）以及日/夜间主题。接口在 `/admin/api/*`，与其它接口共用 Bearer token（页面本身免 token）；重启返回 202 后进程以退出码 **75** 退出，交给 supervisor 拉起。详见 [`doc/admin.md`](doc/admin.md)。
 
 watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` 开头的输入，常驻进程把它交给 worker 以 `background` 模式执行；后台 run 遇到需要审批的工具会挂起为 `approval.pending`，由 `POST /streams/:id/approvals` 放行，默认 10 分钟超时按拒绝处理。详见 [doc/serve.md](./doc/serve.md)。
 
@@ -831,6 +840,7 @@ watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` �
 | `npm run triggers:test` | — | — |
 | `npm run serve:test` | 8903 | 8911 / 8912 |
 | `npm run feishu:test` | 8943 | 8941（伪飞书 API）/ 8942、8944、8945（serve） |
+| `npm run admin:test` | 8951 | 8952（serve） |
 | `npm run projections:test` | — | — |
 | `npm run environments:test` | — | — |
 | `npm run workers:test` | — | — |

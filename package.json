@@ -62,6 +62,7 @@
 		"triggers:test": "node scripts/trigger-test.mjs",
 		"serve:test": "node scripts/serve-test.mjs",
 		"feishu:test": "node scripts/feishu-test.mjs",
+		"admin:test": "node scripts/admin-test.mjs",
 		"projections:test": "node scripts/projection-test.mjs",
 		"environments:test": "node scripts/environment-test.mjs",
 		"workers:test": "node scripts/worker-test.mjs",
