@@ -61,6 +61,7 @@
 		"folds:test": "node scripts/state-fold-test.mjs",
 		"triggers:test": "node scripts/trigger-test.mjs",
 		"serve:test": "node scripts/serve-test.mjs",
+		"feishu:test": "node scripts/feishu-test.mjs",
 		"projections:test": "node scripts/projection-test.mjs",
 		"environments:test": "node scripts/environment-test.mjs",
 		"workers:test": "node scripts/worker-test.mjs",

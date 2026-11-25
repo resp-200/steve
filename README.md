@@ -18,7 +18,7 @@
 | 层 | 目录 | 职责 |
 | --- | --- | --- |
 | L1 入口 | `src/entries/` | 进程入口：CLI（REPL / 单次提问 / slash 命令）、ACP 的启动参数，以及常驻服务 `serve.ts`（流 + worker + watch + HTTP/SSE） |
-| L2 协议 | `src/protocols/` | ACP 服务端（`acp/`：传输、方法处理、`session/update` 映射、由客户端执行的工具）与 HTTP/SSE 基础层（`http/`：路由、JSON、SSE 帧、token） |
+| L2 协议 | `src/protocols/` | ACP 服务端（`acp/`：传输、方法处理、`session/update` 映射、由客户端执行的工具）、HTTP/SSE 基础层（`http/`：路由、JSON、SSE 帧、token）与飞书机器人回调（`feishu/`：事件解析/签名/加密、Open API 客户端） |
 | L3 功能 | `src/features/` | 会话运行时与策略：事件归一化、失败重试与回滚、权限判定、本地文件/命令工具、统计；会话状态 = 可追加事件日志（`stream-log.ts`）+ 折叠（`state-fold.ts`）；`projection.ts` 决定每类受众能看到什么；`environment.ts` 把一次运行的外部条件落成可序列化快照；`worker.ts` 把「一条流 + 一次输入」执行成 run 生命周期事件（一次性 Agent，可取消、可重放）；`trigger.ts` 把外部变化（事件谓词/文件/定时/webhook）变成投递到流上的输入 |
 | L3′ 拓展 | `src/extensions/` | 插件宿主 + **内置插件**（会话命令就住在这里）；一切能力都通过插件贡献 |
 | L4 内核 | `src/kernel/` | **唯一**装配 pi-agent-core `Agent` 的地方：streamFn、上下文净化、thinking 等级、hooks |
@@ -31,6 +31,7 @@ src/entries/render.ts    L1 投影后事件 -> 终端渲染（按受众决定显
 src/entries/serve.ts     L1 常驻服务：事件日志 + 运行执行器 + watch 触发器 + HTTP/SSE（steve-serve）
 src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content / tool-call）
 src/protocols/http/*     L2 HTTP/SSE 基础层：路由匹配、JSON 响应、SSE 帧、Bearer token
+src/protocols/feishu/*   L2 飞书机器人：回调解析（challenge/解密/签名/去重）、tenant token 与消息回复
 src/features/runtime.ts  L3 会话运行时：agent 装配、工具表、reset、统计
 src/features/retry.ts    L3 失败重试与回滚：一轮 prompt 的重试循环（退避、未跑工具才重试）
 src/features/normalize.ts L3 事件归一化：pi 事件 -> 功能层词表、transcript 摘要
@@ -642,6 +643,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run streams:test` | 事件日志 51 项断言：append/read/seq 连续性、`fromSeq` 增量、订阅补历史与取消、轮转跨文件、崩溃撕裂行跳过与续写、fork 独立编号、超限事件截断后折叠跳过，以及兼容层双写/旧 json 回退/两条读路径折叠一致 |
 | `npm run folds:test` | 状态折叠 35 项断言：每类事件产不产消息逐条、`run.failed` 不产生消息（等价旧回滚）、截断事件跳过、图片/详情/错误透传、`foldStatus` 的 activeRun/queued/usage/turnCount/toolCallCount、`forkEvents` 截断与重排、真实 mock 对话折叠结果与旧 `runtime.snapshot()` 逐条相等（toolCallId 链接一致）、重放流续跑与连续两轮结果相同 |
 | `npm run serve:test` | 常驻服务 40 项断言：health/version、token 鉴权（缺失/错误/非回环无 token 拒绝启动）、流创建与列表、SSE 头（`text/event-stream` 与 `X-Accel-Buffering: no`）、用户投影（无工具参数/无 details/无 `run.turn.settled`）、历史回放与实时一致、消息投递 `202 {runId}`、非法/未知流报错、取消活动 run 与未知 run 404、审批端点、webhook 签名接受与拒绝、触发后台 run 落盘（`trigger.fired`/`[watch:name]` 前缀/background 模式）、`--no-watch` 关闭 hooks |
+| `npm run feishu:test` | 飞书机器人 28 项断言：URL 校验 challenge（正确 token/错误 token/缺 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘（user.message/run.settled/assistant 输出）、重复 `event_id` 去重、非文本与 app 消息忽略、加密回调（AES + `X-Lark-Signature`）、`--no-feishu` 关闭 |
 | `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
 | `npm run environments:test` | 环境快照 25 项断言：JSON 往返与 `structuredClone` 无损、快照里没有函数/运行时对象、roots 去重与顺序、tools 排序去重与权限/kind 透传、plugins 排序去重、投影与 workspace 的深拷贝隔离、CLI 与 ACP 两入口同策略产出相同快照 |
@@ -694,9 +696,11 @@ steve-serve --no-watch                            # 不加载 .steve/watch.json
 steve-serve --audience full                       # SSE 给完整事件（默认 user 只给摘要）
 ```
 
-接口：`GET /health`、`GET/POST /streams`、`GET /streams/:id/events?from=N`（SSE，先回放历史再推增量）、`POST /streams/:id/messages`（立即返回 `runId`）、`POST /streams/:id/cancel`、`POST /streams/:id/approvals`、`POST /hooks/:name`（watch webhook）。SSE 默认按 **user 投影**，隐藏思考与原始工具参数/输出，并带 `X-Accel-Buffering: no` 以便反代；token 走 `Authorization: Bearer`。
+接口：`GET /health`、`GET/POST /streams`、`GET /streams/:id/events?from=N`（SSE，先回放历史再推增量）、`POST /streams/:id/messages`（立即返回 `runId`）、`POST /streams/:id/cancel`、`POST /streams/:id/approvals`、`POST /hooks/:name`（watch webhook），以及可选的 `POST /feishu/events`（飞书机器人回调）。SSE 默认按 **user 投影**，隐藏思考与原始工具参数/输出，并带 `X-Accel-Buffering: no` 以便反代；token 走 `Authorization: Bearer`。
 
 watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` 开头的输入，常驻进程把它交给 worker 以 `background` 模式执行；后台 run 遇到需要审批的工具会挂起为 `approval.pending`，由 `POST /streams/:id/approvals` 放行，默认 10 分钟超时按拒绝处理。详见 [doc/serve.md](./doc/serve.md)。
+
+**飞书机器人**（可选）：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN`（可选 `FEISHU_ENCRYPT_KEY`）后，`steve-serve` 会挂上 `POST /feishu/events`，把飞书私聊/群聊消息映射到一条事件流并跑 worker，回答通过 Open API 回复到原消息线程；一个 chat 固定一条流，按 `event_id` 去重，支持 URL 校验、AES 加密回调和 `--no-feishu` 关闭。设置步骤见 [doc/serve.md](./doc/serve.md#飞书机器人)。
 
 ## 约定与规范
 
@@ -826,6 +830,7 @@ watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` �
 | `npm run folds:test` | 8898 | — |
 | `npm run triggers:test` | — | — |
 | `npm run serve:test` | 8903 | 8911 / 8912 |
+| `npm run feishu:test` | 8943 | 8941（伪飞书 API）/ 8942、8944、8945（serve） |
 | `npm run projections:test` | — | — |
 | `npm run environments:test` | — | — |
 | `npm run workers:test` | — | — |

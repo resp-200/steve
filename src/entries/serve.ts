@@ -17,13 +17,26 @@ import type { AgentTool } from "../features/contract.js";
 import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "../features/projection.js";
 import { snapshotEnvironment } from "../features/environment.js";
 import { createTriggerEngine, type TriggerEngine } from "../features/trigger.js";
-import { createRunWorker, type RunWorker } from "../features/worker.js";
+import type { StreamEvent } from "../features/events.js";
+import { createRunWorker, type RunTerminal, type RunWorker } from "../features/worker.js";
 import { createStreamLog, isStreamId, type StreamLog } from "../features/stream-log.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
 import { loadConfig } from "../model/config.js";
 import { VERSION } from "../model/version.js";
 import { startHttpServer, type HttpExchange, type HttpRoute } from "../protocols/http/events.js";
+import {
+	createFeishuClient,
+	FEISHU_API_BASE,
+	FeishuError,
+	feishuConfigFromEnv,
+	parseFeishuCallback,
+	streamIdForChat,
+	type FeishuCallback,
+	type FeishuClient,
+	type FeishuConfig,
+	type FeishuMessage,
+} from "../protocols/feishu/bot.js";
 import type { WorkspaceAccess } from "../types.js";
 
 const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch + HTTP/SSE
@@ -38,6 +51,7 @@ const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch 
   --access <none|read|write|exec>  工具可用的本地能力（默认 exec）
   --streams-dir <path> 事件日志目录（默认 <cwd>/.steve/streams）
   --no-watch           不启动 .steve/watch.json 触发器
+  --no-feishu          不启用飞书机器人（默认在 FEISHU_* 环境变量齐全时启用）
   --help               显示本帮助
   --version            显示版本
 
@@ -50,6 +64,9 @@ HTTP API：
   POST /streams/:id/cancel          {runId?}
   POST /streams/:id/approvals       {requestId, decision}
   POST /hooks/:name                 Watch webhook
+  POST /feishu/events               飞书事件回调（需 FEISHU_APP_ID / FEISHU_APP_SECRET /
+                                    FEISHU_VERIFICATION_TOKEN，可选 FEISHU_ENCRYPT_KEY；
+                                    FEISHU_API_BASE 仅供测试覆盖，默认 ${FEISHU_API_BASE}）
 `;
 
 interface ServeOptions {
@@ -60,6 +77,7 @@ interface ServeOptions {
 	access: WorkspaceAccess;
 	streamsDir?: string;
 	watch: boolean;
+	feishu: boolean;
 }
 
 function valueFor(argv: readonly string[], index: number, flag: string): string {
@@ -69,7 +87,7 @@ function valueFor(argv: readonly string[], index: number, flag: string): string 
 }
 
 function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
-	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true };
+	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true, feishu: true };
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index] as string;
 		switch (arg) {
@@ -79,6 +97,9 @@ function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
 				return "version";
 			case "--no-watch":
 				options.watch = false;
+				break;
+			case "--no-feishu":
+				options.feishu = false;
 				break;
 			case "--port": {
 				const value = Number(valueFor(argv, index, arg));
@@ -132,6 +153,38 @@ const readJson = (exchange: HttpExchange): Record<string, unknown> => {
 };
 
 const isLoopback = (host: string): boolean => host === "127.0.0.1" || host === "::1" || host === "localhost";
+
+function assistantText(message: unknown): string {
+	if (message === null || typeof message !== "object") return "";
+	const content = (message as { content?: unknown }).content;
+	if (typeof content === "string") return content.trim();
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const block of content) {
+		if (block !== null && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string") {
+			parts.push((block as { text: string }).text);
+		}
+	}
+	return parts.join("\n").trim();
+}
+
+/** What a chat surface should see for one finished run. */
+function composeFeishuReply(events: readonly StreamEvent[], terminal: RunTerminal): string {
+	const streamed: string[] = [];
+	let settled = "";
+	for (const event of events) {
+		if (event.type === "text_delta") streamed.push(event.text);
+		else if (event.type === "run.turn.settled") {
+			const text = assistantText(event.message);
+			if (text !== "") settled = text;
+		}
+	}
+	const streamedText = streamed.join("").trim();
+	if (terminal.status === "failed") return streamedText === "" ? `⚠️ ${terminal.error}` : `${streamedText}\n\n⚠️ ${terminal.error}`;
+	if (terminal.status === "cancelled") return streamedText === "" ? "（这次执行被取消了）" : `${streamedText}\n\n（执行被取消）`;
+	const text = streamedText === "" ? settled : streamedText;
+	return text === "" ? "（没有文本输出）" : text;
+}
 
 async function main(): Promise<void> {
 	let parsed: ServeOptions | "help" | "version";
@@ -223,6 +276,29 @@ async function main(): Promise<void> {
 			}
 		},
 	});
+
+	const feishuConfig = parsed.feishu ? feishuConfigFromEnv(process.env, log) : undefined;
+	const feishuClient: FeishuClient | undefined = feishuConfig !== undefined ? createFeishuClient(feishuConfig) : undefined;
+	const seenFeishuEvents = new Set<string>();
+	if (feishuConfig !== undefined) log(`feishu bot: on (${feishuConfig.apiBase ?? FEISHU_API_BASE})`);
+
+	const replyToFeishu = async (message: FeishuMessage): Promise<void> => {
+		if (feishuClient === undefined) return;
+		const streamId = streamIdForChat(message.chatId);
+		const existing = await log2.read(streamId);
+		if (existing.length === 0) {
+			await log2.append(streamId, [{ type: "stream.created", streamId, cwd, title: `Feishu ${message.chatType}` }]);
+		}
+		const from = (await log2.read(streamId)).at(-1)?.seq ?? 0;
+		const submitted = await worker.submit(streamId, { text: message.text }, "foreground");
+		if (!submitted.accepted) {
+			await feishuClient.replyText(message.messageId, `现在不能开始执行：${submitted.reason ?? "busy"}`);
+			return;
+		}
+		const terminal = await worker.wait(submitted.runId);
+		const events = await log2.read(streamId, from + 1);
+		await feishuClient.replyText(message.messageId, composeFeishuReply(events, terminal));
+	};
 
 	// Watch triggers fire `user.message` events; the worker is pulled in by them.
 	const claims = new Set<number>();
@@ -405,6 +481,52 @@ async function main(): Promise<void> {
 					return;
 				}
 				exchange.json(202, { accepted: true });
+			},
+		},
+		{
+			method: "POST",
+			path: "/feishu/events",
+			handle: async (exchange) => {
+				if (feishuConfig === undefined || feishuClient === undefined) {
+					exchange.json(404, { error: "feishu disabled" });
+					return;
+				}
+				const headers: Record<string, string | string[] | undefined> = {};
+				for (const [key, value] of Object.entries(exchange.request.headers)) {
+					if (typeof value === "string") headers[key.toLowerCase()] = value;
+				}
+				let callback: FeishuCallback;
+				try {
+					callback = parseFeishuCallback({ body: exchange.request.body, headers, config: feishuConfig });
+				} catch (error) {
+					const status = error instanceof FeishuError ? error.status : 400;
+					exchange.json(status, { error: error instanceof Error ? error.message : String(error) });
+					return;
+				}
+				if (callback.kind === "challenge") {
+					exchange.json(200, { challenge: callback.challenge });
+					return;
+				}
+				// Feishu retries unless the callback is acknowledged within 3 seconds.
+				exchange.json(200, {});
+				if (callback.kind === "ignored") {
+					log(`feishu: ignored event (${callback.reason})`);
+					return;
+				}
+				if (callback.eventId !== "") {
+					if (seenFeishuEvents.has(callback.eventId)) {
+						log(`feishu: duplicate event ${callback.eventId} ignored`);
+						return;
+					}
+					seenFeishuEvents.add(callback.eventId);
+					if (seenFeishuEvents.size > 1_000) {
+						const oldest = seenFeishuEvents.values().next().value;
+						if (oldest !== undefined) seenFeishuEvents.delete(oldest);
+					}
+				}
+				void replyToFeishu(callback).catch((error: unknown) => {
+					log(`feishu: could not answer ${callback.messageId}: ${error instanceof Error ? error.message : String(error)}`);
+				});
 			},
 		},
 	];

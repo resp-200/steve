@@ -45,6 +45,7 @@ steve-serve --no-watch          # 不加载 watch.json（只做流 + 执行器�
 | `POST /streams/:id/cancel` | `{runId?}` | `202 {cancelled,runId}`；无活动 run 时 `404` |
 | `POST /streams/:id/approvals` | `{requestId, decision, toolName?}` | `202 {granted,decision}`（`decision`: `allow_once`/`allow_always`/`deny`） |
 | `POST /hooks/:name` | 任意文本 | `202 {accepted:true}`；webhook 触发器不存在/签名不符时 `404` |
+| `POST /feishu/events` | 飞书事件回调（明文或 AES 加密） | `200 {challenge}`（URL 校验）或 `200 {}`（先 ACK，异步执行后主动回复） |
 
 ```bash
 TOKEN=secret
@@ -54,6 +55,39 @@ curl -sN -H "Authorization: Bearer $TOKEN" \
 curl -s -H "Authorization: Bearer $TOKEN" -X POST localhost:8892/streams/<id>/messages \
   -H 'content-type: application/json' -d '{"text":"现在几点？"}'
 ```
+
+## 飞书机器人
+
+`steve-serve` 可以把飞书（Lark）自建应用机器人接成聊天面：群里或私聊里 @ 它，消息会落到一条事件流，由 worker 执行，回答再回到飞书。一个 chat 固定映射到一条流（`sha256("feishu:"+chat_id)` 前 12 位十六进制），所以历史会累积，进程重启后还能接着聊。
+
+**准备**（飞书开放平台，约 5 分钟）：
+
+1. 创建**企业自建应用** → 添加「机器人」能力。
+2. 权限：`im:message`（接收消息）与 `im:message:send_as_bot`（发消息）。
+3. 事件订阅：订阅 `im.message.receive_v1`（接收消息 v2.0），请求地址填 `https://<你的公网地址>/feishu/events`（需要公网可达，反代或内网穿透都行；与 ACP 一样，入口本身只监听回环时需要自己加一层）。
+4. 若开启了「加密策略」，把 Encrypt Key 也记下来；同时事件订阅页会给 Verification Token。
+5. 把凭证写进 `.steve/.env`（或直接 export）：
+
+```bash
+FEISHU_APP_ID="cli_xxxxxxxxxxxxxxxx"
+FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+FEISHU_VERIFICATION_TOKEN="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# FEISHU_ENCRYPT_KEY="..."   # 只有开启加密策略时
+```
+
+**运行**：`steve-serve --port 8892`，启动日志出现 `feishu bot: on` 即生效；`--no-feishu` 可关闭。飞书后台点「保存」时会先发 URL 校验请求，`steve-serve` 直接回 challenge。
+
+**行为**：
+
+- 回调必须在 3 秒内 ACK，所以入口先回 `200`，run 完成后再调 `POST /open-apis/im/v1/messages/:message_id/reply` 回复（tenant_access_token 进程内缓存，提前 2 分钟刷新）。
+- 只处理文本消息；`@_user_1` 之类的 mention key 会被剥掉；非文本、机器人自己发的消息、未知事件类型只记日志不回复。
+- 按 `event_id` 去重（飞书超时会重投）。
+- 同一 chat 的 stream 串行执行：新消息若顶掉正在跑的 run，旧 run 的回复会带「执行被取消」。
+- 权限仍走 `steve-serve` 的 `--access` 与审批策略：需要审批（permission: ask）的工具在常驻进程里不会弹窗，会被拒绝并写进事件流；只读/只写类工具按 `--access` 放行。
+- 回复是纯文本（agent 的最终文本；工具调用过程不推给飞书），超过 4000 字截断。
+
+**限制**：只支持 HTTP 回调模式（飞书的长连接需要官方 SDK，本项目不引新依赖）；群聊需 @ 机器人；图片/卡片/富文本暂不处理。
+
 
 ## Watch 与后台运行
 
