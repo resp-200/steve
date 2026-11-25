@@ -45,7 +45,7 @@ steve-serve --no-watch          # 不加载 watch.json（只做流 + 执行器�
 | `POST /streams/:id/cancel` | `{runId?}` | `202 {cancelled,runId}`；无活动 run 时 `404` |
 | `POST /streams/:id/approvals` | `{requestId, decision, toolName?}` | `202 {granted,decision}`（`decision`: `allow_once`/`allow_always`/`deny`） |
 | `POST /hooks/:name` | 任意文本 | `202 {accepted:true}`；webhook 触发器不存在/签名不符时 `404` |
-| `POST /feishu/events` | 飞书事件回调（明文或 AES 加密） | `200 {challenge}`（URL 校验）或 `200 {}`（先 ACK，异步执行后主动回复） |
+| `POST /feishu/events` | 飞书事件回调（明文或 AES 加密；**不需要 Bearer token**，用 Verification Token/签名校验） | `200 {challenge}`（URL 校验）或 `200 {}`（先 ACK，异步执行后主动回复） |
 
 ```bash
 TOKEN=secret
@@ -81,6 +81,7 @@ FEISHU_VERIFICATION_TOKEN="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 - 回调必须在 3 秒内 ACK，所以入口先回 `200`，run 完成后再调 `POST /open-apis/im/v1/messages/:message_id/reply` 回复（tenant_access_token 进程内缓存，提前 2 分钟刷新）。
 - 只处理文本消息；`@_user_1` 之类的 mention key 会被剥掉；非文本、机器人自己发的消息、未知事件类型只记日志不回复。
+- `/feishu/events` 不走 `--token` 的 Bearer 鉴权（飞书回调无法带自定义头），改用 Verification Token 与（开启加密时的）`X-Lark-Signature` 校验；其余接口仍然要 token。
 - 按 `event_id` 去重（飞书超时会重投）。
 - 同一 chat 的 stream 串行执行：新消息若顶掉正在跑的 run，旧 run 的回复会带「执行被取消」。
 - 权限仍走 `steve-serve` 的 `--access` 与审批策略：需要审批（permission: ask）的工具在常驻进程里不会弹窗，会被拒绝并写进事件流；只读/只写类工具按 `--access` 放行。

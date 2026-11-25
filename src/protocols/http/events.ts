@@ -51,6 +51,12 @@ export interface HttpServerOptions {
 	port?: number;
 	/** When set, every request must carry `Authorization: Bearer <token>`. */
 	token?: string;
+	/**
+	 * Paths exempt from the bearer token. A third party that cannot send an
+	 * Authorization header (Feishu callbacks) authenticates with its own
+	 * verification token/signature instead.
+	 */
+	publicPaths?: readonly string[];
 	logger?: Logger;
 	routes: readonly HttpRoute[];
 	/** Body limit (default 8 MiB). */
@@ -157,7 +163,8 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
 		void (async () => {
 			const url = new URL(request.url ?? "/", "http://localhost");
 			const requestBody = request.method === "POST" ? await readBody(request, maxBodyBytes) : "";
-			if (options.token !== undefined) {
+			const isPublic = options.publicPaths?.includes(url.pathname) ?? false;
+			if (options.token !== undefined && !isPublic) {
 				const authorization = request.headers.authorization ?? "";
 				if (authorization !== `Bearer ${options.token}`) {
 					response.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });

@@ -531,7 +531,14 @@ async function main(): Promise<void> {
 		},
 	];
 
-	const server = await startHttpServer({ host: parsed.host, port: parsed.port, ...(token !== undefined ? { token } : {}), logger: log, routes });
+	const server = await startHttpServer({
+		host: parsed.host,
+		port: parsed.port,
+		...(token !== undefined ? { token } : {}),
+		...(feishuConfig !== undefined ? { publicPaths: ["/feishu/events"] } : {}),
+		logger: log,
+		routes,
+	});
 	log(`listening on http://${server.host}:${server.port} (streams: ${streamsDir}, watch: ${parsed.watch ? "on" : "off"})`);
 
 	let closing = false;

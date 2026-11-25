@@ -23,6 +23,7 @@ const ENCRYPTED_PORT = 8944;
 const MOCK_PORT = 8943;
 const FEISHU_PORT = 8941;
 
+const TOKEN = "feishu-serve-token";
 const APP_ID = "cli_feishu_test";
 const APP_SECRET = "feishu-test-app-secret";
 const VERIFICATION_TOKEN = "feishu-test-verification-token";
@@ -87,11 +88,13 @@ async function stop(child) {
 
 const sleepAsync = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function waitForPort(port, label) {
+async function waitForPort(port, label, token) {
 	await waitFor(
 		async () => {
 			try {
-				const response = await fetch(`http://127.0.0.1:${port}/health`);
+				const response = await fetch(`http://127.0.0.1:${port}/health`, {
+					headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+				});
 				return response.ok;
 			} catch {
 				return false;
@@ -234,15 +237,22 @@ try {
 			stdio: ["ignore", "pipe", "pipe"],
 		}),
 	);
-	const serve = start("serve", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(SERVE_PORT)], {
+	const serve = start("serve", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(SERVE_PORT), "--token", TOKEN], {
 		cwd: workspace,
 		env: { ...process.env, ...mockEnv, ...feishuEnv, HOME: home, MOCK_PORT: String(MOCK_PORT) },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	children.push(serve);
 
-	await waitForPort(SERVE_PORT, "serve /health");
+	await waitForPort(SERVE_PORT, "serve /health", TOKEN);
 	await waitFor(async () => fakeFeishu !== undefined, { label: "fake feishu" });
+
+	// Auth: the Feishu callback is public (it authenticates with its own token),
+	// everything else still needs the bearer token.
+	const unauthenticated = await fetch(`http://127.0.0.1:${SERVE_PORT}/streams`);
+	check("普通接口无 token 返回 401", unauthenticated.status === 401, `status ${unauthenticated.status}`);
+	const authenticated = await fetch(`http://127.0.0.1:${SERVE_PORT}/streams`, { headers: { authorization: `Bearer ${TOKEN}` } });
+	check("普通接口带 token 返回 200", authenticated.status === 200, `status ${authenticated.status}`);
 
 	// A. URL verification
 	const challenge = await postCallback(SERVE_PORT, { type: "url_verification", challenge: "feishu-challenge-1", token: VERIFICATION_TOKEN });
@@ -308,13 +318,13 @@ try {
 	check("事件头 token 错误返回 401", badHeaderToken.status === 401, `status ${badHeaderToken.status}`);
 
 	// E. Encrypted callbacks
-	const encryptedServe = start("serve-encrypted", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(ENCRYPTED_PORT)], {
+	const encryptedServe = start("serve-encrypted", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(ENCRYPTED_PORT), "--token", TOKEN], {
 		cwd: workspace,
 		env: { ...process.env, ...mockEnv, ...feishuEnv, FEISHU_ENCRYPT_KEY: ENCRYPT_KEY, HOME: home, MOCK_PORT: String(MOCK_PORT) },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	children.push(encryptedServe);
-	await waitForPort(ENCRYPTED_PORT, "encrypted serve /health");
+	await waitForPort(ENCRYPTED_PORT, "encrypted serve /health", TOKEN);
 
 	const encryptedChallengeBody = encryptPayload({ type: "url_verification", challenge: "encrypted-challenge", token: VERIFICATION_TOKEN }, ENCRYPT_KEY);
 	const encryptedChallenge = await postCallback(ENCRYPTED_PORT, encryptedChallengeBody, signedHeaders(encryptedChallengeBody, ENCRYPT_KEY));
