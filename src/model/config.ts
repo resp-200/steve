@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Model, ProviderId } from "@earendil-works/pi-ai";
+import type { RequestHeadersProvider } from "./request-headers.js";
 
 /**
  * Parses one .env file into key/value pairs (no expansion, no interpolation).
@@ -80,11 +81,27 @@ export type SupportedApi = (typeof SUPPORTED_APIS)[number];
  */
 export type AuthStyle = "auto" | "bearer" | "api-key";
 
+/**
+ * Per-provider request headers (see `model/request-headers.ts`). `provider` is
+ * the selected console entry — absent when the provider comes from `.env`, where
+ * there is no entry to configure.
+ *
+ * `sessionId` is the conversation every request of this run belongs to: a
+ * session id for chat surfaces, a stream id for one-shot runs, `undefined` when
+ * neither exists. It feeds the `${sessionId}` placeholder; the last resort when
+ * it is missing is the provider id.
+ */
+export interface RequestHeaderConfig {
+	provider?: RequestHeadersProvider;
+	sessionId?: string;
+}
+
 export interface AppConfig {
 	apiKey: string;
 	model: Model<SupportedApi>;
 	systemPrompt: string;
 	authStyle: AuthStyle;
+	requestHeaders?: RequestHeaderConfig;
 }
 
 function requireEnv(name: string): string {

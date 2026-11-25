@@ -79,6 +79,8 @@ async function stop(child) {
 
 const auth = { authorization: `Bearer ${TOKEN}` };
 
+const modelsRequests = [];
+
 /** A minimal OpenAI-compatible `/v1/models` endpoint for the fetch-models button. */
 const modelsServer = createServer((req, res) => {
 	const send = (status, payload) => {
@@ -93,6 +95,8 @@ const modelsServer = createServer((req, res) => {
 		send(401, { error: "unauthorized" });
 		return;
 	}
+	// Recorded so the header tests can prove the listing carries them.
+	modelsRequests.push({ ...req.headers });
 	send(200, {
 		object: "list",
 		data: [
@@ -246,6 +250,21 @@ try {
 	check("缺少 baseUrl 获取模型返回 400", modelsNoUrl.status === 400);
 	const modelsBadKey = await request("POST", "/admin/api/providers/models", { body: { baseUrl: `http://127.0.0.1:${MODELS_PORT}`, apiKey: "wrong-key" } });
 	check("上游鉴权失败时返回 502", modelsBadKey.status === 502 && String(modelsBadKey.body.error).includes("HTTP 401"), describe(modelsBadKey.body));
+
+	// Unsaved edits in the console must reach the listing request: a gateway that
+	// routes on the session header answers 400 otherwise and the picker would be
+	// unusable exactly when the user is trying to fix that gateway.
+	modelsRequests.length = 0;
+	const modelsWithEditedHeaders = await request("POST", "/admin/api/providers/models", {
+		body: { id: first.id, baseUrl: `http://127.0.0.1:${MODELS_PORT}`, apiKey: RAW_KEY, headers: { "x-opencode-session": "${sessionId}" } },
+	});
+	const listingHeaders = modelsRequests.at(-1) ?? {};
+	check("获取模型带上表单里未保存的请求头", modelsWithEditedHeaders.status === 200 && listingHeaders["x-opencode-session"] !== undefined, JSON.stringify(listingHeaders));
+	check("获取模型时占位符已展开（不是字面量）", typeof listingHeaders["x-opencode-session"] === "string" && !listingHeaders["x-opencode-session"].includes("${"), String(listingHeaders["x-opencode-session"]));
+
+	modelsRequests.length = 0;
+	await request("POST", "/admin/api/providers/models", { body: { id: first.id, baseUrl: `http://127.0.0.1:${MODELS_PORT}`, apiKey: RAW_KEY } });
+	check("未配置请求头时不额外发送", (modelsRequests.at(-1) ?? {})["x-opencode-session"] === undefined, JSON.stringify(modelsRequests.at(-1)));
 
 	const deletedUnknown = await request("POST", "/admin/api/providers/delete", { body: { id: "nope" } });
 	check("删除未知供应商返回 404", deletedUnknown.status === 404);

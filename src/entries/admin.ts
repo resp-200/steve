@@ -18,6 +18,7 @@ import {
 	activeProvider,
 	adminConfigPath,
 	describe,
+	coerceHeaderFields,
 	envFilePath,
 	normalizeProviderInput,
 	providerView,
@@ -33,6 +34,7 @@ import type { StreamLog } from "../features/stream-log.js";
 import { isValidTimezone, parseCron } from "../features/trigger-schedule.js";
 import type { RunWorker } from "../features/worker.js";
 import { resolveApi } from "../model/config.js";
+import { applyHeaders, hostOf, providerHeaders } from "../model/request-headers.js";
 import { VERSION } from "../model/version.js";
 import type { HttpExchange, HttpRoute } from "../protocols/http/events.js";
 
@@ -236,6 +238,19 @@ function feishuState(): { mode: "ws" | "http"; configured: boolean; appId: strin
 }
 
 /** Standard OpenAI-compatible listing path; tolerate a base that already has /v1. */
+/**
+ * The request headers a provider would send, as the save response reports them.
+ * `sample-session` stands in for the conversation id so the console can show the
+ * expansion; it is never sent to the provider from here.
+ */
+function sentHeadersFor(provider: ProviderEntry): Record<string, string> {
+	const headers = providerHeaders(provider, hostOf(provider.baseUrl), { sessionId: "sample-session" });
+	// The console's explicit opt-out also applies to the preview, or the preview
+	// would show a header the request then does not send.
+	if (provider.requestSessionHeader === false) delete headers["x-opencode-session"];
+	return headers;
+}
+
 function modelsEndpoint(baseUrl: string): string {
 	const trimmed = baseUrl.replace(/\/+$/, "");
 	return /\/v\d+$/.test(trimmed) ? `${trimmed}/models` : `${trimmed}/v1/models`;
@@ -381,6 +396,16 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					api === "anthropic-messages"
 						? { "x-api-key": apiKey, "anthropic-version": "2023-06-01", accept: "application/json" }
 						: { authorization: `Bearer ${apiKey}`, accept: "application/json" };
+				// The provider's own request headers apply here too: a gateway that needs
+				// x-opencode-session for routing rejects the key with a 400 otherwise,
+				// and this listing would report "provider returned HTTP 400" forever.
+				// The edit form's unsaved values win over the stored entry, so adding a
+				// header to fix a 400 gateway works before the first save.
+				const edited = body.headers === undefined && body.hosts === undefined ? undefined : coerceHeaderFields(body);
+				const headerSource = known === undefined ? undefined : { ...known, ...(edited ?? { headers: known.headers ?? {} }) };
+				if (headerSource !== undefined) {
+					applyHeaders(headers, sentHeadersFor(headerSource));
+				}
 				let response: Response;
 				try {
 					response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
@@ -444,7 +469,14 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 				const next: AdminConfig = { ...config, providers };
 				await writeAdminConfig(cwd, next);
 				logger.info(`[admin] saved provider "${provider.name}" (${provider.id})`);
-				exchange.json(200, { ok: true, provider: providerView(provider, config.activeProviderId), restartRequired: true });
+				exchange.json(200, {
+					ok: true,
+					provider: providerView(provider, config.activeProviderId),
+					// What would actually be sent: placeholders expanded with a sample id,
+					// so "did my ${sessionId} survive the save" is answered on the spot.
+					sentHeaders: sentHeadersFor(provider),
+					restartRequired: true,
+				});
 			},
 		},
 		{

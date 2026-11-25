@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { DEFAULT_SYSTEM_PROMPT, resolveApi, type AppConfig } from "../model/config.js";
 import type { Logger } from "../types.js";
 import { isLogLevel, type LogLevel } from "./logging.js";
+import { coerceRequestHeaders, normalizeRequestHeaders } from "./request-headers.js";
 
 /** Hidden directory shared by every local configuration file. */
 export const ADMIN_DIR = ".steve";
@@ -27,6 +28,15 @@ export interface ProviderEntry {
 	defaultModel: string;
 	models: string[];
 	reasoning: boolean;
+	/**
+	 * Extra request headers for this provider (`request-headers.ts`). Values may
+	 * use `${sessionId}`; `x-opencode-session` is filled in automatically.
+	 */
+	headers?: Record<string, string>;
+	/** Hosts the headers apply to; absent = the provider's own host only. */
+	hosts?: string[];
+	/** `false` opts out of the automatic session header (gateways that don't route by session). */
+	requestSessionHeader?: boolean;
 }
 
 export interface AdminConfig {
@@ -67,6 +77,11 @@ export function providerView(provider: ProviderEntry, activeProviderId?: string)
 		defaultModel: provider.defaultModel,
 		models: [...provider.models],
 		reasoning: provider.reasoning,
+		// Header values are connection info like baseUrl (the user chose not to mask
+		// them); only apiKey stays a secret.
+		headers: { ...(provider.headers ?? {}) },
+		hosts: [...(provider.hosts ?? [])],
+		requestSessionHeader: provider.requestSessionHeader !== false,
 		apiKeyMasked: maskSecret(provider.apiKey),
 		hasApiKey: provider.apiKey !== "",
 		active: provider.id === activeProviderId,
@@ -98,7 +113,9 @@ export function applyProvider(base: AppConfig, config: AdminConfig): AppConfig {
 		maxTokens: base.model.maxTokens,
 		...(provider.reasoning ? {} : { thinkingLevelMap: { ...THINKING_OFF } }),
 	};
-	return { ...base, apiKey: provider.apiKey, model };
+	// Provider request headers travel with the config so the stream layer (which
+	// only sees a model) can still apply them.
+	return { ...base, apiKey: provider.apiKey, model, requestHeaders: { provider, sessionId: base.requestHeaders?.sessionId } };
 }
 
 /**
@@ -121,7 +138,7 @@ export function configFromProvider(provider: ProviderEntry): AppConfig {
 		maxTokens: 8_192,
 		...(provider.reasoning ? {} : { thinkingLevelMap: { ...THINKING_OFF } }),
 	};
-	return { apiKey: provider.apiKey, model, systemPrompt: DEFAULT_SYSTEM_PROMPT, authStyle: "auto" };
+	return { apiKey: provider.apiKey, model, systemPrompt: DEFAULT_SYSTEM_PROMPT, authStyle: "auto", requestHeaders: { provider } };
 }
 
 const PROVIDER_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -133,7 +150,7 @@ function nonEmptyString(value: unknown): string | undefined {
 }
 
 /** Tolerant read used for the persisted file: one bad entry must not hide the rest. */
-function coerceProvider(raw: unknown, logger?: Logger): ProviderEntry | undefined {
+export function coerceProvider(raw: unknown, logger?: Logger): ProviderEntry | undefined {
 	if (raw === null || typeof raw !== "object") return undefined;
 	const input = raw as Record<string, unknown>;
 	const name = nonEmptyString(input.name);
@@ -154,6 +171,7 @@ function coerceProvider(raw: unknown, logger?: Logger): ProviderEntry | undefine
 		defaultModel,
 		models: [...new Set(models)],
 		reasoning: input.reasoning === true,
+		...coerceHeaderFields(input, (message) => logger?.(`[admin] provider "${entry.name}" ${message}`)),
 	};
 	if (entry.apiKey === "") logger?.(`[admin] provider "${entry.name}" has no apiKey; it can only be used when the environment supplies one`);
 	return entry;
@@ -179,6 +197,7 @@ export function normalizeProviderInput(raw: unknown, existing?: ProviderEntry): 
 	const apiKey = incomingKey !== "" ? incomingKey : (existing?.apiKey ?? "");
 	if (apiKey === "") throw new Error("apiKey is required for a new provider");
 	const id = existing?.id ?? (typeof input.id === "string" && PROVIDER_ID.test(input.id) ? input.id : randomBytes(4).toString("hex"));
+	const headers = normalizeRequestHeaders(input.headers);
 	return {
 		id,
 		name,
@@ -187,6 +206,37 @@ export function normalizeProviderInput(raw: unknown, existing?: ProviderEntry): 
 		defaultModel,
 		models,
 		reasoning: input.reasoning === true,
+		...(Object.keys(headers).length > 0 ? { headers } : {}),
+		...normalizeHostsInput(input.hosts),
+		...(input.requestSessionHeader === false ? { requestSessionHeader: false } : {}),
+	};
+}
+
+/** Optional `hosts` list from the console: an array or a comma separated string. */
+function normalizeHostsInput(raw: unknown): { hosts?: string[] } {
+	const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [];
+	const hosts = [...new Set(list.filter((host): host is string => typeof host === "string").map((host) => host.trim().toLowerCase()).filter((host) => host !== ""))];
+	for (const host of hosts) {
+		if (!/^[a-z0-9.-]+(:[0-9]+)?$/.test(host)) throw new Error(`invalid host "${host}"`);
+	}
+	return hosts.length > 0 ? { hosts } : {};
+}
+
+/** The persisted header fields, tolerant: a hand-edited typo costs the headers, not the provider. */
+export function coerceHeaderFields(input: Record<string, unknown>, onDrop?: (message: string) => void): Pick<ProviderEntry, "headers" | "hosts" | "requestSessionHeader"> {
+	const headers = coerceRequestHeaders(input.headers, onDrop);
+	let hosts: { hosts?: string[] } = {};
+	if (input.hosts !== undefined) {
+		try {
+			hosts = normalizeHostsInput(input.hosts);
+		} catch (error) {
+			onDrop?.(`ignored hosts: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	return {
+		...(Object.keys(headers).length > 0 ? { headers } : {}),
+		...hosts,
+		...(input.requestSessionHeader === false ? { requestSessionHeader: false } : {}),
 	};
 }
 

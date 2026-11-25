@@ -66,6 +66,7 @@ run("构建", "npm", ["run", "build"]);
 run("架构契约", "node", ["scripts/arch-test.mjs"]);
 run("UI 内联客户端同步", "node", ["scripts/sync-ui-client.mjs", "--check"]);
 run("配置（.env 链）", "node", ["scripts/config-test.mjs"]);
+run("服务商请求头", "node", ["scripts/request-headers-test.mjs"]);
 run("本地工具", "node", ["scripts/local-tools-test.mjs"]);
 run("插件", "node", ["scripts/plugin-test.mjs"]);
 run("会话持久化", "node", ["scripts/session-test.mjs"]);

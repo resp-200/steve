@@ -46,6 +46,7 @@ src/features/agent-assembly.ts L3 工具/权限/插件钩子装配：runtime 与
 src/features/trigger.ts L3 触发器引擎：predicate / fs / cron / webhook -> trigger.fired + 带前缀的 user.message（去重/限速/因果深度三道防线）
 src/features/trigger-schedule.ts L3 触发器调度辅助：cron 5 段解析与下次时间、glob 匹配、路径收敛
 src/features/approval.ts L3 后台审批闸门：需要授权时追加 approval.pending 并挂起，等 approval.granted（默认 10 分钟超时）
+src/model/request-headers.ts L1 服务商请求头标准：模板展开、host 匹配、会话头 opt-in（被 model/stream 与 features/admin-config 共用）
 src/features/logging.ts  L3 分级日志：级别 + 按小时切分的目录 sink（默认 .steve/logs），支持运行时调级/改目录（管理后台用）
 src/features/admin-config.ts L3 管理后台配置：`.steve/admin.json` 读写、供应商 -> AppConfig、`.env` 原子更新、密钥掩码
 src/features/session-store.ts L3 会话存储：JSONL 为准 + 过渡期 `<id>.json` 兼容产物
@@ -653,6 +654,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
 | `npm run environments:test` | 环境快照 25 项断言：JSON 往返与 `structuredClone` 无损、快照里没有函数/运行时对象、roots 去重与顺序、tools 排序去重与权限/kind 透传、plugins 排序去重、投影与 workspace 的深拷贝隔离、CLI 与 ACP 两入口同策略产出相同快照 |
 | `npm run workers:test` | 运行执行器 53 项断言：submit 立即返回但输入与 `run.started` 已落盘、事件顺序与 seq 连续、一次性 Agent 从日志重建上下文、`wait(runId)` 等终态、重试失败不进 transcript、取消（`run.cancel_requested` -> `run.cancelled`，不重试）、serial 顶掉 / queue 排队、后台 run 的审批闸门（未配 approvals 拒绝执行、allow 放行、deny 拒绝、timeout 取消）、工具目录可随 MCP 后接动态增长、非法 stream id 被拒 |
+| `npm run headers:test` | 服务商请求头 34 项断言：模板展开与 `${sessionId}` 别名、未知占位符/非法头名/换行被拒、按 host 匹配（`hosts` 与 Base URL 自身）、会话头「自动优先手填兜底」、已有头不被覆盖、控制台往返（`admin.json` 落盘、坏条目只丢请求头不丢供应商）、`.env` 供应商与"没配会话头的 OpenCode 供应商"都不多发一个头，以及真实 stream 打到本地 mock 网关时头的落点 |
 | `npm run config:test` | 凭据来源 10 项：`.steve/.env` 查找链（安装目录 / `~/.steve` / `$PWD`）、真实环境变量优先、**裸 `.env` 被忽略**、引号与注释处理 |
 | `npm run arch:test` | 架构契约与发布卫生 25 项：依赖方向、pi 只在 model/kernel/contract、协议层不认识工具名、能力只能被它的插件引用、入口不实现插件命令、唯一装配点、依赖白名单、`bin` 与 `files` 完整、版本号只有 `package.json` 一处且 `steve --version` 打印它、`.env` 与 `.steve/` 不入库、内网信息不泄露 |
 | `npm run verify` | 一键回归：上面全部 + 类型检查 + 构建 + UI 同步 + 浏览器端到端（`-- --fast` 跳过浏览器） |

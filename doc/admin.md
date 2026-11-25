@@ -44,6 +44,8 @@ steve-serve --port 8892 --token <你的-token>
 - **选择模型**：调用供应商的 `GET {baseUrl}/v1/models`（Base URL 已以 `/v1` 结尾时
   直接拼 `/models`；Anthropic 兼容端点改用 `x-api-key` 与 `anthropic-version`），
   弹窗里按 ID / 厂商搜索、多选，确认后只把勾选的模型填回列表，并带出规格。
+  这个请求会带上该供应商配置的自定义请求头（表单里尚未保存的也算），否则需要
+  会话头才能路由的网关会把这个列表请求一直 400。
 - **手动添加**：供应商不提供 `/v1/models` 时直接填模型 ID，规格列留空即可。
 - 编辑供应商时 API Key 留空会复用已保存的 Key；上游不可达或鉴权失败时弹窗给出
   可读错误，不影响手动填写。
@@ -53,6 +55,32 @@ steve-serve --port 8892 --token <你的-token>
   直接在后台填一个供应商就能跑（仍建议保留 `.env` 作为兜底）。
 - 编辑时 API Key 留空表示**保持原值**；列表和接口只返回 `****xxxx` 掩码。
 - 切换后需要重启服务生效（页面会提示并给出重启按钮）。
+
+#### 自定义请求头
+
+有些网关要求在请求里带自己的头（路由、归因、配额分桶、会话亲和）。供应商表单里的
+「自定义请求头」就是这件事的标准入口：
+
+- **写法**：每行一个 `名称: 值`，存成 `.steve/admin.json` 里的 `headers` 对象。
+- **模板**：值支持占位符 `${sessionId}`（别名 `${session}`、`${conversationId}`、
+  `${threadId}`、`${chatId}`），发送时替换成当前会话 id。其他 `${...}` 一律在保存时报错，
+  避免把手误写成的字面量发给网关。
+- **会话头 `x-opencode-session`（OpenCode Go 要求）**：只有**显式配置过**这个头的供应商才会发送，
+  所以没配的网关（以及只用 `.env` 的部署）一个字节都不会变。取值规则是「自动优先，手填兜底」：
+
+  | 配置的值 | 发送的值 |
+  | --- | --- |
+  | 空 / `${sessionId}` | 当前会话 id；没有会话（一次性 CLI 运行）时用下面的手填值；再没有就用供应商 id |
+  | 固定字符串 | 原样发送 |
+
+  想要手填兜底又想让真实会话优先，写 `${sessionId}` 并把兜底值交给会话 id 的来源即可；
+  需要完全固定就填固定字符串。
+- **生效域名**：留空 = 只在请求发往 Base URL 自己的域名时发送；填了就以填的为准（逗号分隔）。
+  这条规则保证改过 Base URL、或指向代理的供应商不会把别家的请求头带出去。
+- **不覆盖已有头**：`Authorization`、`Accept` 等已被鉴权层或调用方设置的头不会被覆盖。
+- 「一键获取可用模型」也会带上配置的请求头——需要会话头的网关否则永远返回 400。
+- 保存接口的响应里有 `sentHeaders`，是用 `sample-session` 展开后的预览，用来确认占位符有没有写对。
+- 请求头值是连接信息（和 Base URL 同级，不做掩码）；只有 API Key 仍然是密钥。
 
 ### 3. 网关
 
@@ -110,7 +138,7 @@ steve-serve --port 8892 --token <你的-token>
 | GET | `/admin/api/overview` | 概览 |
 | GET | `/admin/api/providers` | 供应商列表（掩码） |
 | POST | `/admin/api/providers/models` | 拉取供应商的 `/v1/models`（返回 `models` 与带规格的 `items`） |
-| POST | `/admin/api/providers/save` | 新增 / 编辑 `{provider:{id?,name,baseUrl,apiKey?,defaultModel,models,reasoning}}` |
+| POST | `/admin/api/providers/save` | 新增 / 编辑 `{provider:{id?,name,baseUrl,apiKey?,defaultModel,models,reasoning,headers?,hosts?,requestSessionHeader?}}`，响应带 `sentHeaders` 预览 |
 | POST | `/admin/api/providers/delete` | 删除 `{id}` |
 | POST | `/admin/api/providers/activate` | 激活 `{id}` |
 | GET | `/admin/api/gateways` | 网关状态 |

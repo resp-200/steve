@@ -272,7 +272,12 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 	const defaultAgent = (context: RunAgentContext): WorkerAgent => {
 		const hooks = hooksFor(context);
 		const agent = createKernelAgent({
-			config: options.config,
+			// Provider request headers follow the background run, not the session:
+			// the run's stream id is the conversation the provider sees.
+			config:
+				options.config.requestHeaders === undefined
+					? options.config
+					: { ...options.config, requestHeaders: { ...options.config.requestHeaders, sessionId: context.streamId } },
 			tools: context.tools,
 			...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
 			...(hooks !== undefined ? { hooks } : {}),

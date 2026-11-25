@@ -67,6 +67,7 @@
 		"environments:test": "node scripts/environment-test.mjs",
 		"workers:test": "node scripts/worker-test.mjs",
 		"config:test": "node scripts/config-test.mjs",
+		"headers:test": "node scripts/request-headers-test.mjs",
 		"mcp:test": "node scripts/mcp-test.mjs",
 		"arch:test": "node scripts/arch-test.mjs",
 		"verify": "node scripts/verify.mjs",

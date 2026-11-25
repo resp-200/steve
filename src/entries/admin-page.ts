@@ -617,12 +617,13 @@ pre.code {
                 <th>默认模型</th>
                 <th>可用模型</th>
                 <th>思考</th>
+                <th>请求头</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody id="providerRows">
-              <tr><td colspan="7"><div class="loading">加载中…</div></td></tr>
+              <tr><td colspan="8"><div class="loading">加载中…</div></td></tr>
             </tbody>
           </table>
         </div>
@@ -667,6 +668,22 @@ pre.code {
               </div>
               <div class="field full">
                 <label class="check"><input type="checkbox" id="pv-reasoning"> 开启思考（reasoning）</label>
+              </div>
+              <div class="field full">
+                <div class="label-row">
+                  <label for="pv-headers">自定义请求头</label>
+                  <span class="hint">每行一个 <span class="mono">名称: 值</span></span>
+                </div>
+                <textarea id="pv-headers" class="mono" rows="3" placeholder="x-opencode-session: $&#123;sessionId&#125;"></textarea>
+                <span class="hint" id="pv-headersHint">值支持占位符 <span class="mono">$&#123;sessionId&#125;</span>：发送时自动替换为当前会话 ID。留空则不发该请求头。</span>
+              </div>
+              <div class="field full">
+                <div class="label-row">
+                  <label for="pv-hosts">生效域名</label>
+                  <span class="hint">留空 = 仅 Base URL 的域名</span>
+                </div>
+                <input id="pv-hosts" type="text" placeholder="例如 opencode.ai（逗号分隔，可留空）" autocomplete="off">
+                <span class="hint">请求头的 host 与这里或 Base URL 的 host 一致时才发送，所以改过 Base URL 的供应商不会误带别的供应商的请求头。</span>
               </div>
             </div>
             <div class="form-actions">
@@ -1409,7 +1426,7 @@ pre.code {
     }
     if (!rows) return;
     if (!state.providers.length) {
-      rows.innerHTML = '<tr><td colspan="7"><div class="empty">还没有配置模型供应商，点击右上角「新增供应商」开始。</div></td></tr>';
+      rows.innerHTML = '<tr><td colspan="8"><div class="empty">还没有配置模型供应商，点击右上角「新增供应商」开始。</div></td></tr>';
       return;
     }
     var html = "";
@@ -1429,6 +1446,9 @@ pre.code {
       html += '<td class="cell-mono">' + escapeHtml(display(provider.defaultModel)) + "</td>";
       html += '<td><span title="' + escapeHtml(modelTitle) + '">' + escapeHtml(String(models.length)) + " 个</span></td>";
       html += "<td>" + (provider.reasoning === true ? badge("开启", "ok") : badge("关闭", "muted")) + "</td>";
+      // Header names only: values are on the edit form, and the row stays narrow.
+      var headerNames = provider && provider.headers && typeof provider.headers === "object" ? Object.keys(provider.headers) : [];
+      html += "<td>" + (headerNames.length === 0 ? badge("无", "muted") : badge(String(headerNames.length) + " 个", "info") + ' <span class="hint" title="' + escapeHtml(headerNames.join(", ")) + '">' + escapeHtml(headerNames.slice(0, 2).join(", ")) + (headerNames.length > 2 ? " …" : "") + "</span>") + "</td>";
       html += "<td>" + (isActive ? badge("激活中", "info") : badge("未激活", "muted")) + "</td>";
       html += '<td><div class="cell-actions">' + actions + "</div></td>";
       html += "</tr>";
@@ -1449,6 +1469,34 @@ pre.code {
     } else if (action === "activate") {
       activateProvider(id);
     }
+  }
+
+  /** Request headers as one "名称: 值" line each (values may contain colons, e.g. URLs). */
+  function headersToText(headers) {
+    if (!headers || typeof headers !== "object") return "";
+    return Object.keys(headers).map(function (name) {
+      return name + ": " + String(headers[name]);
+    }).join(NEWLINE);
+  }
+
+  /**
+   * Parses the textarea back into an object. Returns null on a malformed line so
+   * the form can refuse to save instead of silently dropping a header.
+   */
+  function parseHeadersText(text) {
+    var out = {};
+    var lines = String(text || "").split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line || line.charAt(0) === "#") continue;
+      var separator = line.indexOf(":");
+      if (separator <= 0) return null;
+      var name = line.slice(0, separator).trim();
+      var value = line.slice(separator + 1).trim();
+      if (!name) return null;
+      out[name] = value;
+    }
+    return out;
   }
 
   function openProviderForm(provider) {
@@ -1476,6 +1524,10 @@ pre.code {
     enrichModelRows(provider);
     var reasoningInput = byId("pv-reasoning");
     if (reasoningInput) reasoningInput.checked = !!(provider && provider.reasoning);
+    var headersInput = byId("pv-headers");
+    if (headersInput) headersInput.value = headersToText(provider && provider.headers);
+    var hostsInput = byId("pv-hosts");
+    if (hostsInput) hostsInput.value = provider && Array.isArray(provider.hosts) ? provider.hosts.join(", ") : "";
     try {
       card.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (scrollError) {
@@ -1537,6 +1589,12 @@ pre.code {
     if (state.editingProviderId) payload.id = state.editingProviderId;
     var apiKey = valueOf("pv-apiKey").trim();
     if (apiKey) payload.apiKey = apiKey;
+    // Unsaved header edits travel with the request: fixing a 400 gateway needs the
+    // session header on the very listing that reports the 400.
+    var headers = parseHeadersText(valueOf("pv-headers"));
+    if (headers) payload.headers = headers;
+    var hosts = parseList(valueOf("pv-hosts"));
+    if (hosts.length > 0) payload.hosts = hosts;
     return payload;
   }
 
@@ -1702,6 +1760,16 @@ pre.code {
       models: state.modelRows.map(function (row) { return String(row.id || "").trim(); }).filter(function (id) { return id !== ""; }),
       reasoning: !!(byId("pv-reasoning") && byId("pv-reasoning").checked)
     };
+    var headers = parseHeadersText(valueOf("pv-headers"));
+    if (headers === null) {
+      toast("自定义请求头格式不对，每行一个「名称: 值」", "error");
+      var headersInput = byId("pv-headers");
+      if (headersInput) headersInput.focus();
+      return;
+    }
+    if (Object.keys(headers).length > 0) provider.headers = headers;
+    var hosts = parseList(valueOf("pv-hosts"));
+    if (hosts.length > 0) provider.hosts = hosts;
     if (state.editingProviderId) provider.id = state.editingProviderId;
     var apiKey = valueOf("pv-apiKey").trim();
     if (apiKey) provider.apiKey = apiKey;

@@ -39,6 +39,12 @@ export interface AgentStats {
 
 export interface AgentRuntimeOptions {
 	config: AppConfig;
+	/**
+	 * Conversation id for provider request headers (`${sessionId}`), e.g. the ACP
+	 * session id. Without one, headers fall back to the provider's manual value,
+	 * then to the provider id.
+	 */
+	requestSessionId?: string;
 	tools?: AgentTool<any>[];
 	/** Defaults to `config.systemPrompt`. */
 	systemPrompt?: string;
@@ -101,7 +107,13 @@ export interface AgentRuntime {
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
-	const config = options.config;
+	// One config object per runtime: provider request headers carry this
+	// conversation's id, and the stream layer reads them from the same place as
+	// the model — so a session and a one-shot run cannot disagree.
+	const config: AppConfig =
+		options.requestSessionId === undefined || options.config.requestHeaders === undefined
+			? options.config
+			: { ...options.config, requestHeaders: { ...options.config.requestHeaders, sessionId: options.requestSessionId } };
 	const extensions = options.extensions;
 	const assembly =
 		options.assembly ??

@@ -468,6 +468,9 @@ async function main(): Promise<void> {
 	const permissionMode = parsed.autoApprove ? "allow" : "ask";
 	const chat = createAgentRuntime({
 		config,
+		// The CLI keeps one session per process, so its id is the conversation id
+		// used by provider request headers (`${sessionId}`).
+		requestSessionId: sessionId,
 		tools: catalog,
 		extensions,
 		mcpServers: mcp.servers,

@@ -157,6 +157,8 @@ export class AcpSession {
 		});
 		this.runtime = createAgentRuntime({
 			config: options.config,
+			// Provider request headers identify the conversation by its ACP session id.
+			requestSessionId: options.id,
 			assembly: this.assembly,
 			mcpServers: options.mcpServers ?? [],
 			logger: options.logger,

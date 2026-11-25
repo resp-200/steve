@@ -56,7 +56,12 @@ function withoutFailedTurns(messages: AgentMessage[]): AgentMessage[] {
 
 export function createKernelAgent(options: KernelAgentOptions): Agent {
 	return new Agent({
-		streamFn: createStreamFn(() => options.config.apiKey, options.config.authStyle, options.hooks?.beforeProviderHeaders),
+		streamFn: createStreamFn(
+			() => options.config.apiKey,
+			options.config.authStyle,
+			options.hooks?.beforeProviderHeaders,
+			() => options.config.requestHeaders,
+		),
 		getApiKey: () => options.config.apiKey,
 		// The failed-turn filter always runs first; extensions may refine it further.
 		transformContext: async (messages, signal) => {
