@@ -211,6 +211,18 @@ function feishuMode(): "ws" | "http" {
 	return process.env.FEISHU_MODE?.trim().toLowerCase() === "http" ? "http" : "ws";
 }
 
+/**
+ * Keep the running process' view in sync with what was just written to
+ * `.steve/.env`, so the console echoes saved values before a restart.
+ * (Changes still need a restart to affect the live bot/connection.)
+ */
+function applyEnvUpdates(updates: Record<string, string | undefined>): void {
+	for (const [key, value] of Object.entries(updates)) {
+		if (value === undefined || value === "") delete process.env[key];
+		else process.env[key] = value;
+	}
+}
+
 function feishuState(): { mode: "ws" | "http"; configured: boolean; appId: string; appSecret: string; verificationToken: string; encryptKey: string; apiBase: string } {
 	const mode = feishuMode();
 	const appId = process.env.FEISHU_APP_ID?.trim() ?? "";
@@ -468,6 +480,7 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					fail(exchange, 500, `could not write ${envFilePath(cwd)}: ${describe(error)}`);
 					return;
 				}
+				applyEnvUpdates(updates);
 				logger.info(`[admin] updated Feishu gateway settings in .steve/.env`);
 				exchange.json(200, { ok: true, restartRequired: true });
 			},

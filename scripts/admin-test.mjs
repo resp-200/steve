@@ -216,6 +216,22 @@ try {
 	check(".steve/.env 写入新的 secret", envText.includes('FEISHU_APP_SECRET="new-secret-5678"') || envText.includes("FEISHU_APP_SECRET=new-secret-5678"));
 	check(".steve/.env 写入 encryptKey 与 apiBase", /FEISHU_ENCRYPT_KEY=/.test(envText) && /FEISHU_API_BASE=/.test(envText));
 	check(".steve/.env 保留未修改的 App ID 不在文件里（留空=保持不变）", !envText.includes("FEISHU_APP_ID"));
+	const echoed = await request("GET", "/admin/api/gateways");
+	check("保存后网关状态立即回显 secret", echoed.body.feishu.hasSecret === true);
+	check("保存后网关状态立即回显 encryptKey 与 apiBase", echoed.body.feishu.hasEncryptKey === true && echoed.body.feishu.apiBase === "http://127.0.0.1:8951");
+	check("保存后网关仍处于已配置", echoed.body.feishu.configured === true);
+
+	const gatewayCleared = await request("POST", "/admin/api/gateways/save", { body: { clear: true } });
+	check("清空网关配置成功", gatewayCleared.status === 200);
+	const afterClear = await request("GET", "/admin/api/gateways");
+	check("清空后网关状态立即回显为未配置", afterClear.body.feishu.configured === false && afterClear.body.feishu.hasSecret === false && afterClear.body.feishu.hasEncryptKey === false);
+	const envAfterClear = readFileSync(envFile, "utf8");
+	check("清空后 .env 移除飞书配置", !envAfterClear.includes("FEISHU_APP_SECRET") && !envAfterClear.includes("FEISHU_API_BASE"));
+	// Restore the gateway values the later system/file checks expect in .env.
+	const gatewayRestored = await request("POST", "/admin/api/gateways/save", {
+		body: { feishu: { appId: "cli_admin_test", appSecret: "new-secret-5678", encryptKey: "enc-key-9999", apiBase: "http://127.0.0.1:8951" } },
+	});
+	check("恢复网关配置成功", gatewayRestored.status === 200 && gatewayRestored.body.restartRequired === true);
 
 	/* ---------------------------------------------------------------- */
 	/* D. 定时任务                                                       */
