@@ -127,6 +127,9 @@ FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 所以按消息类型先试最可能的那个，再试另一个，第一次成功即返回；两条都失败才报错，错误里带上
 飞书返回的 `code`/`msg`。
 
+若第一个 type 就返回 `234001 Invalid request param.`，说明这个 key 本应用压根取不了（别家应用
+的图、或已过期），另一个 type 会以同样的错失败，所以**不再重试**，省掉一次注定失败的往返。
+
 失败时写两条日志：`feishu: image fetch <完整 URL> -> <状态码> <飞书原话（code N）>` 和
 `feishu: image download failed for <message_id>: …`。回复只说失败，但排查时真正需要的是那个
 URL 和错误码 —— 前者能看出 type 和 key，后者能区分「type 不对」「key 不存在」「没有权限」。

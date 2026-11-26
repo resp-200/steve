@@ -395,10 +395,16 @@ export interface ImageSourceHint {
 	messageType?: string;
 }
 
+/**
+ * Feishu's "the key or a query parameter did not parse" code. Seeing it for every
+ * `type` means the key itself is unusable by this app, not that we picked wrong.
+ */
+const INVALID_PARAM_CODE = 234_001;
+
 /** Pulls Feishu's `code`/`msg` out of a failed response so the log says why. */
-async function describeImageFailure(response: Response): Promise<string> {
+async function describeImageFailure(response: Response): Promise<{ text: string; code?: number }> {
 	const detail = (await response.text().catch(() => "")).slice(0, 300).trim();
-	if (detail === "") return "";
+	if (detail === "") return { text: "" };
 	let code: number | undefined;
 	let message = "";
 	try {
@@ -406,10 +412,10 @@ async function describeImageFailure(response: Response): Promise<string> {
 		if (typeof parsed.code === "number") code = parsed.code;
 		if (typeof parsed.msg === "string") message = parsed.msg;
 	} catch {
-		return `: ${detail}`;
+		return { text: `: ${detail}` };
 	}
-	if (message === "" && code === undefined) return `: ${detail}`;
-	return `: ${message !== "" ? message : "error"}（code ${String(code ?? response.status)}）`;
+	if (message === "" && code === undefined) return { text: `: ${detail}` };
+	return { text: `: ${message !== "" ? message : "error"}（code ${String(code ?? response.status)}）`, ...(code !== undefined ? { code } : {}) };
 }
 
 export function createFeishuClient(config: FeishuConfig): FeishuClient {
@@ -491,16 +497,15 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 		},
 		async downloadImage(imageKey, hint) {
 			const token = await tenantToken();
-			// Feishu indexes message pictures and uploaded message-reply pictures
-			// under the same `img_v3_…` key format but expects a different `type`:
-			// `message` for a picture sent in a chat, `default` for the other case.
-			// Which one a key needs is not visible from the key, so ask in order
-			// instead of failing on the first 400.
-			const failures: string[] = [];
-			// Try the type that matches the message shape first; the rest are the
-			// fallback for keys that came from somewhere else.
+			// Feishu serves one `img_v3_…` key under different `type` values and
+			// answers 400 "Invalid request param" when the guess is wrong, so the
+			// type that matches the message shape is tried first and the other one
+			// after it. A key whose *shape* Feishu itself rejects is not worth two
+			// round trips: both attempts fail identically (code 234001), which is
+			// the signature of a key from another app rather than a wrong type.
 			const preferred = hint?.messageType === "post" ? "default" : "message";
 			const kinds = [preferred, ...IMAGE_RESOURCE_TYPES.filter((kind) => kind !== preferred)];
+			const failures: string[] = [];
 			for (const kind of kinds) {
 				const url = `${base}/open-apis/im/v1/images/${encodeURIComponent(imageKey)}?type=${kind}`;
 				let response: Response;
@@ -510,12 +515,17 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 					throw new FeishuError(502, `cannot reach Feishu for image ${imageKey}: ${error instanceof Error ? error.message : String(error)}`);
 				}
 				if (!response.ok) {
-					const explained = await describeImageFailure(response);
-					failures.push(`${kind}: HTTP ${response.status}${explained}`);
+					const exploded = await describeImageFailure(response);
+					failures.push(`${kind}: HTTP ${response.status}${exploded.text}`);
 					// The reply only tells the user it failed; whoever debugs it needs the
 					// exact URL and Feishu's own wording to tell "wrong type" from
 					// "wrong key" from "missing permission".
-					log(`feishu: image fetch ${url} -> ${response.status}${explained}`);
+					log(`feishu: image fetch ${url} -> ${response.status}${exploded.text}`);
+					// 234001 means Feishu could not parse the key or the query at all: the
+					// key is not usable by this app (another tenant's image, an expired
+					// one), so the other `type` will fail identically and the second
+					// round trip is pure latency.
+					if (exploded.code === INVALID_PARAM_CODE) break;
 					continue;
 				}
 				// This endpoint answers with the raw file, not the usual JSON envelope;

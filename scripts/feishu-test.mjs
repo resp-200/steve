@@ -157,18 +157,21 @@ function startFakeFeishu() {
 			const imageMatch = request.url === undefined ? null : /^\/open-apis\/im\/v1\/images\/([^/?]+)/.exec(request.url);
 			if (imageMatch !== null) {
 				const key = decodeURIComponent(imageMatch[1]);
+				// Record first: a request that fails still tells us which type was tried.
+				const parsedUrl = new URL(request.url, "http://127.0.0.1");
+				const kind = parsedUrl.searchParams.get("type") ?? "message";
+				imageRequests.push({ key, kind });
+				imageQueries.push({ key, url: request.url });
 				const entry = images.get(key);
 				if (entry === undefined) {
-					reply(404, { code: 23_400, msg: "image not found" });
+					// Feishu answers 234001 "Invalid request param." for a key that does
+					// not belong to the app — it is a parameter error, not a 404.
+					reply(400, { code: 234_001, msg: "Invalid request param." });
 					return;
 				}
 				// Mirror the real endpoint: the `type` has to match how the key was
 				// created, otherwise it answers 400 with a JSON envelope. Keys without
 				// an explicit `kind` accept the message type, which is the common case.
-				const parsedUrl = new URL(request.url, "http://127.0.0.1");
-				const kind = parsedUrl.searchParams.get("type") ?? "message";
-				imageRequests.push({ key, kind });
-				imageQueries.push({ key, url: request.url });
 				if (entry.kind !== undefined && entry.kind !== kind) {
 					reply(400, { code: 23_400, msg: "invalid param" });
 					return;
@@ -726,6 +729,14 @@ try {
 	const heicAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
 	check("不支持的格式回具体原因", heicAnswer.includes("image/heic"), heicAnswer.slice(0, 160));
 
+	// A key this app cannot use at all answers 234001 for every type; retrying the
+	// second type only adds latency to a guaranteed failure, so stop after the first.
+	const beforeBadKey = fakeFeishu.replies.length;
+	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_badkey", messageType: "image", content: { image_key: "img_from_another_app" } }));
+	await waitFor(async () => fakeFeishu.replies.length > beforeBadKey, { label: "bad key reply", timeout: 8_000 });
+	const badKeyRequests = fakeFeishu.imageRequests.filter((entry) => entry.key === "img_from_another_app");
+	check("key 不可用（234001）时不再换 type 重试", badKeyRequests.length === 1, JSON.stringify(badKeyRequests.map((entry) => entry.kind)));
+
 	// An image_key Feishu itself cannot serve must not take the whole bot down.
 	const beforeMissing = fakeFeishu.replies.length;
 	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_3", messageType: "image", content: { image_key: "img_missing" } }));
@@ -734,7 +745,7 @@ try {
 	check("图片下载失败也有回复", missingAnswer.includes("图片下载失败"), missingAnswer.slice(0, 160));
 	// The reply is for the user; the log is for whoever has to fix it. Without the
 	// URL and Feishu's own code the log line is just "it failed".
-	check("下载失败的日志带 URL 与飞书错误码", /image fetch .*img_missing.*type=(message|default).*-> 404.*code 23400/.test(visionServe.stderr + visionServe.stdout), (visionServe.stderr + visionServe.stdout).slice(-600));
+	check("下载失败的日志带 URL 与飞书错误码", /image fetch .*img_missing.*type=(message|default).*-> 400.*code 234001/.test(visionServe.stderr + visionServe.stdout), (visionServe.stderr + visionServe.stdout).slice(-600));
 
 	// G. Disabled without credentials
 	const disabledServe = start(
