@@ -399,7 +399,11 @@ async function main(): Promise<void> {
 				const fetched = await feishuClient.downloadImage(key);
 				downloaded.push({ ...fetched, label: keys.length > 1 ? `第 ${downloaded.length + 1} 张图片` : "这张图片" });
 			} catch (error) {
-				return { ok: false, reason: `图片下载失败：${error instanceof Error ? error.message : String(error)}` };
+				const detail = error instanceof Error ? error.message : String(error);
+				// Log as well as reply: the reply tells the user it failed, the log is
+				// where the Feishu error code shows up when someone has to work out why.
+				log(`feishu: image download failed for ${message.messageId}: ${detail}`);
+				return { ok: false, reason: `图片下载失败：${detail}` };
 			}
 		}
 		return checkImages(downloaded);

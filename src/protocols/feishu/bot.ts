@@ -367,6 +367,32 @@ function clampReply(text: string): string {
 	return `${trimmed.slice(0, MAX_REPLY_CHARS - 3)}...`;
 }
 
+/**
+ * `type` values the image resource endpoint accepts, in the order worth trying.
+ * `message` is right for a picture a user sent in the chat; `default` covers keys
+ * that came from somewhere else (forwarded albums, images inside cards). The
+ * endpoint answers 400 "invalid param" for the wrong one, so a single attempt
+ * would make some perfectly valid pictures unreadable.
+ */
+const IMAGE_RESOURCE_TYPES = ["message", "default"] as const;
+
+/** Pulls Feishu's `code`/`msg` out of a failed response so the log says why. */
+async function describeImageFailure(response: Response): Promise<string> {
+	const detail = (await response.text().catch(() => "")).slice(0, 300).trim();
+	if (detail === "") return "";
+	let code: number | undefined;
+	let message = "";
+	try {
+		const parsed = JSON.parse(detail) as { code?: unknown; msg?: unknown };
+		if (typeof parsed.code === "number") code = parsed.code;
+		if (typeof parsed.msg === "string") message = parsed.msg;
+	} catch {
+		return `: ${detail}`;
+	}
+	if (message === "" && code === undefined) return `: ${detail}`;
+	return `: ${message !== "" ? message : "error"}（code ${String(code ?? response.status)}）`;
+}
+
 export function createFeishuClient(config: FeishuConfig): FeishuClient {
 	const base = config.apiBase ?? FEISHU_API_BASE;
 	const doFetch = config.fetchImpl ?? fetch;
@@ -446,25 +472,33 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 		},
 		async downloadImage(imageKey) {
 			const token = await tenantToken();
-			let response: Response;
-			try {
-				response = await doFetch(`${base}/open-apis/im/v1/images/${encodeURIComponent(imageKey)}?type=message`, {
-					method: "GET",
-					headers: { Authorization: `Bearer ${token}` },
-				});
-			} catch (error) {
-				throw new FeishuError(502, `cannot reach Feishu for image ${imageKey}: ${error instanceof Error ? error.message : String(error)}`);
+			// Feishu indexes message pictures and uploaded message-reply pictures
+			// under the same `img_v3_…` key format but expects a different `type`:
+			// `message` for a picture sent in a chat, `default` for the other case.
+			// Which one a key needs is not visible from the key, so ask in order
+			// instead of failing on the first 400.
+			const failures: string[] = [];
+			for (const kind of IMAGE_RESOURCE_TYPES) {
+				const url = `${base}/open-apis/im/v1/images/${encodeURIComponent(imageKey)}?type=${kind}`;
+				let response: Response;
+				try {
+					response = await doFetch(url, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
+				} catch (error) {
+					throw new FeishuError(502, `cannot reach Feishu for image ${imageKey}: ${error instanceof Error ? error.message : String(error)}`);
+				}
+				if (!response.ok) {
+					failures.push(`${kind}: HTTP ${response.status}${await describeImageFailure(response)}`);
+					continue;
+				}
+				// This endpoint answers with the raw file, not the usual JSON envelope;
+				// the content type is how we learn what the model will be shown.
+				const contentType = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+				const bytes = Buffer.from(await response.arrayBuffer());
+				const mimeType = contentType.startsWith("image/") ? contentType : "image/png";
+				log(`feishu: downloaded image ${imageKey} as type=${kind} (${mimeType}, ${bytes.length} bytes)`);
+				return { mimeType, data: bytes.toString("base64") };
 			}
-			if (!response.ok) {
-				throw new FeishuError(502, `Feishu image ${imageKey} download failed with HTTP ${response.status}`);
-			}
-			// This endpoint answers with the raw file, not the usual JSON envelope;
-			// the content type is how we learn what the model will be shown.
-			const contentType = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
-			const bytes = Buffer.from(await response.arrayBuffer());
-			const mimeType = contentType.startsWith("image/") ? contentType : "image/png";
-			log(`feishu: downloaded image ${imageKey} (${mimeType}, ${bytes.length} bytes)`);
-			return { mimeType, data: bytes.toString("base64") };
+			throw new FeishuError(502, `Feishu image ${imageKey} download failed (${failures.join("; ")})`);
 		},
 		async replyCard(messageId, card) {
 			// Cards are not clamped: the builder caps the body, and truncating JSON

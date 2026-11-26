@@ -116,6 +116,7 @@ function startFakeFeishu() {
 	const endpointCalls = [];
 	/** One HTTP response for the image-download endpoint; tests replace it. */
 	const images = new Map();
+	const imageRequests = [];
 	const server = createServer((request, response) => {
 		const chunks = [];
 		request.on("data", (chunk) => chunks.push(chunk));
@@ -160,6 +161,15 @@ function startFakeFeishu() {
 					reply(404, { code: 23_400, msg: "image not found" });
 					return;
 				}
+				// Mirror the real endpoint: the `type` has to match how the key was
+				// created, otherwise it answers 400 with a JSON envelope. Keys without
+				// an explicit `kind` accept the message type, which is the common case.
+				const kind = new URL(request.url, "http://127.0.0.1").searchParams.get("type") ?? "message";
+				imageRequests.push({ key, kind });
+				if (entry.kind !== undefined && entry.kind !== kind) {
+					reply(400, { code: 23_400, msg: "invalid param" });
+					return;
+				}
 				response.writeHead(200, { "content-type": entry.mimeType });
 				// The real endpoint answers with the raw file, not the JSON envelope.
 				response.end(entry.bytes);
@@ -169,7 +179,7 @@ function startFakeFeishu() {
 		});
 	});
 	return new Promise((resolve) => {
-		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls, images }));
+		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls, images, imageRequests }));
 	});
 }
 
@@ -674,6 +684,20 @@ try {
 	const postText = String(postUserMessage?.text ?? "");
 	check("富文本：同段落的文字被拼起来", postText.includes("这是截图，帮我看看这个报错。"), postText);
 	check("富文本：纯图片消息才补默认提示", !postText.includes("请看这张图片"), postText);
+
+	// Some image keys reject `type=message` and only answer to `type=default`
+	// (the user's real-world 400). The client must try both before giving up.
+	fakeFeishu.images.set("img_default", { kind: "default", mimeType: "image/png", bytes: Buffer.alloc(640, 4) });
+	const beforeDefault = fakeFeishu.replies.length;
+	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_default", messageType: "image", content: { image_key: "img_default" } }));
+	await waitFor(async () => fakeFeishu.replies.length > beforeDefault, { label: "default-type reply", timeout: 8_000 });
+	const defaultAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
+	check("type=message 被拒时回退到 type=default", defaultAnswer.includes("图片数量：1") && defaultAnswer.includes("大小：640"), defaultAnswer.slice(0, 160));
+	check(
+		"回退时先试 message 再试 default",
+		JSON.stringify(fakeFeishu.imageRequests.filter((request) => request.key === "img_default").map((request) => request.kind)) === JSON.stringify(["message", "default"]),
+		JSON.stringify(fakeFeishu.imageRequests.filter((request) => request.key === "img_default")),
+	);
 
 	// A picture the model cannot use is refused with a reason rather than a 500.
 	fakeFeishu.images.set("img_heic", { mimeType: "image/heic", bytes: Buffer.alloc(1024, 1) });

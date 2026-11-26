@@ -120,7 +120,13 @@ FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 | 只发图 / 相册转发 | `image` | 按 `image_key` 取原图 |
 | 图片 + 文字、粘贴、拖拽、转发对话 | `post`（富文本） | 二维数组逐段解析，文字拼成一行、图片按阅读顺序取出，两者一起进 run |
 
-收图时按 `image_key` 调 `GET /open-apis/im/v1/images/:key?type=message` 取回原图，转成 base64 交给模型。
+收图时按 `image_key` 调 `GET /open-apis/im/v1/images/:key?type=<type>` 取回原图，转成 base64 交给模型。
+
+`type` 从 key 上看不出来：同一个 `img_v3_…` 格式，聊天里直接发的图要用 `type=message`，
+另一类来源的图只认 `type=default`，猜错就是 `HTTP 400 invalid param`。所以按 `message` →
+`default` 顺序各试一次，第一次成功即返回，两条都失败才报错，错误里带上飞书返回的 `code`/`msg`。
+失败的下载也会写进日志（`feishu: image download failed for <message_id>: …`）—— 回复只说失败，
+但排查时真正需要的是那个错误码。
 
 | 情况 | 结果 |
 | --- | --- |
@@ -129,7 +135,7 @@ FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 | 勾着但网关不认图（400） | 回「这张图没能发给模型 + 你该怎么办」，附网关原话 |
 | 格式不在 PNG / JPEG / GIF / WebP | 回具体原因（例如 HEIC 请先转换） |
 | 超过 10 MB | 回「有 X MB，超过 10.0 MB 的上限，请压缩后再发」 |
-| 图片下载失败 | 回「图片下载失败：…」 |
+| 图片下载失败 | 回「图片下载失败：…」，日志里带飞书的 `code`/`msg` 与试过的 type |
 
 - 一张图坏掉就整批拒收：只送好的那几张会让模型回答"半个问题"，而用户以为它看全了。
 - 纯图片消息的文本会填成「请看这张图片。」，因为模型需要一个可读的提问；富文本自带文字时用原文，不补这句。
