@@ -76,6 +76,8 @@ run("触发器（trigger）", "node", ["scripts/trigger-test.mjs"]);
 run("常驻服务（serve）", "node", ["scripts/serve-test.mjs"]);
 run("飞书机器人（feishu）", "node", ["scripts/feishu-test.mjs"]);
 run("系统提示词（prompt）", "node", ["scripts/prompt-test.mjs"]);
+run("飞书卡片构建（feishu-card）", "node", ["scripts/feishu-card-test.mjs"]);
+run("飞书卡片工具（feishu-card-tool）", "node", ["scripts/feishu-card-tool-test.mjs"]);
 run("管理后台（admin）", "node", ["scripts/admin-test.mjs"]);
 run("事件投影（projection）", "node", ["scripts/projection-test.mjs"]);
 run("环境快照（environment）", "node", ["scripts/environment-test.mjs"]);

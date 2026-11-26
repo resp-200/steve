@@ -20,6 +20,7 @@ import { DEFAULT_POLICIES, project, type Audience, type ProjectionHooks } from "
 import { snapshotEnvironment } from "../features/environment.js";
 import { createTriggerEngine, type TriggerEngine } from "../features/trigger.js";
 import type { StreamEvent } from "../features/events.js";
+import { createSendCardTool } from "../features/feishu-card-tool.js";
 import { createRunWorker, type RunTerminal, type RunWorker } from "../features/worker.js";
 import { createStreamLog, isStreamId, type StreamLog } from "../features/stream-log.js";
 import { modelInfo, workspacePolicy } from "../features/session-policy.js";
@@ -379,12 +380,32 @@ async function main(): Promise<void> {
 			await log2.append(streamId, [{ type: "stream.created", streamId, cwd, title: `Feishu ${message.chatType}` }]);
 		}
 		const from = (await log2.read(streamId)).at(-1)?.seq ?? 0;
-		const submitted = await worker.submit(streamId, { text: message.text, scene: "feishu" }, "foreground");
+		// A card is a reply too: once the model sent one, the run must not also post
+		// the same content as text. The flag lives per run, not per chat.
+		let cardSent = false;
+		const cardTool = createSendCardTool({
+			reply: async (card) => await feishuClient.replyCard(message.messageId, card),
+			onSent: () => {
+				cardSent = true;
+			},
+		});
+		const submitted = await worker.submit(
+			streamId,
+			{ text: message.text, scene: "feishu", extraTools: [cardTool] },
+			"foreground",
+		);
 		if (!submitted.accepted) {
 			await feishuClient.replyText(message.messageId, `现在不能开始执行：${submitted.reason ?? "busy"}`);
 			return;
 		}
 		const terminal = await worker.wait(submitted.runId);
+		if (cardSent) {
+			// The card answered the question; a failure after it still needs saying.
+			if (terminal.status === "failed") {
+				await feishuClient.replyText(message.messageId, `⚠️ ${terminal.error}`);
+			}
+			return;
+		}
 		const events = await log2.read(streamId, from + 1);
 		await feishuClient.replyText(message.messageId, composeFeishuReply(events, terminal));
 	};

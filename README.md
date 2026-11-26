@@ -42,6 +42,7 @@ src/features/state-fold.ts L3 状态折叠：事件 -> 消息 / 状态摘要（�
 src/features/projection.ts L3 事件投影：同一事件流按受众（user / full / audit / internal）收窄，隐藏思考与原始工具 I/O
 src/features/environment.ts L3 环境快照：一次运行的外部条件（cwd/roots/工具/权限/模型/投影）落成可序列化数据
 src/features/worker.ts  L3 运行执行器：submit -> 一次性 Agent -> run 生命周期事件（串行/排队/取消/重试）
+src/features/feishu-card-tool.ts L3 `send_feishu_card` 工具：按 run 构造，只能回给启动这次 run 的那条消息
 src/features/agent-assembly.ts L3 工具/权限/插件钩子装配：runtime 与 worker 共用同一套工具表与审批规则
 src/features/trigger.ts L3 触发器引擎：predicate / fs / cron / webhook -> trigger.fired + 带前缀的 user.message（去重/限速/因果深度三道防线）
 src/features/trigger-schedule.ts L3 触发器调度辅助：cron 5 段解析与下次时间、glob 匹配、路径收敛
@@ -64,6 +65,8 @@ src/extensions/builtin/*  L3′ 内置插件（Tier 1）：会话命令（含 /m
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
+src/model/prompt.ts      L5 系统提示词组装：身份 / 角色设定 / 场景 / 环境四层
+src/model/feishu-card.ts L5 飞书卡片构建：模型只传 title/body/theme，这里产出飞书能接受的卡片
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
 src/model/version.ts      L5 版本号：唯一从 package.json 读取的地方（--version / ACP 握手 / MCP clientInfo）
 doc/*                    专题文档：模型接入 / ACP server / 常驻服务 / MCP / 插件（见 doc/README.md）
@@ -665,7 +668,8 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run streams:test` | 事件日志 51 项断言：append/read/seq 连续性、`fromSeq` 增量、订阅补历史与取消、轮转跨文件、崩溃撕裂行跳过与续写、fork 独立编号、超限事件截断后折叠跳过，以及兼容层双写/旧 json 回退/两条读路径折叠一致 |
 | `npm run folds:test` | 状态折叠 35 项断言：每类事件产不产消息逐条、`run.failed` 不产生消息（等价旧回滚）、截断事件跳过、图片/详情/错误透传、`foldStatus` 的 activeRun/queued/usage/turnCount/toolCallCount、`forkEvents` 截断与重排、真实 mock 对话折叠结果与旧 `runtime.snapshot()` 逐条相等（toolCallId 链接一致）、重放流续跑与连续两轮结果相同 |
 | `npm run serve:test` | 常驻服务 40 项断言：health/version、token 鉴权（缺失/错误/非回环无 token 拒绝启动）、流创建与列表、SSE 头（`text/event-stream` 与 `X-Accel-Buffering: no`）、用户投影（无工具参数/无 details/无 `run.turn.settled`）、历史回放与实时一致、消息投递 `202 {runId}`、非法/未知流报错、取消活动 run 与未知 run 404、审批端点、webhook 签名接受与拒绝、触发后台 run 落盘（`trigger.fired`/`[watch:name]` 前缀/background 模式）、`--no-watch` 关闭 hooks |
-| `npm run feishu:test` | 飞书机器人 48 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
+| `npm run feishu-card:test` | 飞书卡片 37 项断言：构建器（无标题不产生 header、Markdown 原样透传、颜色白名单与回落、标题超长截断、空正文/超长正文拒绝、上限边界可用）与工具（走注入的 reply、模型收到的是构建出的卡片而非原始 JSON、失败以工具结果返回而不抛出、失败不计入"已发送"、发卡成功后宿主不再补纯文本） |
+| `npm run feishu:test` | 飞书机器人 53 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；卡片回复（`msg_type: interactive`、标题栏颜色、Markdown 原样下发、发卡后不再补纯文本）；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
 | `npm run admin:test` | 管理后台 90 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化、模型选择弹窗调用 `/v1/models`）、网关读取与写回 `~/.steve/.env`（保留未修改字段、保存后立即回显、清空后回显未配置）、模型选择弹窗与规格展示（`/v1/models` 的 `items` 规格解析、页面结构）、定时任务写 `~/.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出、没有 `.env` 时仅凭控制台里激活的供应商也能启动 |
 | `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`~/.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
@@ -730,7 +734,7 @@ steve-serve --feishu-mode ws                      # 飞书事件传输：ws（�
 
 watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` 开头的输入，常驻进程把它交给 worker 以 `background` 模式执行；后台 run 遇到需要审批的工具会挂起为 `approval.pending`，由 `POST /streams/:id/approvals` 放行，默认 10 分钟超时按拒绝处理。详见 [doc/serve.md](./doc/serve.md)。
 
-**飞书机器人**（可选）：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 后，`steve-serve` 默认用**长连接**（WebSocket）主动连飞书接收事件——不需要公网地址、回调 URL 或 Verification Token；把飞书开放平台的事件订阅方式设为「长连接」即可。也可用 `--feishu-mode http`（或 `FEISHU_MODE=http`）切回旧的回调模式（此时需要 `FEISHU_VERIFICATION_TOKEN`，可选 `FEISHU_ENCRYPT_KEY`），进程会挂上 `POST /feishu/events`。两种方式都把飞书私聊/群聊消息映射到一条事件流并跑 worker，回答通过 Open API 回复到原消息线程；一个 chat 固定一条流，按 `event_id` 去重，`--no-feishu` 可关闭。设置步骤见 [doc/serve.md](./doc/serve.md#飞书机器人)。
+**飞书机器人**（可选）：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 后，`steve-serve` 默认用**长连接**（WebSocket）主动连飞书接收事件——不需要公网地址、回调 URL 或 Verification Token；把飞书开放平台的事件订阅方式设为「长连接」即可。也可用 `--feishu-mode http`（或 `FEISHU_MODE=http`）切回旧的回调模式（此时需要 `FEISHU_VERIFICATION_TOKEN`，可选 `FEISHU_ENCRYPT_KEY`），进程会挂上 `POST /feishu/events`。两种方式都把飞书私聊/群聊消息映射到一条事件流并跑 worker，回答通过 Open API 回复到原消息线程（需要时 agent 可用 `send_feishu_card` 发结构化卡片）；一个 chat 固定一条流，按 `event_id` 去重，`--no-feishu` 可关闭。设置步骤见 [doc/serve.md](./doc/serve.md#飞书机器人)。
 
 ## 约定与规范
 

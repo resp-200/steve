@@ -322,12 +322,36 @@ try {
 	check("stream 含 run.settled", events.some((event) => event.type === "run.settled"));
 	check("stream 含 assistant 输出", events.some((event) => event.type === "text_delta" || event.type === "run.turn.settled"));
 
+	// B2. Cards: the model decides, and the tool only exists on a Feishu run
+	const repliesBeforeCard = fakeFeishu.replies.length;
+	const cardAck = await postCallback(
+		SERVE_PORT,
+		messageEvent({ eventId: "evt_feishu_card", text: "用卡片回复 feishu_card" }),
+	);
+	check("发卡片的消息回调 200", cardAck.status === 200, `status ${cardAck.status}`);
+	await waitFor(() => (fakeFeishu.replies.length > repliesBeforeCard ? fakeFeishu.replies : false), { label: "card reply" });
+	const cardReply = fakeFeishu.replies.find((reply) => reply.body.msg_type === "interactive");
+	check("卡片走 messages/:id/reply", cardReply?.path === `/open-apis/im/v1/messages/${MESSAGE_ID}/reply`, String(cardReply?.path));
+	let cardBody = {};
+	try {
+		cardBody = JSON.parse(cardReply?.body.content ?? "{}");
+	} catch {
+		// reported below
+	}
+	check("卡片 header 标题与颜色", cardBody.header?.title?.content === "卡片回复" && cardBody.header?.template === "green", JSON.stringify(cardBody.header));
+	const cardMarkdown = (cardBody.elements ?? []).find((element) => element.tag === "markdown")?.content ?? "";
+	check("卡片正文 Markdown 原样下发", cardMarkdown.includes("**第一行**") && cardMarkdown.includes("- 一条列表"), cardMarkdown);
+	check("发了卡片就不再补纯文本", fakeFeishu.replies.filter((reply) => reply.body.msg_type === "text" && reply.at >= (cardReply?.at ?? 0)).length === 0);
+
 	// C. Dedupe: Feishu retries the same event id
+	// The card run writes into the same chat stream, so let it settle first:
+	// measured any earlier, its tail would look like the duplicate's events.
+	await sleepAsync(1200);
 	const beforeDuplicate = readStreamEvents(streamsDir, streamId).length;
 	const duplicate = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_1" }));
 	check("重复 event_id 仍然 200", duplicate.status === 200, `status ${duplicate.status}`);
 	await sleepAsync(1500);
-	check("重复 event_id 不再产生回复", fakeFeishu.replies.length === 1, `${fakeFeishu.replies.length} replies`);
+	check("重复 event_id 不再产生回复", fakeFeishu.replies.length === 2, `${fakeFeishu.replies.length} replies`);
 	check("重复 event_id 不再写入事件", readStreamEvents(streamsDir, streamId).length === beforeDuplicate);
 
 	// D. Events a bot should not answer
@@ -336,7 +360,7 @@ try {
 	const appEvent = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_3", senderType: "app" }));
 	check("app 自己发的消息 200 但忽略", appEvent.status === 200);
 	await sleepAsync(1200);
-	check("被忽略的事件不产生回复", fakeFeishu.replies.length === 1, `${fakeFeishu.replies.length} replies`);
+	check("被忽略的事件不产生回复", fakeFeishu.replies.length === 2, `${fakeFeishu.replies.length} replies`);
 
 	const badHeaderToken = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_4", token: "wrong" }));
 	check("事件头 token 错误返回 401", badHeaderToken.status === 401, `status ${badHeaderToken.status}`);

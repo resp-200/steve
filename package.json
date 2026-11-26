@@ -69,6 +69,7 @@
 		"config:test": "node scripts/config-test.mjs",
 		"prompt:test": "node scripts/prompt-test.mjs",
 		"headers:test": "node scripts/request-headers-test.mjs",
+		"feishu-card:test": "node scripts/feishu-card-test.mjs && node scripts/feishu-card-tool-test.mjs",
 		"mcp:test": "node scripts/mcp-test.mjs",
 		"arch:test": "node scripts/arch-test.mjs",
 		"verify": "node scripts/verify.mjs",

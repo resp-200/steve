@@ -250,6 +250,8 @@ export interface FeishuClient {
 	sendText(chatId: string, text: string): Promise<void>;
 	/** Replies in the thread of the incoming message. */
 	replyText(messageId: string, text: string): Promise<void>;
+	/** Replies in the thread of the incoming message with an interactive card. */
+	replyCard(messageId: string, card: unknown): Promise<void>;
 }
 
 function clampReply(text: string): string {
@@ -334,6 +336,15 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 				content: JSON.stringify({ text: clampReply(text) }),
 			});
 			log(`feishu: replied to message ${messageId}`);
+		},
+		async replyCard(messageId, card) {
+			// Cards are not clamped: the builder caps the body, and truncating JSON
+			// would produce a card Feishu cannot parse.
+			await send(`/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`, {
+				msg_type: "interactive",
+				content: JSON.stringify(card),
+			});
+			log(`feishu: replied with a card to message ${messageId}`);
 		},
 	};
 }

@@ -41,6 +41,11 @@ export interface RunInput {
 	append?: boolean;
 	/** Channel the run answers on, when it answers a person rather than a timer. */
 	scene?: "feishu";
+	/**
+	 * Tools only this run may use. A Feishu run gets `send_feishu_card` here
+	 * because a card can only answer the message that started the run.
+	 */
+	extraTools?: readonly AgentTool<any>[];
 }
 
 export interface SubmitResult {
@@ -239,11 +244,18 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 		}
 	};
 
-	/** Tools the run may use: exactly the ones its snapshot names. */
-	const selectTools = (environment: EnvironmentSnapshot): AgentTool<any>[] => {
+	/**
+	 * Tools the run may use: exactly the ones its snapshot names, plus any the
+	 * input brought along. Per-run tools bypass the snapshot on purpose — they are
+	 * not part of the process catalog and cannot outlive the run that added them.
+	 */
+	const selectTools = (environment: EnvironmentSnapshot, extra: readonly AgentTool<any>[] = []): AgentTool<any>[] => {
 		const allowed = new Set(environment.tools.map((tool) => tool.name));
 		const catalog = typeof options.tools === "function" ? options.tools() : options.tools ?? [];
-		return catalog.filter((tool) => allowed.has(tool.name));
+		const selected = catalog.filter((tool) => allowed.has(tool.name));
+		const known = new Set(selected.map((tool) => tool.name));
+		for (const tool of extra) if (!known.has(tool.name)) selected.push(tool);
+		return selected;
 	};
 
 	/**
@@ -325,7 +337,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 			await options.log.append(streamId, [{ type: "run.started", runId, inputCause, environment, mode }]);
 			const messages =
 				options.readState !== undefined ? await options.readState(streamId) : foldTranscript(await options.log.read(streamId));
-			const tools = selectTools(environment);
+			const tools = selectTools(environment, input.extraTools);
 			const context: RunAgentContext = {
 				streamId,
 				runId,

@@ -152,6 +152,18 @@ function planToolCall(text) {
 	// Error path: an out-of-workspace path, so the tool result comes back isError.
 	if (text.includes("boom")) return { name: "read_file", input: { path: "/nonexistent/boom.txt" } };
 	if (/\btime\b|几点|时间/i.test(text)) return { name: "get_current_time", input: {} };
+	// Feishu card replies: the tool is only offered to runs started by a Feishu
+	// message, so this also proves the per-run tool reached the model.
+	if (/\bcard\b|卡片|feishu_card/i.test(text)) {
+		return {
+			name: "send_feishu_card",
+			input: {
+				title: "卡片回复",
+				theme: "green",
+				body: "**第一行**\n\n- 一条列表\n- 第二条",
+			},
+		};
+	}
 	return undefined;
 }
 
