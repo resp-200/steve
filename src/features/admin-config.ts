@@ -37,6 +37,12 @@ export interface ProviderEntry {
 	hosts?: string[];
 	/** `false` opts out of the automatic session header (gateways that don't route by session). */
 	requestSessionHeader?: boolean;
+	/**
+	 * The model behind this provider accepts pictures. Absent = false, because
+	 * assuming vision from a provider name is how a text-only gateway gets sent an
+	 * image and answers with a 400 mid-turn.
+	 */
+	images?: boolean;
 }
 
 export interface AdminConfig {
@@ -89,6 +95,7 @@ export function providerView(provider: ProviderEntry, activeProviderId?: string)
 		headers: { ...(provider.headers ?? {}) },
 		hosts: [...(provider.hosts ?? [])],
 		requestSessionHeader: provider.requestSessionHeader !== false,
+		images: provider.images === true,
 		apiKeyMasked: maskSecret(provider.apiKey),
 		hasApiKey: provider.apiKey !== "",
 		active: provider.id === activeProviderId,
@@ -114,7 +121,7 @@ export function applyProvider(base: AppConfig, config: AdminConfig): AppConfig {
 		baseUrl,
 		api: resolveApi(baseUrl),
 		reasoning: provider.reasoning,
-		input: ["text"],
+		input: provider.images === true ? ["text", "image"] : ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: base.model.contextWindow,
 		maxTokens: base.model.maxTokens,
@@ -139,7 +146,7 @@ export function configFromProvider(provider: ProviderEntry): AppConfig {
 		baseUrl,
 		api: resolveApi(baseUrl),
 		reasoning: provider.reasoning,
-		input: ["text"],
+		input: provider.images === true ? ["text", "image"] : ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 128_000,
 		maxTokens: 8_192,
@@ -217,6 +224,7 @@ export function coerceProvider(raw: unknown, logger?: Logger): ProviderEntry | u
 		defaultModel,
 		models: [...new Set(models)],
 		reasoning: input.reasoning === true,
+		...(input.images === true ? { images: true } : {}),
 		...coerceHeaderFields(input, (message) => logger?.(`[admin] provider "${entry.name}" ${message}`)),
 	};
 	if (entry.apiKey === "") logger?.(`[admin] provider "${entry.name}" has no apiKey; it can only be used when the environment supplies one`);
@@ -252,6 +260,7 @@ export function normalizeProviderInput(raw: unknown, existing?: ProviderEntry): 
 		defaultModel,
 		models,
 		reasoning: input.reasoning === true,
+		...(input.images === true ? { images: true } : {}),
 		...(Object.keys(headers).length > 0 ? { headers } : {}),
 		...normalizeHostsInput(input.hosts),
 		...(input.requestSessionHeader === false ? { requestSessionHeader: false } : {}),

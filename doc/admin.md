@@ -36,7 +36,11 @@ steve-serve --port 8892 --token <你的-token>
 ### 2. 模型供应商
 
 每个供应商包含：名称、Base URL、API Key、默认模型、可用模型列表、是否开启思考
-（reasoning）。可以新增 / 编辑 / 删除，并**一键激活**一个供应商。
+（reasoning）、是否支持图片（vision）。可以新增 / 编辑 / 删除，并**一键激活**一个供应商。
+
+「支持图片」是一个**声明**，不是探测：勾上之后模型才能收到图片，不勾则收到图片时会回一条
+「当前激活的模型不支持图片」而不是把图发过去等网关报 400。用 `.env` 里的 `LLM_*` 直连时，
+对应开关是 `LLM_IMAGES=1`。图片格式限 PNG / JPEG / GIF / WebP，单张上限 10 MB。
 
 「可用模型」是一张可编辑列表，每行是模型 ID 与它的规格（上下文长度 / 最大输出，
 供应商返回时展示，否则显示「规格未知」）。
@@ -145,7 +149,7 @@ steve-serve --port 8892 --token <你的-token>
 | GET | `/admin/api/overview` | 概览 |
 | GET | `/admin/api/providers` | 供应商列表（掩码） |
 | POST | `/admin/api/providers/models` | 拉取供应商的 `/v1/models`（返回 `models` 与带规格的 `items`） |
-| POST | `/admin/api/providers/save` | 新增 / 编辑 `{provider:{id?,name,baseUrl,apiKey?,defaultModel,models,reasoning,headers?,hosts?,requestSessionHeader?}}`，响应带 `sentHeaders` 预览 |
+| POST | `/admin/api/providers/save` | 新增 / 编辑 `{provider:{id?,name,baseUrl,apiKey?,defaultModel,models,reasoning,images?,headers?,hosts?,requestSessionHeader?}}`，响应带 `sentHeaders` 预览 |
 | POST | `/admin/api/providers/delete` | 删除 `{id}` |
 | POST | `/admin/api/providers/activate` | 激活 `{id}` |
 | GET | `/admin/api/gateways` | 网关状态 |

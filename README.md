@@ -67,6 +67,7 @@ src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位�
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/prompt.ts      L5 系统提示词组装：身份 / 角色设定 / 场景 / 环境四层
 src/model/feishu-card.ts L5 飞书卡片构建：模型只传 title/body/theme，这里产出飞书能接受的卡片
+src/model/image.ts       L5 图片规则：格式白名单、10 MB 上限、能力声明（飞书/命令行/ACP 共用）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
 src/model/version.ts      L5 版本号：唯一从 package.json 读取的地方（--version / ACP 握手 / MCP clientInfo）
 doc/*                    专题文档：模型接入 / ACP server / 常驻服务 / MCP / 插件（见 doc/README.md）
@@ -161,6 +162,7 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `LLM_AUTH_STYLE` | | `auto`（默认）/ `bearer` / `api-key`，见下文「鉴权」 |
 | `LLM_PROVIDER` | | 传给 pi 的 provider id，默认 `custom` |
 | `LLM_REASONING` | | `true` 时显式请求 reasoning/thinking（网关自带思考的模型不设也会输出） |
+| `LLM_IMAGES` | | `true` 声明模型能看图（飞书发图、命令行带图才会真的发出去）；后台「支持图片」勾选时等价 |
 | `LLM_CONTEXT_WINDOW` / `LLM_MAX_TOKENS` | | 默认 128000 / 8192；Anthropic 协议必须带 `max_tokens` |
 | `LLM_SYSTEM_PROMPT` | | 替换提示词的身份正文（身份+工作方式）；场景层与环境信息仍会附加，见下文「系统提示词」 |
 
@@ -239,6 +241,21 @@ Anthropic 官方 SDK 默认发 `x-api-key`，但很多 Anthropic 兼容网关只
 ### 3. `streamFn` 是 pi-ai 与 pi-agent-core 的接缝
 
 `Agent` 只认 `StreamFn = (model, context, options) => AssistantMessageEventStream`，而 pi-ai 的 `api/*` 模块导出的 `streamSimple` 正好符合这个形状，所以按 `model.api` 分支即可（`hasApi()` 负责类型收窄）。注意契约要求 **streamFn 不能抛异常**，失败必须以 `{ type: "error", error }` 事件收尾，因此 `src/model/stream.ts` 里做了 `try/catch` 兜底。
+
+### 3.5 图片（多模态）走同一条缝
+
+图片从三个地方进来，形态各不相同：飞书是 `image_key`（要先 `GET /open-apis/im/v1/images/:key?type=message` 下载）、命令行是磁盘上的文件路径、ACP 客户端是内联的 base64 block。三种都会先过 `src/model/image.ts` 的同一套规则，再变成本项目里通用的 `PromptImage { mimeType, data }`，一路往下都是这一种形状：
+
+```
+入口（下载 / 读盘 / 解 block）→ checkImage(s)（格式 + 10MB）→ PromptImage
+  → RunInput.images → user.message 事件（带 images 字段）
+  → foldTranscript 还原成 { type: "image", data, mimeType } 内容块
+  → agent.state.messages → pi-ai 按 provider 协议编码
+```
+
+- **能力靠声明**：`Model.input` 含 `image` 图片才会进请求。供应商后台的「支持图片」勾选与 `.env` 的 `LLM_IMAGES=1` 都只是改这一个字段。不声明时，飞书回一句「当前模型不支持图片」，ACP 推一条同样的警告 —— 都不静默丢图，因为"模型没看见"和"模型不愿意看"用户分不出来。
+- **规则集中一处**：格式白名单（PNG/JPEG/GIF/WebP，HEIC 特意不收 —— 网关不认）、单张 10 MB 上限、批量里一张坏就整批拒收。三个入口各写一份迟早会漂移。
+- **图片进的是事件日志**：所以重启、续聊、ACP 重连之后模型仍然看得见之前那张图，不需要另存 blob。
 
 ### 4. 工具就是一个普通对象
 
@@ -678,7 +695,8 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run folds:test` | 状态折叠 35 项断言：每类事件产不产消息逐条、`run.failed` 不产生消息（等价旧回滚）、截断事件跳过、图片/详情/错误透传、`foldStatus` 的 activeRun/queued/usage/turnCount/toolCallCount、`forkEvents` 截断与重排、真实 mock 对话折叠结果与旧 `runtime.snapshot()` 逐条相等（toolCallId 链接一致）、重放流续跑与连续两轮结果相同 |
 | `npm run serve:test` | 常驻服务 40 项断言：health/version、token 鉴权（缺失/错误/非回环无 token 拒绝启动）、流创建与列表、SSE 头（`text/event-stream` 与 `X-Accel-Buffering: no`）、用户投影（无工具参数/无 details/无 `run.turn.settled`）、历史回放与实时一致、消息投递 `202 {runId}`、非法/未知流报错、取消活动 run 与未知 run 404、审批端点、webhook 签名接受与拒绝、触发后台 run 落盘（`trigger.fired`/`[watch:name]` 前缀/background 模式）、`--no-watch` 关闭 hooks |
 | `npm run feishu-card:test` | 飞书卡片 37 项断言：构建器（无标题不产生 header、Markdown 原样透传、颜色白名单与回落、标题超长截断、空正文/超长正文拒绝、上限边界可用）与工具（走注入的 reply、模型收到的是构建出的卡片而非原始 JSON、失败以工具结果返回而不抛出、失败不计入"已发送"、发卡成功后宿主不再补纯文本） |
-| `npm run feishu:test` | 飞书机器人 53 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；卡片回复（`msg_type: interactive`、标题栏颜色、Markdown 原样下发、发卡后不再补纯文本）；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
+| `npm run image:test` | 图片规则 25 项断言：格式白名单（PNG/JPEG/GIF/WebP 通过，HEIC/SVG/空内容/无类型拒绝）、mime 大小写与参数归一、10 MB 上限边界（正好通过、超一字节拒绝、拒绝信息带具体大小）、批量里一张坏就整批拒收并指出第几张、能力声明识别、扩展名映射与 base64 字节计算 |
+| `npm run feishu:test` | 飞书机器人 62 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；卡片回复（`msg_type: interactive`、标题栏颜色、Markdown 原样下发、发卡后不再补纯文本）；图片消息（纯文本模型收到图回「不支持图片」、`LLM_IMAGES=1` 时图片真的进 provider payload 且 mime/字节数与原图一致、`user.message` 事件带 images、纯图片消息补提示文本、HEIC 回具体原因、下载失败有回复）；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
 | `npm run admin:test` | 管理后台 91 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化、模型选择弹窗调用 `/v1/models`）、网关读取与写回 `~/.steve/.env`（保留未修改字段、保存后立即回显、清空后回显未配置）、模型选择弹窗与规格展示（`/v1/models` 的 `items` 规格解析、页面结构）、定时任务写 `~/.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出、系统信息报出实际读取的 `admin.json` 路径（配置搬家用）、没有 `.env` 时仅凭控制台里激活的供应商也能启动 |
 | `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`~/.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
@@ -874,7 +892,7 @@ watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` �
 | `npm run folds:test` | 8898 | — |
 | `npm run triggers:test` | — | — |
 | `npm run serve:test` | 8903 | 8911 / 8912 |
-| `npm run feishu:test` | 8943 | 8941（伪飞书 API）/ 8942、8944、8945、8947（serve）/ 8946（假 WebSocket） |
+| `npm run feishu:test` | 8943 | 8941（伪飞书 API）/ 8942、8944、8945、8947、8949（serve）/ 8946（假 WebSocket） |
 | `npm run admin:test` | 8951 | 8952（serve）、8953（伪 models API） |
 | `npm run projections:test` | — | — |
 | `npm run environments:test` | — | — |

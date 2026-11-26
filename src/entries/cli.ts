@@ -4,6 +4,8 @@ import { createInterface } from "node:readline";
 import { discoveryEnabled, pluginPaths } from "../extensions/discovery.js";
 import { loadExtensions, type ExtensionHost } from "../extensions/host.js";
 import type { AgentTool } from "../features/contract.js";
+import { checkImage, imageMimeTypeForPath } from "../model/image.js";
+import type { PromptImage } from "../features/events.js";
 import { connectMcpServers } from "../features/mcp.js";
 import type { PermissionDecision, PermissionRequest } from "../features/permissions.js";
 import { createAgentRuntime, type AgentRuntime } from "../features/runtime.js";
@@ -14,7 +16,7 @@ import { modelInfo, workspacePolicy } from "../features/session-policy.js";
 import { readAdminConfig, resolveRuntimeConfig } from "../features/admin-config.js";
 import { loadConfig, steveHomeDir, type AppConfig } from "../model/config.js";
 import { VERSION } from "../model/version.js";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { color, Renderer } from "./render.js";
@@ -286,14 +288,52 @@ async function runCommand(context: ReplContext, input: string): Promise<boolean>
 
 /* --------------------------------- modes --------------------------------- */
 
-async function runOneShot(chat: AgentRuntime, input: string): Promise<void> {
-	const result = await chat.prompt(input, { onRetry });
+/**
+ * Turns a typed line into a prompt plus any pictures it referred to.
+ *
+ * Terminals cannot paste a picture, so the usual way to show one is to type its
+ * path (or drag it in, which pastes an absolute path). Paths are only taken from
+ * the start of the line — `请看这张图 /tmp/a.png` is readable, and treating every
+ * space-separated token as a path would swallow ordinary words.
+ */
+function extractImages(line: string, supportsImages: boolean): { text: string; images: PromptImage[] } {
+	if (!supportsImages) return { text: line, images: [] };
+	const images: PromptImage[] = [];
+	let rest = line;
+	for (;;) {
+		const match = /^(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+|$)/.exec(rest);
+		if (match === null) break;
+		const candidate = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+		const mimeType = candidate === "" ? undefined : imageMimeTypeForPath(candidate);
+		if (mimeType === undefined) break;
+		let bytes: Buffer;
+		try {
+			bytes = readFileSync(candidate);
+		} catch {
+			// A missing file is left in the text: the model can be asked about a path.
+			break;
+		}
+		const checked = checkImage({ mimeType, data: bytes.toString("base64"), label: candidate });
+		if (!checked.ok) {
+			process.stdout.write(color.yellow(`${checked.reason}\n`));
+			return { text: rest.slice(match[0].length).trim(), images };
+		}
+		images.push(checked.image);
+		rest = rest.slice(match[0].length);
+	}
+	return { text: rest.trim(), images };
+}
+
+async function runOneShot(chat: AgentRuntime, input: string, supportsImages: boolean): Promise<void> {
+	const { text, images } = extractImages(input, supportsImages);
+	const result = await chat.prompt(text, { onRetry, ...(images.length > 0 ? { images } : {}) });
 	process.exitCode = result.failed ? 1 : 0;
 }
 
 async function runRepl(context: ReplContext): Promise<void> {
-	const { chat } = context;
+	const { chat, config } = context;
 	banner(context);
+	const supportsImages = config.model.input.includes("image");
 
 	const interactive = process.stdin.isTTY === true;
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -351,8 +391,9 @@ async function runRepl(context: ReplContext): Promise<void> {
 
 			running = true;
 			// Keep reading stdin while the turn runs: the permission prompt needs it.
+			const attached = extractImages(input, supportsImages);
 			void chat
-				.prompt(input, { onRetry })
+				.prompt(attached.text, { onRetry, ...(attached.images.length > 0 ? { images: attached.images } : {}) })
 				.catch((error: unknown) => {
 					process.stdout.write(`${color.red("fatal")} ${error instanceof Error ? error.message : String(error)}\n`);
 				})
@@ -552,8 +593,9 @@ async function main(): Promise<void> {
 		for (const projected of project(event, policy, hooks)) renderer.handle(projected);
 	});
 
+	const supportsImages = config.model.input.includes("image");
 	if (parsed.prompt) {
-		await runOneShot(chat, parsed.prompt);
+		await runOneShot(chat, parsed.prompt, supportsImages);
 		await saveSession();
 		printResumeHint();
 		await closeMcp();

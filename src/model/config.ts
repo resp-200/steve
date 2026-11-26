@@ -177,7 +177,9 @@ export function buildModel(): Model<SupportedApi> {
 		thinkingLevelMap: reasoning
 			? undefined
 			: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: null },
-		input: ["text"] as ("text" | "image")[],
+		// Opt-in: an OpenAI-compatible gateway that only does text answers an image
+		// with a 400, so vision is declared rather than guessed.
+		input: (boolEnv("LLM_IMAGES", false) ? ["text", "image"] : ["text"]) as ("text" | "image")[],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: intEnv("LLM_CONTEXT_WINDOW", 128_000),
 		maxTokens: intEnv("LLM_MAX_TOKENS", 8_192),

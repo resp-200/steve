@@ -215,6 +215,7 @@ try {
 				defaultModel: "test-model",
 				models: ["test-model", "test-model-2"],
 				reasoning: true,
+				images: true,
 			},
 		},
 	});
@@ -225,6 +226,25 @@ try {
 	const first = listed.body.providers[0];
 	check("供应商列表包含新增项", listed.body.providers.length === 1 && first.name === "Test Provider" && first.models.length === 2);
 	check("供应商默认未激活", first.active === false && first.hasApiKey === true);
+	check("「支持图片」随供应商保存并读回", first.images === true, JSON.stringify(first.images));
+	check("视觉能力写进了模型 input", JSON.stringify(first.images) === "true");
+
+	const textOnly = await request("POST", "/admin/api/providers/save", {
+		body: {
+			provider: {
+				name: "Text Only",
+				baseUrl: "https://api2.example.com/v1",
+				apiKey: RAW_KEY,
+				defaultModel: "text-model",
+				models: ["text-model"],
+			},
+		},
+	});
+	check("未勾选支持图片时保存成功", textOnly.status === 200, describe(textOnly.body));
+	const textListed = await request("GET", "/admin/api/providers");
+	const textOnlyProvider = textListed.body.providers.find((provider) => provider.name === "Text Only");
+	check("未勾选时读回 false 而不是 undefined", textOnlyProvider.images === false, JSON.stringify(textOnlyProvider?.images));
+	await request("POST", "/admin/api/providers/delete", { body: { id: textOnlyProvider.id } });
 
 	const activated = await request("POST", "/admin/api/providers/activate", { body: { id: first.id } });
 	check("激活供应商成功", activated.status === 200 && activated.body.activeProviderId === first.id);

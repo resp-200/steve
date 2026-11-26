@@ -50,6 +50,11 @@ export interface FeishuMessage {
 	senderId?: string;
 	senderType: string;
 	text: string;
+	/**
+	 * `image_key`s from an image message. Downloading is the client's job: parsing
+	 * must stay offline so a callback never waits on a second Feishu round trip.
+	 */
+	imageKeys?: string[];
 }
 
 export interface FeishuIgnored {
@@ -168,6 +173,24 @@ function textFromContent(content: string, mentions: unknown): string {
 }
 
 /**
+ * `image_key`s in an image message. A single image is `{"image_key": "..."}`;
+ * a forwarded album arrives as `{"image_key": ["a", "b"]}` on some tenants, so
+ * both shapes are read rather than dropping the batch.
+ */
+function imageKeysFromContent(content: string): string[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		return [];
+	}
+	if (parsed === null || typeof parsed !== "object") return [];
+	const raw = (parsed as { image_key?: unknown }).image_key;
+	const keys = Array.isArray(raw) ? raw : [raw];
+	return keys.filter((key): key is string => typeof key === "string" && key !== "");
+}
+
+/**
  * Parses one HTTP callback request: URL verification, `im.message.receive_v1`,
  * or an ignored event. Token/signature enforcement happens here; the caller
  * only has to turn the result into a response.
@@ -223,14 +246,19 @@ export function classifyFeishuPayload(payload: Record<string, unknown>, verifica
 			? (sender as { sender_id: { open_id: string } }).sender_id.open_id
 			: undefined;
 	if (senderType !== "user") return { kind: "ignored", reason: `sender is ${senderType}` };
-	if (typeof typed.message_type !== "string" || typed.message_type !== "text") {
+	const messageType = typeof typed.message_type === "string" ? typed.message_type : "";
+	if (messageType !== "text" && messageType !== "image") {
 		return { kind: "ignored", reason: `unsupported message type ${String(typed.message_type)}` };
 	}
 	if (typeof typed.message_id !== "string" || typeof typed.chat_id !== "string" || typeof typed.content !== "string") {
 		return { kind: "ignored", reason: "message is missing id, chat or content" };
 	}
-	const text = textFromContent(typed.content, typed.mentions);
-	if (text === "") return { kind: "ignored", reason: "message has no text" };
+	const imageKeys = messageType === "image" ? imageKeysFromContent(typed.content) : [];
+	// An image message carries no text of its own; the model gets the pictures and
+	// an empty prompt is still a usable turn, so only a text message can be empty.
+	const text = messageType === "text" ? textFromContent(typed.content, typed.mentions) : "";
+	if (messageType === "image" && imageKeys.length === 0) return { kind: "ignored", reason: "image message has no image_key" };
+	if (messageType === "text" && text === "") return { kind: "ignored", reason: "message has no text" };
 	return {
 		kind: "message",
 		eventId,
@@ -240,6 +268,7 @@ export function classifyFeishuPayload(payload: Record<string, unknown>, verifica
 		...(senderId !== undefined ? { senderId } : {}),
 		senderType,
 		text,
+		...(imageKeys.length > 0 ? { imageKeys } : {}),
 	};
 }
 
@@ -252,6 +281,11 @@ export interface FeishuClient {
 	replyText(messageId: string, text: string): Promise<void>;
 	/** Replies in the thread of the incoming message with an interactive card. */
 	replyCard(messageId: string, card: unknown): Promise<void>;
+	/**
+	 * Fetches one `image_key` as base64. The bytes come back without a prefix so
+	 * the caller can hand them straight to the model.
+	 */
+	downloadImage(imageKey: string): Promise<{ mimeType: string; data: string }>;
 }
 
 function clampReply(text: string): string {
@@ -336,6 +370,28 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 				content: JSON.stringify({ text: clampReply(text) }),
 			});
 			log(`feishu: replied to message ${messageId}`);
+		},
+		async downloadImage(imageKey) {
+			const token = await tenantToken();
+			let response: Response;
+			try {
+				response = await doFetch(`${base}/open-apis/im/v1/images/${encodeURIComponent(imageKey)}?type=message`, {
+					method: "GET",
+					headers: { Authorization: `Bearer ${token}` },
+				});
+			} catch (error) {
+				throw new FeishuError(502, `cannot reach Feishu for image ${imageKey}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			if (!response.ok) {
+				throw new FeishuError(502, `Feishu image ${imageKey} download failed with HTTP ${response.status}`);
+			}
+			// This endpoint answers with the raw file, not the usual JSON envelope;
+			// the content type is how we learn what the model will be shown.
+			const contentType = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+			const bytes = Buffer.from(await response.arrayBuffer());
+			const mimeType = contentType.startsWith("image/") ? contentType : "image/png";
+			log(`feishu: downloaded image ${imageKey} (${mimeType}, ${bytes.length} bytes)`);
+			return { mimeType, data: bytes.toString("base64") };
 		},
 		async replyCard(messageId, card) {
 			// Cards are not clamped: the builder caps the body, and truncating JSON

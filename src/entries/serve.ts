@@ -43,6 +43,7 @@ import {
 	type FeishuConfig,
 	type FeishuMessage,
 } from "../protocols/feishu/bot.js";
+import { checkImages, modelSupportsImages, type ImageInput } from "../model/image.js";
 import { createFeishuLongConnection } from "../protocols/feishu/long-connection.js";
 import type { WorkspaceAccess } from "../types.js";
 
@@ -378,6 +379,32 @@ async function main(): Promise<void> {
 	const feishuClient: FeishuClient | undefined = feishuConfig !== undefined ? createFeishuClient(feishuConfig) : undefined;
 	const seenFeishuEvents = new Set<string>();
 
+	/**
+	 * Downloads the pictures a message carried and vets them before the run starts.
+	 *
+	 * Refusing here (and saying why) beats letting the provider reject one image
+	 * mid-turn: the user sees a clear answer instead of a run that dies after the
+	 * model already read half the conversation.
+	 */
+	const feishuImages = async (message: FeishuMessage): Promise<{ ok: true; images: ImageInput[] } | { ok: false; reason: string }> => {
+		const keys = message.imageKeys ?? [];
+		if (keys.length === 0) return { ok: true, images: [] };
+		if (feishuClient === undefined) return { ok: false, reason: "图片处理还没准备好，请稍后再发。" };
+		if (!modelSupportsImages(config.model.input)) {
+			return { ok: false, reason: "当前激活的模型不支持图片。请在后台「模型供应商」里勾选「支持图片」，或换一个视觉模型。" };
+		}
+		const downloaded: { mimeType: string; data: string; label: string }[] = [];
+		for (const key of keys) {
+			try {
+				const fetched = await feishuClient.downloadImage(key);
+				downloaded.push({ ...fetched, label: keys.length > 1 ? `第 ${downloaded.length + 1} 张图片` : "这张图片" });
+			} catch (error) {
+				return { ok: false, reason: `图片下载失败：${error instanceof Error ? error.message : String(error)}` };
+			}
+		}
+		return checkImages(downloaded);
+	};
+
 	const replyToFeishu = async (message: FeishuMessage): Promise<void> => {
 		if (feishuClient === undefined) return;
 		const streamId = streamIdForChat(message.chatId);
@@ -395,9 +422,17 @@ async function main(): Promise<void> {
 				cardSent = true;
 			},
 		});
+		const pictures = await feishuImages(message);
+		if (!pictures.ok) {
+			log(`feishu: refused message ${message.messageId}: ${pictures.reason}`);
+			await feishuClient.replyText(message.messageId, pictures.reason);
+			return;
+		}
+		// An image message has no text of its own; the pictures carry the question.
+		const text = message.text !== "" ? message.text : pictures.images.length > 0 ? "请看这张图片。" : "";
 		const submitted = await worker.submit(
 			streamId,
-			{ text: message.text, scene: "feishu", extraTools: [cardTool] },
+			{ text, ...(pictures.images.length > 0 ? { images: pictures.images } : {}), scene: "feishu", extraTools: [cardTool] },
 			"foreground",
 		);
 		if (!submitted.accepted) {

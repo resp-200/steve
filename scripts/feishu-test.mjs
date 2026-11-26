@@ -7,7 +7,7 @@
  * and scripts/mock-server.mjs stands in for the model provider.
  */
 import { spawn } from "node:child_process";
-import { createHash, createCipheriv } from "node:crypto";
+import { createHash, createCipheriv, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ const SERVE_PORT = 8942;
 const ENCRYPTED_PORT = 8944;
 const MOCK_PORT = 8943;
 const FEISHU_PORT = 8941;
+const VISION_SERVE_PORT = 8949;
 const WS_PORT = 8946;
 const WS_SERVE_PORT = 8947;
 const FATAL_SERVE_PORT = 8948;
@@ -113,6 +114,8 @@ function startFakeFeishu() {
 	const replies = [];
 	const tokenCalls = [];
 	const endpointCalls = [];
+	/** One HTTP response for the image-download endpoint; tests replace it. */
+	const images = new Map();
 	const server = createServer((request, response) => {
 		const chunks = [];
 		request.on("data", (chunk) => chunks.push(chunk));
@@ -149,11 +152,24 @@ function startFakeFeishu() {
 				reply(200, { code: 0, msg: "success", data: { message_id: "om_reply" } });
 				return;
 			}
+			const imageMatch = request.url === undefined ? null : /^\/open-apis\/im\/v1\/images\/([^/?]+)/.exec(request.url);
+			if (imageMatch !== null) {
+				const key = decodeURIComponent(imageMatch[1]);
+				const entry = images.get(key);
+				if (entry === undefined) {
+					reply(404, { code: 23_400, msg: "image not found" });
+					return;
+				}
+				response.writeHead(200, { "content-type": entry.mimeType });
+				// The real endpoint answers with the raw file, not the JSON envelope.
+				response.end(entry.bytes);
+				return;
+			}
 			reply(404, { code: 404, msg: "not found" });
 		});
 	});
 	return new Promise((resolve) => {
-		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls }));
+		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls, images }));
 	});
 }
 
@@ -187,7 +203,7 @@ async function postCallback(port, payload, headers = callbackHeaders()) {
 	return { status: response.status, text, ms: Date.now() - startedAt };
 }
 
-function messageEvent({ eventId = "evt_feishu_1", text = "你好", messageType = "text", senderType = "user", token = VERIFICATION_TOKEN } = {}) {
+function messageEvent({ eventId = "evt_feishu_1", text = "你好", messageType = "text", senderType = "user", token = VERIFICATION_TOKEN, content } = {}) {
 	return {
 		schema: "2.0",
 		header: { event_id: eventId, event_type: "im.message.receive_v1", token, create_time: String(Date.now()), app_id: APP_ID, tenant_key: "tenant" },
@@ -198,7 +214,7 @@ function messageEvent({ eventId = "evt_feishu_1", text = "你好", messageType =
 				chat_id: CHAT_ID,
 				chat_type: "p2p",
 				message_type: messageType,
-				content: JSON.stringify({ text }),
+				content: content !== undefined ? JSON.stringify(content) : JSON.stringify({ text }),
 				create_time: String(Date.now()),
 			},
 		},
@@ -250,6 +266,7 @@ mkdirSync(streamsDir, { recursive: true });
 
 const children = [];
 let fakeFeishu;
+let visionWorkspace;
 
 try {
 	fakeFeishu = await startFakeFeishu();
@@ -354,13 +371,28 @@ try {
 	check("重复 event_id 不再产生回复", fakeFeishu.replies.length === 2, `${fakeFeishu.replies.length} replies`);
 	check("重复 event_id 不再写入事件", readStreamEvents(streamsDir, streamId).length === beforeDuplicate);
 
-	// D. Events a bot should not answer
-	const imageEvent = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_2", messageType: "image" }));
-	check("非文本消息 200 但忽略", imageEvent.status === 200);
+	// D. Images: a text-only model is told why, rather than answering blind.
+	// The default env here has no LLM_IMAGES, so the model declares no vision.
+	fakeFeishu.images.set("img_png", { mimeType: "image/png", bytes: Buffer.alloc(2048, 3) });
+	const imageEvent = await postCallback(
+		SERVE_PORT,
+		messageEvent({ eventId: "evt_feishu_2", messageType: "image", content: { image_key: "img_png" } }),
+	);
+	check("image 消息 200", imageEvent.status === 200, `status ${imageEvent.status}`);
+	await sleepAsync(1500);
+	const visionReply = fakeFeishu.replies.at(-1);
+	check(
+		"纯文本模型收到图片时说明原因",
+		visionReply !== undefined && String(visionReply.body.content ?? "").includes("不支持图片"),
+		String(visionReply?.body.content ?? "").slice(0, 120),
+	);
 	const appEvent = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_3", senderType: "app" }));
 	check("app 自己发的消息 200 但忽略", appEvent.status === 200);
+	const beforeIgnoreCheck = fakeFeishu.replies.length;
 	await sleepAsync(1200);
-	check("被忽略的事件不产生回复", fakeFeishu.replies.length === 2, `${fakeFeishu.replies.length} replies`);
+	// Relative to the image reply above: only the app message may have added another.
+	const afterIgnored = fakeFeishu.replies.length;
+	check("被忽略的事件不产生回复", afterIgnored === beforeIgnoreCheck, `${beforeIgnoreCheck} -> ${afterIgnored} replies`);
 
 	const badHeaderToken = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_4", token: "wrong" }));
 	check("事件头 token 错误返回 401", badHeaderToken.status === 401, `status ${badHeaderToken.status}`);
@@ -551,6 +583,61 @@ try {
 		await stop(fatalServe.child);
 	}
 
+	// F2. Vision: the same chat on a serve that declares image support. The file
+	// has to survive download -> user.message event -> fold -> provider payload,
+	// which is exactly what the mock's "回显图片" route reports back.
+	visionWorkspace = join(tmpdir(), `steve-feishu-vision-${randomBytes(4).toString("hex")}`);
+	mkdirSync(visionWorkspace, { recursive: true });
+	const visionServe = start("serve-vision", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(VISION_SERVE_PORT), "--token", TOKEN], {
+		cwd: visionWorkspace,
+		env: { ...process.env, ...mockEnv, ...feishuEnv, HOME: home, MOCK_PORT: String(MOCK_PORT), LLM_IMAGES: "1" },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	children.push(visionServe);
+	await waitForPort(VISION_SERVE_PORT, "vision serve /health", TOKEN);
+
+	fakeFeishu.images.set("img_jpeg", { mimeType: "image/jpeg", bytes: Buffer.alloc(4096, 9) });
+	const beforeVisionReplies = fakeFeishu.replies.length;
+	const seen = await postCallback(
+		VISION_SERVE_PORT,
+		messageEvent({ eventId: "evt_feishu_vision_1", messageType: "image", content: { image_key: "img_jpeg" } }),
+	);
+	check("视觉模型：image 消息 200", seen.status === 200, `status ${seen.status}`);
+	await waitFor(async () => fakeFeishu.replies.length > beforeVisionReplies, { label: "vision reply", timeout: 8_000 });
+	const visionAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
+	check("视觉模型：图片真的送到了 provider", visionAnswer.includes("图片数量：1"), visionAnswer.slice(0, 160));
+	check("视觉模型：mime 类型随图送到", visionAnswer.includes("image/jpeg"), visionAnswer.slice(0, 160));
+	check("视觉模型：收到的字节数和原图一致", visionAnswer.includes("大小：4096"), visionAnswer.slice(0, 160));
+
+	// Streams live under the shared scratch HOME, not under each serve's cwd.
+	const runEvents = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID));
+	const userMessages = runEvents.filter((event) => event?.type === "user.message");
+	const userMessage = userMessages.filter((event) => Array.isArray(event.images) && event.images.length > 0).at(-1) ?? userMessages.at(-1);
+	check(
+		"视觉模型：图片写进了 user.message 事件",
+		Array.isArray(userMessage?.images) && userMessage.images.length === 1,
+		JSON.stringify(userMessages.map((event) => ({ text: String(event.text).slice(0, 20), images: event.images?.length ?? 0 }))),
+	);
+	check(
+		"视觉模型：纯图片消息也带一句提示文本",
+		typeof userMessage?.text === "string" && userMessage.text !== "",
+		String(userMessage?.text),
+	);
+
+	// A picture the model cannot use is refused with a reason rather than a 500.
+	fakeFeishu.images.set("img_heic", { mimeType: "image/heic", bytes: Buffer.alloc(1024, 1) });
+	const beforeHeic = fakeFeishu.replies.length;
+	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_2", messageType: "image", content: { image_key: "img_heic" } }));
+	await waitFor(async () => fakeFeishu.replies.length > beforeHeic, { label: "heic reply", timeout: 8_000 });
+	const heicAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
+	check("不支持的格式回具体原因", heicAnswer.includes("image/heic"), heicAnswer.slice(0, 160));
+
+	// An image_key Feishu itself cannot serve must not take the whole bot down.
+	const beforeMissing = fakeFeishu.replies.length;
+	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_3", messageType: "image", content: { image_key: "img_missing" } }));
+	await waitFor(async () => fakeFeishu.replies.length > beforeMissing, { label: "missing image reply", timeout: 8_000 });
+	check("图片下载失败也有回复", String(fakeFeishu.replies.at(-1)?.body.content ?? "").includes("图片下载失败"), String(fakeFeishu.replies.at(-1)?.body.content ?? "").slice(0, 160));
+
 	// G. Disabled without credentials
 	const disabledServe = start(
 		"serve-no-feishu",
@@ -573,5 +660,6 @@ try {
 	for (const child of children) await stop(child.child);
 	if (fakeFeishu !== undefined) await new Promise((resolve) => fakeFeishu.server.close(resolve));
 	rmSync(workspace, { recursive: true, force: true });
+	if (visionWorkspace !== undefined) rmSync(visionWorkspace, { recursive: true, force: true });
 	rmSync(home, { recursive: true, force: true });
 }

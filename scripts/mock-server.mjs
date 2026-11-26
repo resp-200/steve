@@ -92,6 +92,15 @@ function responseEvents(text) {
 }
 
 /* --------------------------------- server -------------------------------- */
+/** True when any message in the payload carries an image block, in either dialect. */
+function payloadHasImage(list) {
+	return list.some(
+		(message) =>
+			Array.isArray(message?.content) &&
+			message.content.some((block) => block?.type === "image" || block?.type === "input_image" || block?.type === "image_url"),
+	);
+}
+
 /* ---------------------------- anthropic messages -------------------------- */
 
 function anthropicEvents(blocks, stopReason, usage) {
@@ -232,6 +241,36 @@ createServer((req, res) => {
 						: { error: { type: "rate_limit_error", message: "gateway_concurrency_limit", code: "rate_limit_exceeded" } },
 				),
 			);
+			return;
+		}
+
+		// "回显图片" reports what image blocks the model actually received. It is the
+		// only place a test can see that a picture survived every hop: the front end
+		// downloaded it, the run event carried it, the fold rebuilt it as a block.
+		if (asked.includes("回显图片") || payloadHasImage(list)) {
+			let count = 0;
+			let bytes = 0;
+			let mimeType = "none";
+			for (const message of list) {
+				const content = message?.content;
+				if (!Array.isArray(content)) continue;
+				for (const block of content) {
+					if (block?.type !== "image") continue;
+					const source = block.source ?? block;
+					const data = typeof source.data === "string" ? source.data : "";
+					count += 1;
+					const pad = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+					bytes = Math.max(bytes, Math.floor((data.length * 3) / 4) - pad);
+					mimeType = String(source.media_type ?? source.mimeType ?? block.mimeType ?? "unknown");
+				}
+			}
+			const summary = count === 0 ? "图片数量：0" : `图片数量：${count} 类型：${mimeType} 大小：${bytes}`;
+			const events = pathname.endsWith("/messages")
+				? anthropicText(summary)
+				: responsesApi
+					? responseEvents(summary)
+					: completionEvents(summary);
+			streamEvents(res, events);
 			return;
 		}
 

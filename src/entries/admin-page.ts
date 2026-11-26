@@ -617,6 +617,7 @@ pre.code {
                 <th>默认模型</th>
                 <th>可用模型</th>
                 <th>思考</th>
+                <th>图片</th>
                 <th>请求头</th>
                 <th>状态</th>
                 <th>操作</th>
@@ -668,6 +669,10 @@ pre.code {
               </div>
               <div class="field full">
                 <label class="check"><input type="checkbox" id="pv-reasoning"> 开启思考（reasoning）</label>
+              </div>
+              <div class="field full">
+                <label class="check"><input type="checkbox" id="pv-images"> 支持图片（vision）</label>
+                <span class="hint">模型能看图时才勾选；网关不支持时不要勾，否则发图会中途报错。</span>
               </div>
               <div class="field full">
                 <div class="label-row">
@@ -1464,6 +1469,7 @@ pre.code {
       html += '<td class="cell-mono">' + escapeHtml(display(provider.defaultModel)) + "</td>";
       html += '<td><span title="' + escapeHtml(modelTitle) + '">' + escapeHtml(String(models.length)) + " 个</span></td>";
       html += "<td>" + (provider.reasoning === true ? badge("开启", "ok") : badge("关闭", "muted")) + "</td>";
+      html += "<td>" + (provider.images === true ? badge("支持", "ok") : badge("不支持", "muted")) + "</td>";
       // Header names only: values are on the edit form, and the row stays narrow.
       var headerNames = provider && provider.headers && typeof provider.headers === "object" ? Object.keys(provider.headers) : [];
       html += "<td>" + (headerNames.length === 0 ? badge("无", "muted") : badge(String(headerNames.length) + " 个", "info") + ' <span class="hint" title="' + escapeHtml(headerNames.join(", ")) + '">' + escapeHtml(headerNames.slice(0, 2).join(", ")) + (headerNames.length > 2 ? " …" : "") + "</span>") + "</td>";
@@ -1542,6 +1548,8 @@ pre.code {
     enrichModelRows(provider);
     var reasoningInput = byId("pv-reasoning");
     if (reasoningInput) reasoningInput.checked = !!(provider && provider.reasoning);
+    var imagesInput = byId("pv-images");
+    if (imagesInput) imagesInput.checked = !!(provider && provider.images);
     var headersInput = byId("pv-headers");
     if (headersInput) headersInput.value = headersToText(provider && provider.headers);
     var hostsInput = byId("pv-hosts");
@@ -1776,7 +1784,8 @@ pre.code {
       baseUrl: valueOf("pv-baseUrl").trim(),
       defaultModel: valueOf("pv-defaultModel").trim(),
       models: state.modelRows.map(function (row) { return String(row.id || "").trim(); }).filter(function (id) { return id !== ""; }),
-      reasoning: !!(byId("pv-reasoning") && byId("pv-reasoning").checked)
+      reasoning: !!(byId("pv-reasoning") && byId("pv-reasoning").checked),
+      images: !!(byId("pv-images") && byId("pv-images").checked)
     };
     var headers = parseHeadersText(valueOf("pv-headers"));
     if (headers === null) {
