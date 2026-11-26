@@ -55,6 +55,12 @@ export interface FeishuMessage {
 	 * must stay offline so a callback never waits on a second Feishu round trip.
 	 */
 	imageKeys?: string[];
+	/**
+	 * The `message_type` Feishu sent (`image`, `post`, …). Kept because download
+	 * failures need it to explain themselves: the same `img_v3_…` key is served
+	 * under a different `type` depending on where the picture came from.
+	 */
+	messageType?: string;
 }
 
 export interface FeishuIgnored {
@@ -342,6 +348,7 @@ export function classifyFeishuPayload(payload: Record<string, unknown>, verifica
 		senderType,
 		text,
 		...(imageKeys.length > 0 ? { imageKeys } : {}),
+		messageType,
 	};
 }
 
@@ -358,7 +365,7 @@ export interface FeishuClient {
 	 * Fetches one `image_key` as base64. The bytes come back without a prefix so
 	 * the caller can hand them straight to the model.
 	 */
-	downloadImage(imageKey: string): Promise<{ mimeType: string; data: string }>;
+	downloadImage(imageKey: string, hint?: ImageSourceHint): Promise<{ mimeType: string; data: string }>;
 }
 
 function clampReply(text: string): string {
@@ -375,6 +382,18 @@ function clampReply(text: string): string {
  * would make some perfectly valid pictures unreadable.
  */
 const IMAGE_RESOURCE_TYPES = ["message", "default"] as const;
+
+/**
+ * What we know about where an image came from. Feishu serves the same
+ * `img_v3_…` key under different `type` values, and which one is valid depends
+ * on how the key was created — a `post` image is not the same resource as an
+ * `image` message. Passing the message type lets the client try the plausible
+ * one first and, when everything fails, say which types it tried.
+ */
+export interface ImageSourceHint {
+	/** `message_type` of the message the key came from. */
+	messageType?: string;
+}
 
 /** Pulls Feishu's `code`/`msg` out of a failed response so the log says why. */
 async function describeImageFailure(response: Response): Promise<string> {
@@ -470,7 +489,7 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 			});
 			log(`feishu: replied to message ${messageId}`);
 		},
-		async downloadImage(imageKey) {
+		async downloadImage(imageKey, hint) {
 			const token = await tenantToken();
 			// Feishu indexes message pictures and uploaded message-reply pictures
 			// under the same `img_v3_…` key format but expects a different `type`:
@@ -478,7 +497,11 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 			// Which one a key needs is not visible from the key, so ask in order
 			// instead of failing on the first 400.
 			const failures: string[] = [];
-			for (const kind of IMAGE_RESOURCE_TYPES) {
+			// Try the type that matches the message shape first; the rest are the
+			// fallback for keys that came from somewhere else.
+			const preferred = hint?.messageType === "post" ? "default" : "message";
+			const kinds = [preferred, ...IMAGE_RESOURCE_TYPES.filter((kind) => kind !== preferred)];
+			for (const kind of kinds) {
 				const url = `${base}/open-apis/im/v1/images/${encodeURIComponent(imageKey)}?type=${kind}`;
 				let response: Response;
 				try {
@@ -487,7 +510,12 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 					throw new FeishuError(502, `cannot reach Feishu for image ${imageKey}: ${error instanceof Error ? error.message : String(error)}`);
 				}
 				if (!response.ok) {
-					failures.push(`${kind}: HTTP ${response.status}${await describeImageFailure(response)}`);
+					const explained = await describeImageFailure(response);
+					failures.push(`${kind}: HTTP ${response.status}${explained}`);
+					// The reply only tells the user it failed; whoever debugs it needs the
+					// exact URL and Feishu's own wording to tell "wrong type" from
+					// "wrong key" from "missing permission".
+					log(`feishu: image fetch ${url} -> ${response.status}${explained}`);
 					continue;
 				}
 				// This endpoint answers with the raw file, not the usual JSON envelope;

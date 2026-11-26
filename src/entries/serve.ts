@@ -396,7 +396,7 @@ async function main(): Promise<void> {
 		const downloaded: { mimeType: string; data: string; label: string }[] = [];
 		for (const key of keys) {
 			try {
-				const fetched = await feishuClient.downloadImage(key);
+				const fetched = await feishuClient.downloadImage(key, { ...(message.messageType !== undefined ? { messageType: message.messageType } : {}) });
 				downloaded.push({ ...fetched, label: keys.length > 1 ? `第 ${downloaded.length + 1} 张图片` : "这张图片" });
 			} catch (error) {
 				const detail = error instanceof Error ? error.message : String(error);

@@ -122,11 +122,14 @@ FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 收图时按 `image_key` 调 `GET /open-apis/im/v1/images/:key?type=<type>` 取回原图，转成 base64 交给模型。
 
-`type` 从 key 上看不出来：同一个 `img_v3_…` 格式，聊天里直接发的图要用 `type=message`，
-另一类来源的图只认 `type=default`，猜错就是 `HTTP 400 invalid param`。所以按 `message` →
-`default` 顺序各试一次，第一次成功即返回，两条都失败才报错，错误里带上飞书返回的 `code`/`msg`。
-失败的下载也会写进日志（`feishu: image download failed for <message_id>: …`）—— 回复只说失败，
-但排查时真正需要的是那个错误码。
+`type` 从 key 上看不出来：同一个 `img_v3_…` 格式，聊天里直接发的图（`image` 消息）要用
+`type=message`，富文本里带的图（`post`）按 `type=default` 更接近，猜错就是 `HTTP 400 Invalid request param.`。
+所以按消息类型先试最可能的那个，再试另一个，第一次成功即返回；两条都失败才报错，错误里带上
+飞书返回的 `code`/`msg`。
+
+失败时写两条日志：`feishu: image fetch <完整 URL> -> <状态码> <飞书原话（code N）>` 和
+`feishu: image download failed for <message_id>: …`。回复只说失败，但排查时真正需要的是那个
+URL 和错误码 —— 前者能看出 type 和 key，后者能区分「type 不对」「key 不存在」「没有权限」。
 
 | 情况 | 结果 |
 | --- | --- |

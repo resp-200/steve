@@ -117,6 +117,7 @@ function startFakeFeishu() {
 	/** One HTTP response for the image-download endpoint; tests replace it. */
 	const images = new Map();
 	const imageRequests = [];
+	const imageQueries = [];
 	const server = createServer((request, response) => {
 		const chunks = [];
 		request.on("data", (chunk) => chunks.push(chunk));
@@ -164,8 +165,10 @@ function startFakeFeishu() {
 				// Mirror the real endpoint: the `type` has to match how the key was
 				// created, otherwise it answers 400 with a JSON envelope. Keys without
 				// an explicit `kind` accept the message type, which is the common case.
-				const kind = new URL(request.url, "http://127.0.0.1").searchParams.get("type") ?? "message";
+				const parsedUrl = new URL(request.url, "http://127.0.0.1");
+				const kind = parsedUrl.searchParams.get("type") ?? "message";
 				imageRequests.push({ key, kind });
+				imageQueries.push({ key, url: request.url });
 				if (entry.kind !== undefined && entry.kind !== kind) {
 					reply(400, { code: 23_400, msg: "invalid param" });
 					return;
@@ -179,7 +182,7 @@ function startFakeFeishu() {
 		});
 	});
 	return new Promise((resolve) => {
-		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls, images, imageRequests }));
+		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls, images, imageRequests, imageQueries }));
 	});
 }
 
@@ -676,6 +679,11 @@ try {
 	await waitFor(async () => fakeFeishu.replies.length > beforePost, { label: "post reply", timeout: 8_000 });
 	const postAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
 	check("富文本：图片真的送到了 provider", postAnswer.includes("图片数量：1"), postAnswer.slice(0, 160));
+	// A `post` image key is not an `image` message key; asking with type=message
+	// first would waste a round trip and, on tenants that only serve one type,
+	// never succeed at all.
+	const postKinds = JSON.stringify(fakeFeishu.imageRequests.filter((request) => request.key === "img_post").map((request) => request.kind));
+	check("富文本：先按 default 取图", postKinds.startsWith('["default"'), postKinds);
 	check("富文本：图片大小按原图算", postAnswer.includes("大小：512"), postAnswer.slice(0, 160));
 	const postUserMessage = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID))
 		.filter((event) => event?.type === "user.message")
@@ -699,6 +707,17 @@ try {
 		JSON.stringify(fakeFeishu.imageRequests.filter((request) => request.key === "img_default")),
 	);
 
+	// The query string must survive the request: sending `type=message&type=default`
+	// or dropping it entirely would make Feishu read the wrong resource.
+	fakeFeishu.images.set("img_query", { mimeType: "image/png", bytes: Buffer.alloc(300, 2) });
+	const beforeQuery = fakeFeishu.replies.length;
+	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_query", messageType: "image", content: { image_key: "img_query" } }));
+	await waitFor(async () => fakeFeishu.replies.length > beforeQuery, { label: "query-string reply", timeout: 8_000 });
+	const queryUrl = String(fakeFeishu.imageQueries.filter((entry) => entry.key === "img_query").at(-1)?.url ?? "");
+	check("取图 URL 只带一个 type", (queryUrl.match(/type=/g) ?? []).length === 1, queryUrl);
+	check("取图 URL 的 type 是 message 或 default", /[?&]type=(message|default)$/.test(queryUrl), queryUrl);
+	check("取图 URL 带上了图片 key", queryUrl.includes("/images/img_query"), queryUrl);
+
 	// A picture the model cannot use is refused with a reason rather than a 500.
 	fakeFeishu.images.set("img_heic", { mimeType: "image/heic", bytes: Buffer.alloc(1024, 1) });
 	const beforeHeic = fakeFeishu.replies.length;
@@ -711,7 +730,11 @@ try {
 	const beforeMissing = fakeFeishu.replies.length;
 	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_3", messageType: "image", content: { image_key: "img_missing" } }));
 	await waitFor(async () => fakeFeishu.replies.length > beforeMissing, { label: "missing image reply", timeout: 8_000 });
-	check("图片下载失败也有回复", String(fakeFeishu.replies.at(-1)?.body.content ?? "").includes("图片下载失败"), String(fakeFeishu.replies.at(-1)?.body.content ?? "").slice(0, 160));
+	const missingAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
+	check("图片下载失败也有回复", missingAnswer.includes("图片下载失败"), missingAnswer.slice(0, 160));
+	// The reply is for the user; the log is for whoever has to fix it. Without the
+	// URL and Feishu's own code the log line is just "it failed".
+	check("下载失败的日志带 URL 与飞书错误码", /image fetch .*img_missing.*type=(message|default).*-> 404.*code 23400/.test(visionServe.stderr + visionServe.stdout), (visionServe.stderr + visionServe.stdout).slice(-600));
 
 	// G. Disabled without credentials
 	const disabledServe = start(
