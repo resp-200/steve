@@ -384,6 +384,10 @@ try {
 	const system = await request("GET", "/admin/api/system");
 	check("系统信息返回版本与日志级别", system.status === 200 && system.body.version === VERSION && system.body.logLevel === "info");
 	check("系统信息列出配置文件", Array.isArray(system.body.files) && system.body.files.some((file) => file.path === adminFile && file.exists === true));
+	// The state dir moved to ~/.steve; a leftover <cwd>/.steve/admin.json must not
+	// be read. Reporting the path is how a user with an empty provider list finds
+	// out which file the process actually uses.
+	check("系统信息报出实际读取的 admin.json 路径", system.body.adminFile === adminFile, String(system.body.adminFile));
 
 	const logsaved = await request("POST", "/admin/api/system/save", { body: { logLevel: "debug" } });
 	check("保存日志级别成功", logsaved.status === 200 && logsaved.body.logLevel === "debug");

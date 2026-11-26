@@ -142,6 +142,14 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 
 > 旧的写法（项目根目录/安装目录下的裸 `.env`，以及 `<cwd>/.steve/.env`）**已不再读取** —— 留着不会报错，只是被忽略；缺变量时的报错信息会直接指向 `.steve/.env`（`config:test` 有断言盯着这件事）。
 
+> **升级提示**：从「状态目录统一到 `~/.steve`」之前的版本升上来，旧的 `admin.json` 可能还躺在 `<cwd>/.steve/` 或安装目录下。它不会被自动迁移，表现是管理后台「模型供应商」列表为空、概览里没有激活供应商（`.env` 里的 `LLM_*` 仍然生效，所以 CLI 看着正常，只是后台为空）。把它搬到 `~/.steve/admin.json` 即可，格式没变：
+>
+> ```bash
+> cp .steve/admin.json ~/.steve/admin.json
+> ```
+>
+> 不确定服务读的是哪个文件，让 serve 告诉你就好：`curl -s localhost:<端口>/admin/api/system` 返回的 `adminFile` 就是它实际读取的路径。
+
 `~/.steve/` 在用户主目录下，天然不进仓库；仓库里的 `.steve/` 也在 `.gitignore` 里（`npm run arch:test` 会机检这一点）。
 
 | 变量 | 必填 | 说明 |
@@ -670,7 +678,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run serve:test` | 常驻服务 40 项断言：health/version、token 鉴权（缺失/错误/非回环无 token 拒绝启动）、流创建与列表、SSE 头（`text/event-stream` 与 `X-Accel-Buffering: no`）、用户投影（无工具参数/无 details/无 `run.turn.settled`）、历史回放与实时一致、消息投递 `202 {runId}`、非法/未知流报错、取消活动 run 与未知 run 404、审批端点、webhook 签名接受与拒绝、触发后台 run 落盘（`trigger.fired`/`[watch:name]` 前缀/background 模式）、`--no-watch` 关闭 hooks |
 | `npm run feishu-card:test` | 飞书卡片 37 项断言：构建器（无标题不产生 header、Markdown 原样透传、颜色白名单与回落、标题超长截断、空正文/超长正文拒绝、上限边界可用）与工具（走注入的 reply、模型收到的是构建出的卡片而非原始 JSON、失败以工具结果返回而不抛出、失败不计入"已发送"、发卡成功后宿主不再补纯文本） |
 | `npm run feishu:test` | 飞书机器人 53 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；卡片回复（`msg_type: interactive`、标题栏颜色、Markdown 原样下发、发卡后不再补纯文本）；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
-| `npm run admin:test` | 管理后台 90 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化、模型选择弹窗调用 `/v1/models`）、网关读取与写回 `~/.steve/.env`（保留未修改字段、保存后立即回显、清空后回显未配置）、模型选择弹窗与规格展示（`/v1/models` 的 `items` 规格解析、页面结构）、定时任务写 `~/.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出、没有 `.env` 时仅凭控制台里激活的供应商也能启动 |
+| `npm run admin:test` | 管理后台 91 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化、模型选择弹窗调用 `/v1/models`）、网关读取与写回 `~/.steve/.env`（保留未修改字段、保存后立即回显、清空后回显未配置）、模型选择弹窗与规格展示（`/v1/models` 的 `items` 规格解析、页面结构）、定时任务写 `~/.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出、系统信息报出实际读取的 `admin.json` 路径（配置搬家用）、没有 `.env` 时仅凭控制台里激活的供应商也能启动 |
 | `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`~/.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |
 | `npm run environments:test` | 环境快照 25 项断言：JSON 往返与 `structuredClone` 无损、快照里没有函数/运行时对象、roots 去重与顺序、tools 排序去重与权限/kind 透传、plugins 排序去重、投影与 workspace 的深拷贝隔离、CLI 与 ACP 两入口同策略产出相同快照 |
