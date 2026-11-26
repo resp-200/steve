@@ -17,6 +17,7 @@ import { encodeTranscript, sessionRecord, type SessionStore, type StoredSession 
 import { isAbsolute, join } from "node:path";
 import { editPreview, writePreview } from "../../features/change-preview.js";
 import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "../../features/permissions.js";
+import { readAdminConfig } from "../../features/admin-config.js";
 import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../features/runtime.js";
 import { assembleAgent, type AgentAssembly } from "../../features/agent-assembly.js";
 import { createRunWorker, type RunTerminal, type RunWorker } from "../../features/worker.js";
@@ -165,6 +166,12 @@ export class AcpSession {
 			logger: options.logger,
 			extensions: options.extensions,
 			systemPrompt: this.systemPrompt(),
+			// Persona edits in the console apply to this session from the next turn
+			// on: sessions outlive a restart-free working day, so a snapshot is wrong.
+			refreshPrompt: async () => {
+				const admin = await readAdminConfig();
+				return admin.persona === undefined ? undefined : { persona: admin.persona };
+			},
 		});
 		this.toolNames = this.runtime.toolNames;
 		this.createdAt = options.restore?.createdAt ?? new Date().toISOString();
@@ -215,7 +222,8 @@ export class AcpSession {
 				readState: async (streamId) => foldTranscript(await log.read(streamId)),
 				resolveEnvironment: async () => this.environment,
 				tools: () => this.assembly.tools,
-				systemPrompt: this.systemPrompt(),
+				// No fixed string here: the worker composes from the live config each
+				// run, which is what makes persona edits visible without a restart.
 				hooks: this.assembly.hooks,
 				logger: options.logger,
 				// ACP clients send one prompt per session; a second one supersedes.

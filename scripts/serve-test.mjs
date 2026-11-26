@@ -169,6 +169,9 @@ const streamsDir = join(workspace, "streams");
 const env = {
 	...process.env,
 	HOME: workspace,
+	// Isolate the global state dir too, so the hot-reload check can write a
+	// persona into it without touching the developer's ~/.steve.
+	STEVE_HOME: join(workspace, ".steve"),
 	STEVE_DISCOVERY: "off",
 	LLM_API_KEY: "mock",
 	LLM_MODEL_ID: "mock-model",
@@ -248,6 +251,36 @@ try {
 	const listAfter = await request("GET", "/streams");
 	const summary = listAfter.body.streams.find((item) => item.streamId === streamId);
 	check("the stream summary advances", summary !== undefined && summary.lastSeq >= 3, JSON.stringify(summary));
+
+	// ── prompt hot reload ─────────────────────────────────────────────────
+	// The console's persona lives in a file the running service re-reads each run.
+	// Ask the mock to quote the prompt back, edit the file between two runs, and
+	// check the same running process switched prompts.
+	const hotStream = await request("POST", "/streams", { body: { title: "prompt hot" } });
+	const hotId = hotStream.body.streamId;
+	// Each run appends to the same event log, so read only what this turn added:
+	// replaying from seq 1 would match the previous turn's `run.settled` at once
+	// and report that turn's text again.
+	let hotSeq = 1;
+	const asked = async () => {
+		await request("POST", `/streams/${hotId}/messages`, { body: { text: "回显系统提示词" } });
+		const frames = await readSse(`/streams/${hotId}/events?from=${hotSeq}`, { until: (frame) => frame.event?.type === "run.settled" });
+		for (const frame of frames.events) {
+			if (typeof frame.seq === "number") hotSeq = Math.max(hotSeq, frame.seq + 1);
+		}
+		return frames.events
+			.filter((frame) => frame.event?.type === "text_delta")
+			.map((frame) => frame.event.text)
+			.join("");
+	};
+	const beforePersona = await asked();
+	check("without a persona the prompt has no role layer", beforePersona.includes("系统提示词包含角色设定：否"), beforePersona);
+	writeFileSync(join(workspace, ".steve", "admin.json"), JSON.stringify({ persona: "回答先给结论。" }));
+	const afterPersona = await asked();
+	check("a persona saved while running applies to the next run", afterPersona.includes("系统提示词包含角色设定：是"), afterPersona);
+	writeFileSync(join(workspace, ".steve", "admin.json"), JSON.stringify({}));
+	const clearedPersona = await asked();
+	check("clearing the persona applies to the next run", clearedPersona.includes("系统提示词包含角色设定：否"), clearedPersona);
 
 	// ── cancel ────────────────────────────────────────────────────────────
 	const running = await request("POST", `/streams/${streamId}/messages`, { body: { text: "flaky request" } });

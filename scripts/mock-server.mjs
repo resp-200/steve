@@ -235,6 +235,38 @@ createServer((req, res) => {
 			return;
 		}
 
+		// "回显系统提示词" makes the mock quote the prompt back, so an end-to-end
+		// test can see which prompt a live run actually used (prompt edits must
+		// reach a running service, not just a new one).
+		if (/\u56de\u663e\u7cfb\u7edf\u63d0\u793a\u8bcd|echo-system/i.test(asked)) {
+			// Each wire format carries the system prompt somewhere else: Chat
+			// Completions puts it in a leading `system`/`developer` message,
+			// Anthropic and Responses use a top-level field.
+			const leading = list[0];
+			const leadingRole = leading?.role;
+			const leadingSystem =
+				leadingRole === "system" || leadingRole === "developer"
+					? Array.isArray(leading.content)
+						? leading.content.map((block) => (typeof block === "string" ? block : block?.text ?? "")).join("\n")
+						: String(leading.content ?? "")
+					: undefined;
+			const raw = leadingSystem ?? payload.system ?? payload.system_instruction ?? payload.instructions;
+			const system =
+				typeof raw === "string"
+					? raw
+					: Array.isArray(raw)
+						? raw.map((block) => (typeof block === "string" ? block : block?.text ?? "")).join("\n")
+						: "";
+			const quoted = system.includes("# 用户的额外要求") ? "系统提示词包含角色设定：是" : "系统提示词包含角色设定：否";
+			const events = pathname.endsWith("/messages")
+				? anthropicText(quoted)
+				: responsesApi
+					? responseEvents(quoted)
+					: completionEvents(quoted);
+			streamEvents(res, events);
+			return;
+		}
+
 		const planned = sawToolResult ? undefined : planToolCall(asked);
 		const toolResult = sawToolResult ? toolResultText(list) : undefined;
 		const answer = toolResult ? `工具返回：${toolResult.slice(0, 400)}` : FINAL;

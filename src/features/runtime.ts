@@ -49,6 +49,12 @@ export interface AgentRuntimeOptions {
 	tools?: AgentTool<any>[];
 	/** Defaults to `composeSystemPrompt({scene: "cli"})`. */
 	systemPrompt?: string;
+	/**
+	 * Re-reads the parts of the prompt the user can edit (persona, identity),
+	 * called at the start of every turn. Without it the prompt is composed once,
+	 * so an edit in the console would only take effect in a new session.
+	 */
+	refreshPrompt?: () => { persona?: string; identity?: string } | undefined | Promise<{ persona?: string; identity?: string } | undefined>;
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 	/** Plugins loaded for this session (their tools, hooks, commands and events). */
 	extensions?: ExtensionHost;
@@ -105,6 +111,8 @@ export interface AgentRuntime {
 	/** Adds or replaces one MCP server's status (same array identity, so `/mcp` sees it). */
 	upsertMcpServer(status: McpServerStatus): void;
 	stats(): AgentStats;
+	/** The system prompt the next turn will use (it can change between turns). */
+	systemPrompt(): string;
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
@@ -133,12 +141,32 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 	/** Same array identity for the session lifetime: `/mcp` sees background updates. */
 	const mcpServers: McpServerStatus[] = [...(options.mcpServers ?? [])];
 
-	const systemPrompt = options.systemPrompt ?? composeSystemPrompt({
+	const composePrompt = (identity: string | undefined, persona: string | undefined): string =>
+		composeSystemPrompt({
 			scene: "cli",
-			...(config.identity !== undefined ? { identity: config.identity } : {}),
-			...(config.persona !== undefined ? { persona: config.persona } : {}),
+			...(identity !== undefined ? { identity } : {}),
+			...(persona !== undefined ? { persona } : {}),
 			details: { cwd: process.cwd() },
 		});
+	let systemPrompt = options.systemPrompt ?? composePrompt(config.identity, config.persona);
+
+	/**
+	 * Picks up persona/identity edits between turns. pi reads `state.systemPrompt`
+	 * when a turn starts, so assigning is enough — the agent keeps its history.
+	 *
+	 * Done per turn rather than on every message *part* so the provider's prompt
+	 * cache still hits within a turn; the file is small and reads are cheap.
+	 */
+	const reapplyPrompt = async (): Promise<void> => {
+		if (options.systemPrompt !== undefined || options.refreshPrompt === undefined) return;
+		// A refresh that returns nothing means "the user's part is gone now", not
+		// "keep what you had": clearing the box in the console must clear the prompt.
+		const fresh = (await options.refreshPrompt()) ?? {};
+		const next = composePrompt(fresh.identity ?? config.identity, fresh.persona);
+		if (next === systemPrompt) return;
+		systemPrompt = next;
+		agent.state.systemPrompt = next;
+	};
 
 	const agent = createKernelAgent({
 		config,
@@ -217,6 +245,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 		},
 
 		async prompt(text, promptOptions = {}) {
+			await reapplyPrompt();
 			const retries = promptOptions.retries ?? defaultRetries;
 			const result = await runTurn(driver, text, promptOptions, retries);
 			emit({ type: "turn_end", ...result });
@@ -231,6 +260,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 			agent.state.systemPrompt = systemPrompt;
 			agent.state.tools = agentTools;
 		},
+
+		systemPrompt: () => systemPrompt,
 
 		stats: () => {
 			let turns = 0;

@@ -115,6 +115,12 @@ export interface RunWorkerOptions {
 	 * user watching, so the prompt says so instead of letting the model ask.
 	 */
 	systemPrompt?: string;
+	/**
+	 * When `systemPrompt` is a fixed string (a caller-supplied override), this
+	 * supplies the editable parts (persona, identity) that still change between
+	 * runs; called per run.
+	 */
+	refreshPrompt?: () => { persona?: string; identity?: string } | undefined | Promise<{ persona?: string; identity?: string } | undefined>;
 	/** Kernel hooks the host assembles (extension gate, permissions, context). */
 	hooks?: KernelHooks;
 	retries?: number;
@@ -131,7 +137,7 @@ export interface RunWorkerOptions {
 	 */
 	approvals?: (context: RunAgentContext, request: { toolName: string; args: unknown }) => Promise<WorkerApproval>;
 	/** Test seam; the default builds a one-shot kernel agent. */
-	createAgent?: (context: RunAgentContext) => WorkerAgent;
+	createAgent?: (context: RunAgentContext) => WorkerAgent | Promise<WorkerAgent>;
 }
 
 /** How one run ended, as the log records it (§4.2). */
@@ -295,17 +301,23 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 	 * message, so the scene comes from the context: a message run talks to a person,
 	 * anything else runs unattended.
 	 */
-	const systemPromptFor = (context: { scene?: "feishu"; config: AppConfig }): string => {
+	const systemPromptFor = (
+		context: { scene?: "feishu"; config: AppConfig },
+		editable: { persona?: string; identity?: string } = {},
+	): string => {
 		if (options.systemPrompt !== undefined) return options.systemPrompt;
+		const identity = editable.identity ?? context.config.identity;
+		const persona = editable.persona ?? context.config.persona;
 		const shared = {
-			...(context.config.identity !== undefined ? { identity: context.config.identity } : {}),
-			...(context.config.persona !== undefined ? { persona: context.config.persona } : {}),
+			...(identity !== undefined ? { identity } : {}),
+			...(persona !== undefined ? { persona } : {}),
 		};
 		return context.scene === "feishu" ? composeSystemPrompt({ scene: "feishu", ...shared }) : composeSystemPrompt({ scene: "worker", ...shared });
 	};
 
-	const defaultAgent = (context: RunAgentContext): WorkerAgent => {
+	const defaultAgent = async (context: RunAgentContext): Promise<WorkerAgent> => {
 		const hooks = hooksFor(context);
+		const editable = options.refreshPrompt !== undefined ? (await options.refreshPrompt()) ?? {} : {};
 		const agent = createKernelAgent({
 			// Provider request headers follow the background run, not the session:
 			// the run's stream id is the conversation the provider sees.
@@ -314,7 +326,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 					? options.config
 					: { ...options.config, requestHeaders: { ...options.config.requestHeaders, sessionId: context.streamId } },
 			tools: context.tools,
-			systemPrompt: systemPromptFor(context),
+			systemPrompt: systemPromptFor(context, editable),
 			...(hooks !== undefined ? { hooks } : {}),
 		});
 		agent.state.messages = [...context.messages];
@@ -353,7 +365,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 					run.agent?.abort();
 				},
 			};
-			const agent = (options.createAgent ?? defaultAgent)(context);
+			const agent = await (options.createAgent ?? defaultAgent)(context);
 			run.agent = agent;
 
 			// Lifecycle events are appended as they happen; assistant messages only

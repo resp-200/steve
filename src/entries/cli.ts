@@ -480,6 +480,12 @@ async function main(): Promise<void> {
 		extensions,
 		mcpServers: mcp.servers,
 		logger: pluginLog,
+		// A role edited in the console applies from the next turn on, without
+		// restarting the CLI: re-read the file rather than trusting the snapshot.
+		refreshPrompt: async () => {
+			const admin = await readAdminConfig();
+			return admin.persona === undefined ? undefined : { persona: admin.persona };
+		},
 		// Tools declare their own approval requirement and preview.
 		permissions: {
 			mode: permissionMode,

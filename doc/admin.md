@@ -125,9 +125,9 @@ steve-serve --port 8892 --token <你的-token>
   `~/.steve/admin.json` 的 `logLevel` / `logDir`，`--log-level` / `--log-dir` 可临时覆盖。
   路径不可写时只告警一次并退回 stderr，绝不影响进程。
 - **角色设定**（`persona`）：用户自己的额外要求，叠加在内置提示词的身份层之后
-  （`# 用户的额外要求`）。留空表示不加；清空会从 `admin.json` 删除该字段。它**只在下一次
-  会话生效**——提示词在每个会话启动时组装一次，运行中的会话保留原样。层级与场景说明见
-  README「系统提示词：四层组装」。
+  （`# 用户的额外要求`）。留空表示不加；清空会从 `admin.json` 删除该字段。保存后**从下一个
+  turn 起生效**，不用重启、也不用开新会话：每个 turn 开始时会重新读一遍配置并替换提示词，
+  历史消息保留。层级与场景说明见 README「系统提示词：四层组装」。
 - **原始配置文件**：查看 `~/.steve/.env`、`~/.steve/admin.json`、`~/.steve/watch.json`、
   `~/.steve/mcp.json`（接口返回绝对路径，`?path=` 也接受裸文件名）。默认掩码 `API_KEY` / `SECRET` / `TOKEN` / `ENCRYPT_KEY` 一类值，
   勾选「显示敏感值」才返回原文。

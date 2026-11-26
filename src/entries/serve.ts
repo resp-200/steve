@@ -338,6 +338,12 @@ async function main(): Promise<void> {
 		log: log2,
 		resolveEnvironment: async (_streamId, mode) => environmentFor(mode),
 		tools: () => assembly.tools,
+		// The console edits the persona while the service is running; every run
+		// must compose its prompt from the file as it is now, not as it was at boot.
+		refreshPrompt: async () => {
+			const admin = await readAdminConfig();
+			return admin.persona === undefined ? undefined : { persona: admin.persona };
+		},
 		hooks: assembly.hooks,
 		logger: log,
 		concurrency: "serial",
