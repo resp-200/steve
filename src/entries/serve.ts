@@ -43,7 +43,7 @@ import {
 	type FeishuConfig,
 	type FeishuMessage,
 } from "../protocols/feishu/bot.js";
-import { checkImages, modelSupportsImages, type ImageInput } from "../model/image.js";
+import { checkImages, explainVisionFailure, modelSupportsImages, type ImageInput } from "../model/image.js";
 import { createFeishuLongConnection } from "../protocols/feishu/long-connection.js";
 import type { WorkspaceAccess } from "../types.js";
 
@@ -391,7 +391,7 @@ async function main(): Promise<void> {
 		if (keys.length === 0) return { ok: true, images: [] };
 		if (feishuClient === undefined) return { ok: false, reason: "图片处理还没准备好，请稍后再发。" };
 		if (!modelSupportsImages(config.model.input)) {
-			return { ok: false, reason: "当前激活的模型不支持图片。请在后台「模型供应商」里勾选「支持图片」，或换一个视觉模型。" };
+			return { ok: false, reason: "当前模型被设置为不支持图片（供应商里关掉了「支持图片」），这张图没有发给模型。确认该模型能看图的话，把这个开关打开再发一次。" };
 		}
 		const downloaded: { mimeType: string; data: string; label: string }[] = [];
 		for (const key of keys) {
@@ -440,15 +440,18 @@ async function main(): Promise<void> {
 			return;
 		}
 		const terminal = await worker.wait(submitted.runId);
+		// A run that died because the model cannot see is worth explaining: the raw
+		// gateway error names a field, not the checkbox that fixes it.
+		const visionNote = pictures.images.length > 0 && terminal.status === "failed" ? explainVisionFailure(terminal.error) : undefined;
 		if (cardSent) {
 			// The card answered the question; a failure after it still needs saying.
 			if (terminal.status === "failed") {
-				await feishuClient.replyText(message.messageId, `⚠️ ${terminal.error}`);
+				await feishuClient.replyText(message.messageId, `⚠️ ${visionNote ?? terminal.error}`);
 			}
 			return;
 		}
 		const events = await log2.read(streamId, from + 1);
-		await feishuClient.replyText(message.messageId, composeFeishuReply(events, terminal));
+		await feishuClient.replyText(message.messageId, visionNote === undefined ? composeFeishuReply(events, terminal) : `⚠️ ${visionNote}`);
 	};
 
 	// Both transports end here: dedupe by event id, then answer asynchronously.

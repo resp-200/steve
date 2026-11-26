@@ -226,8 +226,7 @@ try {
 	const first = listed.body.providers[0];
 	check("供应商列表包含新增项", listed.body.providers.length === 1 && first.name === "Test Provider" && first.models.length === 2);
 	check("供应商默认未激活", first.active === false && first.hasApiKey === true);
-	check("「支持图片」随供应商保存并读回", first.images === true, JSON.stringify(first.images));
-	check("视觉能力写进了模型 input", JSON.stringify(first.images) === "true");
+	check("「支持图片」显式勾选后读回 true", first.images === true, JSON.stringify(first.images));
 
 	const textOnly = await request("POST", "/admin/api/providers/save", {
 		body: {
@@ -240,10 +239,43 @@ try {
 			},
 		},
 	});
-	check("未勾选支持图片时保存成功", textOnly.status === 200, describe(textOnly.body));
+	check("未传 images 时保存成功", textOnly.status === 200, describe(textOnly.body));
 	const textListed = await request("GET", "/admin/api/providers");
 	const textOnlyProvider = textListed.body.providers.find((provider) => provider.name === "Text Only");
-	check("未勾选时读回 false 而不是 undefined", textOnlyProvider.images === false, JSON.stringify(textOnlyProvider?.images));
+	// Vision is the default now: a provider only leaves it behind on purpose.
+	check("未传 images 时按支持图片处理", textOnlyProvider.images === true, JSON.stringify(textOnlyProvider?.images));
+	const disabled = await request("POST", "/admin/api/providers/save", {
+		body: {
+			provider: {
+				name: "Vision Off",
+				baseUrl: "https://api2.example.com/v1",
+				apiKey: RAW_KEY,
+				defaultModel: "text-model",
+				models: ["text-model"],
+				images: false,
+			},
+		},
+	});
+	check("显式关掉图片时保存成功", disabled.status === 200, describe(disabled.body));
+	const disabledListed = await request("GET", "/admin/api/providers");
+	const disabledProvider = disabledListed.body.providers.find((provider) => provider.name === "Vision Off");
+	check("显式关掉后读回 false", disabledProvider.images === false, JSON.stringify(disabledProvider?.images));
+	// Rename it without sending `images` at all: absence must keep the opt-out,
+	// otherwise any unrelated save silently turns vision back on.
+	await request("POST", "/admin/api/providers/save", {
+		body: {
+			provider: {
+				id: disabledProvider.id,
+				name: "Vision Off Renamed",
+				baseUrl: "https://api2.example.com/v1",
+				defaultModel: "text-model",
+				models: ["text-model"],
+			},
+		},
+	});
+	const afterOmitted = (await request("GET", "/admin/api/providers")).body.providers.find((provider) => provider.id === disabledProvider.id);
+	check("编辑时不传 images 会保留关闭状态", afterOmitted.images === false, JSON.stringify(afterOmitted?.images));
+	await request("POST", "/admin/api/providers/delete", { body: { id: disabledProvider.id } });
 	await request("POST", "/admin/api/providers/delete", { body: { id: textOnlyProvider.id } });
 
 	const activated = await request("POST", "/admin/api/providers/activate", { body: { id: first.id } });

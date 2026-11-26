@@ -9,10 +9,11 @@
 //   B. size: 10 MB cap, base64 measured without decoding, message says the size
 //   C. batches: one bad picture refuses the whole batch (half a question is worse)
 //   D. capability: a text-only model is recognised as such
+//   E. a provider refusing pictures becomes advice, not a raw 400
 //
 //   npm run build && node scripts/image-test.mjs
 import process from "node:process";
-import { MAX_IMAGE_BYTES, base64Bytes, checkImage, checkImages, formatBytes, imageMimeTypeForPath, modelSupportsImages } from "../dist/model/image.js";
+import { MAX_IMAGE_BYTES, base64Bytes, checkImage, checkImages, explainVisionFailure, formatBytes, imageMimeTypeForPath, modelSupportsImages } from "../dist/model/image.js";
 
 const checks = [];
 const check = (name, passed, detail = "") => {
@@ -92,6 +93,21 @@ const b64 = (bytes) => Buffer.alloc(bytes, 7).toString("base64");
 	check("base64 size is measured without decoding", base64Bytes(b64(1024)) === 1024, String(base64Bytes(b64(1024))));
 	check("base64 padding is accounted for", base64Bytes(Buffer.alloc(1, 0).toString("base64")) === 1, String(base64Bytes("AA==")));
 	check("bytes are rendered the way a person reads them", formatBytes(900) === "900 B" && formatBytes(1536) === "1.5 KB" && formatBytes(12 * 1024 * 1024) === "12.0 MB");
+}
+
+/* ---------- E. a provider's refusal becomes advice ---------- */
+
+{
+	const openai = explainVisionFailure("400 image_url is not supported for this model");
+	check("an OpenAI-shaped refusal is explained", openai !== undefined && openai.includes("「支持图片」"), String(openai));
+	check("the gateway's own words are kept", openai.includes("image_url is not supported"), String(openai));
+	check(
+		"an Anthropic-shaped refusal is explained",
+		explainVisionFailure("messages.0.content.0.image: Input tag 'image' found using 'type' does not match any of the expected tags") !== undefined,
+	);
+	check("a multimodal wording is explained", explainVisionFailure("this model does not support multimodal input") !== undefined);
+	check("an unrelated failure is passed through untouched", explainVisionFailure("429 rate limited") === undefined);
+	check("no error means no advice", explainVisionFailure(undefined) === undefined && explainVisionFailure("") === undefined);
 }
 
 const failed = checks.filter((entry) => !entry.passed);

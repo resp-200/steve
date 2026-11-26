@@ -318,8 +318,8 @@ Access-Control-Allow-Private-Network: true
 | `session/prompt` | 一轮对话；返回 `stopReason` + 累计 usage |
 | `session/cancel` | 中断本轮（`stopReason=cancelled`，**不重试**） |
 
-`promptCapabilities.image: false` 是因为 `buildModel()` 目前固定 `input: ["text"]`（见 model-integration.md §4.3）——
-模型不支持图片时，图片会被丢掉而不是报错。
+`promptCapabilities.image` 跟随模型的 `input` 是否含 `image`（默认含：图片能力默认开启，见 model-integration.md §4.3）。
+模型被显式关掉图片时，图不会静默消失——steve 会在会话里推一条 `agent_message_chunk` 说明，并告诉用户怎么打开。
 
 **一条顺序约束**（曾经导致客户端一直卡在 `Starting …`）：`session/new` 的**响应必须先于**该会话的
 `session/update`。客户端收到一个"未知 session 的更新"会把整次会话初始化当成失败并反复重试。

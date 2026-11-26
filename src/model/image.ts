@@ -105,3 +105,30 @@ export function checkImages(inputs: readonly { mimeType: string; data: string; l
 	}
 	return { ok: true, images };
 }
+
+/**
+ * Words that appear in a provider's refusal when the model cannot take pictures.
+ * Gateways word it differently ("image content is not supported", "does not
+ * support multimodal", "vision is not enabled"), so the test is on the failure
+ * as a whole rather than on one message we happened to see once.
+ */
+const VISION_REFUSAL = /image|vision|multimodal|image_url|image content/i;
+
+/**
+ * Turns a failed run into advice, when the failure is really "this model cannot
+ * see pictures".
+ *
+ * The alternative — forwarding the raw 400 — leaves the user staring at
+ * `image_url is not supported` with no idea that a checkbox in the admin page is
+ * what fixes it. Anything else is passed through untouched: guessing a cause
+ * would be worse than admitting we do not know.
+ */
+export function explainVisionFailure(error: string | undefined): string | undefined {
+	if (error === undefined || error === "") return undefined;
+	if (!VISION_REFUSAL.test(error)) return undefined;
+	return [
+		"这张图没能发给模型：它拒绝了图片输入。",
+		"如果该模型其实能看图，请到后台「模型供应商」确认「支持图片」没有被关掉；如果它确实只支持文本，换一个视觉模型即可。",
+		`网关原话：${error}`,
+	].join("\n");
+}

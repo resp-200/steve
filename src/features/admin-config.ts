@@ -38,9 +38,10 @@ export interface ProviderEntry {
 	/** `false` opts out of the automatic session header (gateways that don't route by session). */
 	requestSessionHeader?: boolean;
 	/**
-	 * The model behind this provider accepts pictures. Absent = false, because
-	 * assuming vision from a provider name is how a text-only gateway gets sent an
-	 * image and answers with a 400 mid-turn.
+	 * `false` opts this provider out of pictures. Absent = supported: vision is the
+	 * norm now, and the cost of the old default was that every user had to discover
+	 * a checkbox before their images did anything. A text-only model says so itself
+	 * when an image arrives, and the front end turns that refusal into advice.
 	 */
 	images?: boolean;
 }
@@ -95,7 +96,7 @@ export function providerView(provider: ProviderEntry, activeProviderId?: string)
 		headers: { ...(provider.headers ?? {}) },
 		hosts: [...(provider.hosts ?? [])],
 		requestSessionHeader: provider.requestSessionHeader !== false,
-		images: provider.images === true,
+		images: provider.images !== false,
 		apiKeyMasked: maskSecret(provider.apiKey),
 		hasApiKey: provider.apiKey !== "",
 		active: provider.id === activeProviderId,
@@ -121,7 +122,7 @@ export function applyProvider(base: AppConfig, config: AdminConfig): AppConfig {
 		baseUrl,
 		api: resolveApi(baseUrl),
 		reasoning: provider.reasoning,
-		input: provider.images === true ? ["text", "image"] : ["text"],
+		input: provider.images === false ? ["text"] : ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: base.model.contextWindow,
 		maxTokens: base.model.maxTokens,
@@ -146,7 +147,7 @@ export function configFromProvider(provider: ProviderEntry): AppConfig {
 		baseUrl,
 		api: resolveApi(baseUrl),
 		reasoning: provider.reasoning,
-		input: provider.images === true ? ["text", "image"] : ["text"],
+		input: provider.images === false ? ["text"] : ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 128_000,
 		maxTokens: 8_192,
@@ -224,7 +225,7 @@ export function coerceProvider(raw: unknown, logger?: Logger): ProviderEntry | u
 		defaultModel,
 		models: [...new Set(models)],
 		reasoning: input.reasoning === true,
-		...(input.images === true ? { images: true } : {}),
+		...(input.images === false ? { images: false } : {}),
 		...coerceHeaderFields(input, (message) => logger?.(`[admin] provider "${entry.name}" ${message}`)),
 	};
 	if (entry.apiKey === "") logger?.(`[admin] provider "${entry.name}" has no apiKey; it can only be used when the environment supplies one`);
@@ -260,7 +261,10 @@ export function normalizeProviderInput(raw: unknown, existing?: ProviderEntry): 
 		defaultModel,
 		models,
 		reasoning: input.reasoning === true,
-		...(input.images === true ? { images: true } : {}),
+		// An edit that omits the field inherits the stored value: absence means
+		// "use the default" on create, but silently re-enabling pictures on every
+		// unrelated save would make the opt-out impossible to keep.
+		...((input.images === false || (input.images === undefined && existing?.images === false)) ? { images: false } : {}),
 		...(Object.keys(headers).length > 0 ? { headers } : {}),
 		...normalizeHostsInput(input.hosts),
 		...(input.requestSessionHeader === false ? { requestSessionHeader: false } : {}),

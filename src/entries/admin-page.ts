@@ -672,7 +672,7 @@ pre.code {
               </div>
               <div class="field full">
                 <label class="check"><input type="checkbox" id="pv-images"> 支持图片（vision）</label>
-                <span class="hint">模型能看图时才勾选；网关不支持时不要勾，否则发图会中途报错。</span>
+                <span class="hint">默认开启：发给模型的图片才会被看见。只有确认这个模型是纯文本模型时才取消勾选。</span>
               </div>
               <div class="field full">
                 <div class="label-row">
@@ -1469,7 +1469,7 @@ pre.code {
       html += '<td class="cell-mono">' + escapeHtml(display(provider.defaultModel)) + "</td>";
       html += '<td><span title="' + escapeHtml(modelTitle) + '">' + escapeHtml(String(models.length)) + " 个</span></td>";
       html += "<td>" + (provider.reasoning === true ? badge("开启", "ok") : badge("关闭", "muted")) + "</td>";
-      html += "<td>" + (provider.images === true ? badge("支持", "ok") : badge("不支持", "muted")) + "</td>";
+      html += "<td>" + (provider.images === false ? badge("不支持", "muted") : badge("支持", "ok")) + "</td>";
       // Header names only: values are on the edit form, and the row stays narrow.
       var headerNames = provider && provider.headers && typeof provider.headers === "object" ? Object.keys(provider.headers) : [];
       html += "<td>" + (headerNames.length === 0 ? badge("无", "muted") : badge(String(headerNames.length) + " 个", "info") + ' <span class="hint" title="' + escapeHtml(headerNames.join(", ")) + '">' + escapeHtml(headerNames.slice(0, 2).join(", ")) + (headerNames.length > 2 ? " …" : "") + "</span>") + "</td>";
@@ -1549,7 +1549,7 @@ pre.code {
     var reasoningInput = byId("pv-reasoning");
     if (reasoningInput) reasoningInput.checked = !!(provider && provider.reasoning);
     var imagesInput = byId("pv-images");
-    if (imagesInput) imagesInput.checked = !!(provider && provider.images);
+    if (imagesInput) imagesInput.checked = !(provider && provider.images === false);
     var headersInput = byId("pv-headers");
     if (headersInput) headersInput.value = headersToText(provider && provider.headers);
     var hostsInput = byId("pv-hosts");

@@ -298,7 +298,7 @@ export class AcpSession {
 		// Dropping the pictures silently would make the model answer "I don't see an
 		// image" while the client is sure it sent one, so say it in the transcript.
 		if (attached.length > 0 && !this.supportsImages) {
-			const note = `⚠️ 当前模型不支持图片，这 ${attached.length} 张图没有发给模型。在后台「模型供应商」里勾选「支持图片」，或换一个视觉模型。`;
+			const note = `⚠️ 当前模型被设置为不支持图片（供应商里关掉了「支持图片」），这 ${attached.length} 张图没有发给模型。确认该模型能看图的话，把这个开关打开再试一次。`;
 			this.options.logger(`session/prompt: ${this.id} dropping ${attached.length} image(s) (model has no vision)`);
 			await this.publisher.send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: note } });
 		}

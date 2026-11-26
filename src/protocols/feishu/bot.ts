@@ -173,6 +173,77 @@ function textFromContent(content: string, mentions: unknown): string {
 }
 
 /**
+ * Rich text (`message_type: "post"`) is what Feishu actually sends for the
+ * common cases a user thinks of as "sending a picture": a screenshot with a
+ * caption, a pasted or dragged-in image, a forwarded conversation. The content
+ * is a two-dimensional array — outer = paragraphs, inner = inline elements like
+ * `{"tag":"text","text":"…"}`, `{"tag":"img","image_key":"…"}`, `{"tag":"at",…}`
+ * — so it has to be walked, not treated as one string.
+ *
+ * Returns the paragraphs as text plus the image keys in reading order. A `post`
+ * with neither text nor pictures is not a usable turn and the caller ignores it.
+ */
+function postContent(content: string, mentions: unknown): { text: string; imageKeys: string[] } {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		return { text: "", imageKeys: [] };
+	}
+	if (parsed === null || typeof parsed !== "object") return { text: "", imageKeys: [] };
+	// The body is either `{"title","content":[[...]]}` or, for localised variants
+	// ("post", "post_zh_cn", …), that same object nested under `content`.
+	const inner = (parsed as { content?: unknown }).content;
+	const body = inner !== null && typeof inner === "object" && !Array.isArray(inner) ? (inner as { content?: unknown }) : (parsed as { content?: unknown });
+	const rows = Array.isArray(body.content) ? (body.content as unknown[]) : [];
+	const paragraphs: string[] = [];
+	const imageKeys: string[] = [];
+	for (const row of rows) {
+		if (!Array.isArray(row)) continue;
+		let line = "";
+		for (const element of row) {
+			if (element === null || typeof element !== "object") continue;
+			const tag = typeof (element as { tag?: unknown }).tag === "string" ? (element as { tag: string }).tag : "";
+			if (tag === "text" || tag === "code_block" || tag === "md") {
+				if (typeof (element as { text?: unknown }).text === "string") line += (element as { text: string }).text;
+				continue;
+			}
+			if (tag === "a") {
+				const label = typeof (element as { text?: unknown }).text === "string" ? (element as { text: string }).text : "";
+				const href = typeof (element as { href?: unknown }).href === "string" ? (element as { href: string }).href : "";
+				line += href === "" || href === label ? label : `${label} (${href})`;
+				continue;
+			}
+			if (tag === "img") {
+				const key = (element as { image_key?: unknown }).image_key;
+				if (typeof key === "string" && key !== "") imageKeys.push(key);
+				continue;
+			}
+			if (tag === "media") {
+				// A video/file inside rich text: the model cannot see it, so leave a
+				// trace in the text instead of pretending the message was only text.
+				line += "［附件］";
+				continue;
+			}
+			if (tag === "at") {
+				const name = typeof (element as { user_name?: unknown }).user_name === "string" ? (element as { user_name: string }).user_name : "";
+				line += name === "" ? "" : `@${name}`;
+			}
+		}
+		paragraphs.push(line);
+	}
+	let text = paragraphs.join("\n");
+	if (Array.isArray(mentions)) {
+		for (const mention of mentions) {
+			if (mention !== null && typeof mention === "object" && typeof (mention as { key?: unknown }).key === "string") {
+				text = text.split((mention as { key: string }).key).join(" ");
+			}
+		}
+	}
+	return { text: text.replace(/[ \t]+/g, " ").trim(), imageKeys };
+}
+
+/**
  * `image_key`s in an image message. A single image is `{"image_key": "..."}`;
  * a forwarded album arrives as `{"image_key": ["a", "b"]}` on some tenants, so
  * both shapes are read rather than dropping the batch.
@@ -247,18 +318,20 @@ export function classifyFeishuPayload(payload: Record<string, unknown>, verifica
 			: undefined;
 	if (senderType !== "user") return { kind: "ignored", reason: `sender is ${senderType}` };
 	const messageType = typeof typed.message_type === "string" ? typed.message_type : "";
-	if (messageType !== "text" && messageType !== "image") {
+	if (messageType !== "text" && messageType !== "image" && messageType !== "post") {
 		return { kind: "ignored", reason: `unsupported message type ${String(typed.message_type)}` };
 	}
 	if (typeof typed.message_id !== "string" || typeof typed.chat_id !== "string" || typeof typed.content !== "string") {
 		return { kind: "ignored", reason: "message is missing id, chat or content" };
 	}
-	const imageKeys = messageType === "image" ? imageKeysFromContent(typed.content) : [];
+	const rich = messageType === "post" ? postContent(typed.content, typed.mentions) : undefined;
+	const imageKeys = messageType === "image" ? imageKeysFromContent(typed.content) : (rich?.imageKeys ?? []);
 	// An image message carries no text of its own; the model gets the pictures and
 	// an empty prompt is still a usable turn, so only a text message can be empty.
-	const text = messageType === "text" ? textFromContent(typed.content, typed.mentions) : "";
+	const text = messageType === "text" ? textFromContent(typed.content, typed.mentions) : (rich?.text ?? "");
 	if (messageType === "image" && imageKeys.length === 0) return { kind: "ignored", reason: "image message has no image_key" };
 	if (messageType === "text" && text === "") return { kind: "ignored", reason: "message has no text" };
+	if (messageType === "post" && text === "" && imageKeys.length === 0) return { kind: "ignored", reason: "rich text message has no text or image" };
 	return {
 		kind: "message",
 		eventId,

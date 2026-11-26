@@ -280,7 +280,9 @@ try {
 	);
 	const serve = start("serve", process.execPath, [join(ROOT, "dist", "entries", "serve.js"), "--port", String(SERVE_PORT), "--token", TOKEN], {
 		cwd: workspace,
-		env: { ...process.env, ...mockEnv, ...feishuEnv, HOME: home, MOCK_PORT: String(MOCK_PORT) },
+		// Vision is on by default now; this instance opts out on purpose so the
+		// "model cannot see" path stays covered by a test.
+		env: { ...process.env, ...mockEnv, ...feishuEnv, HOME: home, MOCK_PORT: String(MOCK_PORT), LLM_IMAGES: "0" },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	children.push(serve);
@@ -372,7 +374,7 @@ try {
 	check("重复 event_id 不再写入事件", readStreamEvents(streamsDir, streamId).length === beforeDuplicate);
 
 	// D. Images: a text-only model is told why, rather than answering blind.
-	// The default env here has no LLM_IMAGES, so the model declares no vision.
+	// This serve runs with LLM_IMAGES=0, so the model declares no vision.
 	fakeFeishu.images.set("img_png", { mimeType: "image/png", bytes: Buffer.alloc(2048, 3) });
 	const imageEvent = await postCallback(
 		SERVE_PORT,
@@ -382,9 +384,27 @@ try {
 	await sleepAsync(1500);
 	const visionReply = fakeFeishu.replies.at(-1);
 	check(
-		"纯文本模型收到图片时说明原因",
+		"关闭图片支持时说明原因",
 		visionReply !== undefined && String(visionReply.body.content ?? "").includes("不支持图片"),
 		String(visionReply?.body.content ?? "").slice(0, 120),
+	);
+	// Feishu sends a picture *with words* as rich text, never as `message_type:
+	// image`. Ignoring `post` is why "发一张图片他不识别" looked like a vision bug.
+	const postEvent = await postCallback(
+		SERVE_PORT,
+		messageEvent({
+			eventId: "evt_feishu_post",
+			messageType: "post",
+			content: { content: [[{ tag: "text", text: "这张图里是什么？" }, { tag: "img", image_key: "img_png" }]] },
+		}),
+	);
+	check("富文本（post）图片消息 200 并被处理", postEvent.status === 200, `status ${postEvent.status}`);
+	await sleepAsync(1500);
+	const postReply = fakeFeishu.replies.at(-1);
+	check(
+		"富文本里的图片同样被认出来",
+		postReply !== undefined && String(postReply.body.content ?? "").includes("不支持图片"),
+		String(postReply?.body.content ?? "").slice(0, 160),
 	);
 	const appEvent = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_3", senderType: "app" }));
 	check("app 自己发的消息 200 但忽略", appEvent.status === 200);
@@ -623,6 +643,37 @@ try {
 		typeof userMessage?.text === "string" && userMessage.text !== "",
 		String(userMessage?.text),
 	);
+
+	// A rich-text message carries the caption *and* the picture; both must survive
+	// parsing, or the model sees a question with no picture or a picture with no
+	// question.
+	fakeFeishu.images.set("img_post", { mimeType: "image/png", bytes: Buffer.alloc(512, 9) });
+	const beforePost = fakeFeishu.replies.length;
+	await postCallback(
+		VISION_SERVE_PORT,
+		messageEvent({
+			eventId: "evt_feishu_vision_post",
+			messageType: "post",
+			content: {
+				title: "",
+				content: [
+					[{ tag: "text", text: "这是截图，" }, { tag: "text", text: "帮我看看这个报错。" }],
+					[{ tag: "img", image_key: "img_post" }],
+				],
+			},
+		}),
+	);
+	await waitFor(async () => fakeFeishu.replies.length > beforePost, { label: "post reply", timeout: 8_000 });
+	const postAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
+	check("富文本：图片真的送到了 provider", postAnswer.includes("图片数量：1"), postAnswer.slice(0, 160));
+	check("富文本：图片大小按原图算", postAnswer.includes("大小：512"), postAnswer.slice(0, 160));
+	const postUserMessage = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID))
+		.filter((event) => event?.type === "user.message")
+		.filter((event) => Array.isArray(event.images) && event.images.length > 0)
+		.at(-1);
+	const postText = String(postUserMessage?.text ?? "");
+	check("富文本：同段落的文字被拼起来", postText.includes("这是截图，帮我看看这个报错。"), postText);
+	check("富文本：纯图片消息才补默认提示", !postText.includes("请看这张图片"), postText);
 
 	// A picture the model cannot use is refused with a reason rather than a 500.
 	fakeFeishu.images.set("img_heic", { mimeType: "image/heic", bytes: Buffer.alloc(1024, 1) });
