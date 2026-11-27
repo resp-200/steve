@@ -30,6 +30,8 @@ steve-serve --no-watch          # 不加载 watch.json（只做流 + 执行器�
 | `--access <none\|read\|write\|exec>` | `exec` | 工具可用的本地能力（路径收敛仍按 workspace roots） |
 | `--streams-dir <path>` | `~/.steve/streams` | 事件日志目录 |
 | `--no-watch` | 关 | 不启动触发器 |
+| `--no-feishu` | 关 | 不接飞书（默认在 `FEISHU_APP_ID`/`SECRET` 存在时启用） |
+| `--no-wechat` | 关 | 不接微信（默认在 `~/.steve/wechat.json` 存在时启用） |
 
 ## HTTP API
 
@@ -190,6 +192,47 @@ URL 和错误码 —— 前者能看出 type 和 key，后者能区分「type �
 
 **限制**：群聊需 @ 机器人；入站消息只处理文本、图片和富文本（富文本里的语音/文件只记一句「［附件］」），单独的语音 / 文件消息不处理；HTTP 回调需要公网可达地址与 Verification Token。
 
+## 微信 ClawBot
+
+除了飞书，`steve-serve` 还能接微信——走的是腾讯 2026 年开放的 **ClawBot（iLink）** 协议，用 HTTP/JSON 长轮询收发，不需要公网地址、不需要企业认证。前提是一个能扫码的微信号（这个号就是"机器人"）。
+
+**第一步：扫码登录**（只做一次，凭据存在 `~/.steve/wechat.json`）
+
+```bash
+steve-wechat             # 终端里打出二维码，用微信扫
+steve-wechat --status    # 看看现在登录的是哪个 bot（token 只显示前 8 位）
+steve-wechat --logout    # 删掉登录，之后 serve 不再接微信
+```
+
+二维码是自研编码器画的（`src/features/qr.ts`，无新依赖，两行半块字符渲染）。**登录不等于启动**：`steve-wechat` 只负责拿 token，收消息是 `steve-serve` 的事——这样扫码命令和长驻进程可以分开跑，进程重启也不用重新扫。
+
+**第二步：启动**
+
+```bash
+steve-serve              # ~/.steve/wechat.json 存在就自动接上
+steve-serve --no-wechat  # 这次先不接
+```
+
+**谁能用这个机器人**（默认最严）
+
+agent 在本机有 shell 权限，所以默认**只回答扫码的那个号**：别人给这个微信发消息，会收到一句「这个机器人只服务它的主人」，不会触发任何 run。`STEVE_WECHAT_ALLOW` 可以额外放行几个 user id（逗号分隔），用来授权家人或同事。
+
+会话状态写成 `owner_id` 一起落盘；**没有 owner 字段的旧文件一律拒绝**（fail closed）——重新 `steve-wechat` 一次就好。这个取舍是故意的：放行逻辑写错一次，等于把本机命令执行权交给任意微信联系人。
+
+**消息怎么走**
+
+| 环节 | 行为 |
+| --- | --- |
+| 一个用户 | 一条事件流，id = `sha256("wechat:"+user_id)` 前 12 位，历史累积、重启可续 |
+| 去重 | 按 `message_id`（ClawBot 是 at-least-once 语义，重复投递不重复跑） |
+| 回复 | 必须带原消息的 `context_token`（协议不允许主动推送）；纯文本，不带卡片 |
+| 场景 | `scene: "wechat"` 的提示词变体：手机聊天窗口、一句话能说清就别写三段 |
+| 正在输入 | 先 `getconfig` 取 `typing_ticket`（按用户缓存），再 `sendtyping` 开关；失败只记日志 |
+| 会话过期 | 服务端回 `-14` 时轮询抛 `WechatSessionExpired` 并停止，日志提示重新 `steve-wechat` |
+| 网络抖动 | 非 `-14` 的错误记日志后重试，不会让渠道退出 |
+
+**限制**：第一版**只处理文字**——图片、语音、文件、视频会回一句「暂时只能处理文字消息，这条图片没有处理」，不静默吞；不能发引用、不能主动推送（协议约束）；一个进程只接一个扫码登录的号。
+
 ## Watch 与后台运行
 
 `~/.steve/watch.json` 的条目会被内置插件 `watch-config` 校验后交给触发器引擎；命中后引擎追加
@@ -245,3 +288,4 @@ URL 和错误码 —— 前者能看出 type 和 key，后者能区分「type �
 - 不做压缩/归档：日志按 8 MiB 轮转，单事件上限 64 KiB，长期运行请配好清理策略。
 - HTTP 面没有多租户与细粒度权限；非本机使用请配合反代 TLS 与 token。
 - 图片输入会以 blob 形式落 `~/.steve/blobs/`（按 sha256 去重），HTTP body 上限 8 MiB。
+- 微信渠道只做文字收发；同一个微信号不要同时跑两个 ClawBot 进程（游标会互相覆盖）。

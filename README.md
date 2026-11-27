@@ -31,9 +31,13 @@ src/entries/render.ts    L1 投影后事件 -> 终端渲染（按受众决定显
 src/entries/serve.ts     L1 常驻服务：事件日志 + 运行执行器 + watch 触发器 + HTTP/SSE（steve-serve）
 src/entries/admin.ts     L1 管理后台 API：概览/供应商/网关/定时任务/系统（只改配置文件，不绕功能层）
 src/entries/admin-page.ts L1 管理后台单文件页面：内嵌 HTML/CSS/JS，日/夜间主题，无构建
+src/entries/wechat-login.ts L1 微信扫码登录（steve-wechat）：二维码渲染、凭据落盘、--status / --logout
 src/protocols/acp/*      L2 ACP 服务端（main / agent / session / transport / tools / content / tool-call）
 src/protocols/http/*     L2 HTTP/SSE 基础层：路由匹配、JSON 响应、SSE 帧、Bearer token
 src/protocols/feishu/*   L2 飞书机器人：回调解析（challenge/解密/签名/去重）、长连接 WebSocket（protobuf 帧/ping/分片/ack）、tenant token 与消息回复
+src/features/wechat.ts   L3 微信 ClawBot 客户端与轮询：登录扫码、context_token 回复、typing、-14 到期、游标不丢消息
+src/model/wechat.ts      L5 微信 iLink 协议：请求头/base_info、消息解析、发送体、会话读写、谁可以使用机器人
+src/features/qr.ts       L3 二维码编码器：byte 模式、纠错等级 L、版本 1–10、终端半块渲染（扫码登录用，无依赖）
 src/features/runtime.ts  L3 会话运行时：agent 装配、工具表、reset、统计
 src/features/retry.ts    L3 失败重试与回滚：一轮 prompt 的重试循环（退避、未跑工具才重试）
 src/features/normalize.ts L3 事件归一化：pi 事件 -> 功能层词表、transcript 摘要
@@ -570,7 +574,7 @@ npm i -g @zhyoung/steve       # 已发布的话，直接从 registry 装
 # 或者只在本机试用：npm link
 ```
 
-`bin` 四个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）、`steve-serve`（常驻 Personal Agent 服务，见 [serve.md](./doc/serve.md)）。`steve --version`（`-v`）只打印版本号，便于脚本比对；`steve-acp --help` 的表头同样带版本。**版本号只有 `package.json` 一处**（`src/model/version.ts` 运行时读它），`--version`、ACP `initialize` 握手与 MCP `clientInfo` 都走这里，所以不会出现「包发了 0.1.2、握手还自报 0.1.0」这种走岔。于是客户端配置可以简单到：
+`bin` 五个入口：`steve`（终端对话）、`steve-acp`（ACP server）、`steve-acp-serve`（把 HTTP 服务那串参数固定下来的启动脚本，`--daemon` / `--stop` / 日志见 [acp-server.md](./doc/acp-server.md) §2.1）、`steve-serve`（常驻 Personal Agent 服务，见 [serve.md](./doc/serve.md)）、`steve-wechat`（扫码登录微信 ClawBot，`--status` / `--logout`，见 [serve.md](./doc/serve.md#微信clawbot)）。`steve --version`（`-v`）只打印版本号，便于脚本比对；`steve-acp --help` 的表头同样带版本。**版本号只有 `package.json` 一处**（`src/model/version.ts` 运行时读它），`--version`、ACP `initialize` 握手与 MCP `clientInfo` 都走这里，所以不会出现「包发了 0.1.2、握手还自报 0.1.0」这种走岔。于是客户端配置可以简单到：
 
 ```jsonc
 // ~/.jetbrains/acp.json
@@ -711,6 +715,7 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run feishu-markdown:test` | 飞书消息格式 38 项断言：markdown 检测（表格/标题/列表/代码块/行内代码/粗体/链接/引用各一，散文与 `2 * 3` 不误判）、`post` 正文（单行、围栏单独成行、首尾空白、空文本、元素都是 md）、纯文本降级（标题/粗体/行内代码/代码块/表格/链接/引用/删除线/空行压缩）、分块（短消息不切、超长切分、每块不超限、`(1/N)` 标号、优先换行处切、跨块代码块重新围栏且闭合、跨块表格重复表头、结尾不被截断） |
 | `npm run feishu-card:test` | 飞书卡片 37 项断言：构建器（无标题不产生 header、Markdown 原样透传、颜色白名单与回落、标题超长截断、空正文/超长正文拒绝、上限边界可用）与工具（走注入的 reply、模型收到的是构建出的卡片而非原始 JSON、失败以工具结果返回而不抛出、失败不计入"已发送"、发卡成功后宿主不再补纯文本） |
 | `npm run image:test` | 图片规则 31 项断言：格式白名单（PNG/JPEG/GIF/WebP 通过，HEIC/SVG/空内容/无类型拒绝）、mime 大小写与参数归一、10 MB 上限边界（正好通过、超一字节拒绝、拒绝信息带具体大小）、批量里一张坏就整批拒收并指出第几张、能力声明识别、扩展名映射与 base64 字节计算 |
+| `npm run wechat:test` | 微信 ClawBot 69 项断言：发送体（`msg` 包裹、上下文令牌、消息类型、幂等键、空发送者）；解析（机器人自己的消息与 `@im.bot` 镜像被丢弃、多条 text 拼接、媒体归为不支持并报类型、没有 `context_token` 只忽略不回复、游标只在服务端给新 buf 时推进）；权限（扫码号放行、陌生人拒绝、白名单放行、无主人的旧会话一律拒绝、白名单解析）；假 iLink 服务端（扫码登录、过期码自动换一张、`bot_type=3`、每次调用都带 `base_info` 与 `X-WECHAT-UIN`、轮询带 Bearer 与新游标、`-14` 抛 `WechatSessionExpired` 且提示重新登录、网络失败重试而非退出、回复真的走到 `sendmessage` 且每条 `client_id` 不同、typing 票据只取一次）；终端二维码（登录 URL 用低版本符号、三个定位角、时序图案交替、同文本同矩阵、超长增长版本、放不下时拒绝而不是截断、半块渲染行数与字符）；登录文件（缺文件/坏 JSON/无 token 都算未登录、权限 600、snake_case 落盘、登出删文件、序列化往返） |
 | `npm run feishu:test` | 飞书机器人 89 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；卡片回复（`msg_type: interactive`、标题栏颜色、Markdown 原样下发、发卡后不再补纯文本）；图片消息（关掉图片支持时回「这张图没有发给模型」、`LLM_IMAGES=1` 时图片真的进 provider payload 且 mime/字节数与原图一致、`user.message` 事件带 images、纯图片消息补提示文本、HEIC 回具体原因、下载失败有回复、富文本 post 的文字与图片分别抽出并一起送到 provider、取图走 `messages/{id}/resources/{key}` 且只带一个 `type=image`、超过 2 MiB 按 Range 分块取回、服务端忽略 Range 也能取到、key 不可用时只请求一次、大图的 `user.message` 不被截断且日志里存的是 `blob:<sha256>` 引用、后续消息仍能正常处理）；消息格式（结构化回答走 `msg_type: post` 且正文是 `zh_cn/content` 的 md 元素、标题表格粗体原样交给 Feishu、纯文本回答仍走 `text`、超长回答拆成多条且带 `(1/N)`、结尾不被截断））；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
 | `npm run admin:test` | 管理后台 91 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化、模型选择弹窗调用 `/v1/models`）、网关读取与写回 `~/.steve/.env`（保留未修改字段、保存后立即回显、清空后回显未配置）、模型选择弹窗与规格展示（`/v1/models` 的 `items` 规格解析、页面结构）、定时任务写 `~/.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出、系统信息报出实际读取的 `admin.json` 路径（配置搬家用）、没有 `.env` 时仅凭控制台里激活的供应商也能启动 |
 | `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`~/.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
@@ -769,6 +774,7 @@ steve-serve --audience full                       # SSE 给完整事件（默认
 steve-serve --no-admin                            # 不挂管理后台 /admin
 steve-serve --log-level debug --log-dir ~/.steve/logs      # 日志级别与目录（后台里也能改；按小时切分）
 steve-serve --feishu-mode ws                      # 飞书事件传输：ws（默认长连接）/ http（回调）/ off
+steve-serve --no-wechat                           # 不接微信（默认在 ~/.steve/wechat.json 存在时启用）
 ```
 
 接口：`GET /health`、`GET/POST /streams`、`GET /streams/:id/events?from=N`（SSE，先回放历史再推增量）、`POST /streams/:id/messages`（立即返回 `runId`）、`POST /streams/:id/cancel`、`POST /streams/:id/approvals`、`POST /hooks/:name`（watch webhook），以及可选的 `POST /feishu/events`（飞书 HTTP 回调；长连接模式不注册）。SSE 默认按 **user 投影**，隐藏思考与原始工具参数/输出，并带 `X-Accel-Buffering: no` 以便反代；token 走 `Authorization: Bearer`。
@@ -778,6 +784,8 @@ steve-serve --feishu-mode ws                      # 飞书事件传输：ws（�
 watch 触发命中后，引擎追加 `trigger.fired` 与 `[watch:<name>] …` 开头的输入，常驻进程把它交给 worker 以 `background` 模式执行；后台 run 遇到需要审批的工具会挂起为 `approval.pending`，由 `POST /streams/:id/approvals` 放行，默认 10 分钟超时按拒绝处理。详见 [doc/serve.md](./doc/serve.md)。
 
 **飞书机器人**（可选）：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 后，`steve-serve` 默认用**长连接**（WebSocket）主动连飞书接收事件——不需要公网地址、回调 URL 或 Verification Token；把飞书开放平台的事件订阅方式设为「长连接」即可。也可用 `--feishu-mode http`（或 `FEISHU_MODE=http`）切回旧的回调模式（此时需要 `FEISHU_VERIFICATION_TOKEN`，可选 `FEISHU_ENCRYPT_KEY`），进程会挂上 `POST /feishu/events`。两种方式都把飞书私聊/群聊消息映射到一条事件流并跑 worker，回答通过 Open API 回复到原消息线程（需要时 agent 可用 `send_feishu_card` 发结构化卡片）；一个 chat 固定一条流，按 `event_id` 去重，`--no-feishu` 可关闭。设置步骤见 [doc/serve.md](./doc/serve.md#飞书机器人)。
+
+**微信 ClawBot**（可选）：先跑一次 `steve-wechat`，用微信扫终端里的二维码，登录写进 `~/.steve/wechat.json`（权限 600）；之后每次 `steve-serve` 启动都会自动接上，收微信私聊消息并回复纯文本回答，`--no-wechat` 可关闭。**agent 有 shell 权限，所以默认只回答扫码的那个号**——别人给这个机器人发消息只会收到一句「只服务主人」；真要放开就在 `STEVE_WECHAT_ALLOW` 里列白名单。第一版只处理文字：图片、语音、文件会回一句「暂时只能处理文字消息」，不会静默吞掉。详见 [doc/serve.md](./doc/serve.md#微信clawbot)。
 
 ## 约定与规范
 

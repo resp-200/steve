@@ -26,7 +26,8 @@
 		"steve": "dist/entries/cli.js",
 		"steve-acp": "dist/protocols/acp/main.js",
 		"steve-acp-serve": "scripts/steve-acp-serve.mjs",
-		"steve-serve": "dist/entries/serve.js"
+		"steve-serve": "dist/entries/serve.js",
+		"steve-wechat": "dist/entries/wechat-login.js"
 	},
 	"files": [
 		"dist",
@@ -72,6 +73,7 @@
 		"feishu-card:test": "node scripts/feishu-card-test.mjs && node scripts/feishu-card-tool-test.mjs",
 		"feishu-markdown:test": "node scripts/feishu-markdown-test.mjs",
 		"image:test": "node scripts/image-test.mjs",
+		"wechat:test": "node scripts/wechat-test.mjs",
 		"mcp:test": "node scripts/mcp-test.mjs",
 		"arch:test": "node scripts/arch-test.mjs",
 		"verify": "node scripts/verify.mjs",

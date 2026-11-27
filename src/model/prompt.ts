@@ -53,7 +53,7 @@ export const AGENT_WORKING_RULES = [
 export const DEFAULT_IDENTITY = `${AGENT_IDENTITY}\n\n${AGENT_WORKING_RULES}`;
 
 /** Which entry point is assembling the prompt. */
-export type PromptScene = "cli" | "acp" | "worker" | "feishu";
+export type PromptScene = "cli" | "acp" | "worker" | "feishu" | "wechat";
 
 /**
  * What this entry point can do. No rendering advice here: how Markdown looks is a
@@ -84,6 +84,13 @@ const SCENE_PROMPTS: Record<PromptScene, string> = {
 		"你能做的操作与在终端里一样，同样受审批约束。",
 		"回答需要结构（表格、多段、成功或失败的彩色标题）时，用 send_feishu_card 发飞书卡片；",
 		"普通短回答直接说就行。发了卡片就不要再把同样的内容用文本重复一遍。",
+	].join("\n"),
+	wechat: [
+		"# 当前场景",
+		"你在通过微信给用户回消息。消息会出现在手机聊天窗口里，能用的只有纯文字，没有卡片。",
+		"手机屏幕窄：能用一句话说清就别用三段，非必要不用表格与标题；代码贴最短的那几行。",
+		"你能做的操作与在终端里一样，同样受审批约束。",
+		"需要用户确认或补充信息时，直接把问题问出来，用户会在下一条消息里回答。",
 	].join("\n"),
 };
 

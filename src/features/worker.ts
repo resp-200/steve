@@ -40,7 +40,7 @@ export interface RunInput {
 	 */
 	append?: boolean;
 	/** Channel the run answers on, when it answers a person rather than a timer. */
-	scene?: "feishu";
+	scene?: "feishu" | "wechat";
 	/**
 	 * Tools only this run may use. A Feishu run gets `send_feishu_card` here
 	 * because a card can only answer the message that started the run.
@@ -85,7 +85,7 @@ export interface RunAgentContext {
 	tools: AgentTool<any>[];
 	config: AppConfig;
 	/** Set by the host when the run answers a message on that channel; picks the scene prompt. */
-	scene?: "feishu";
+	scene?: "feishu" | "wechat";
 	/** Ends the run as cancelled (used when a parked approval times out). */
 	cancel?: (reason?: string) => void;
 }
@@ -304,7 +304,7 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 	 * anything else runs unattended.
 	 */
 	const systemPromptFor = (
-		context: { scene?: "feishu"; config: AppConfig },
+		context: { scene?: "feishu" | "wechat"; config: AppConfig },
 		editable: { persona?: string; identity?: string } = {},
 	): string => {
 		if (options.systemPrompt !== undefined) return options.systemPrompt;
@@ -314,7 +314,9 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 			...(identity !== undefined ? { identity } : {}),
 			...(persona !== undefined ? { persona } : {}),
 		};
-		return context.scene === "feishu" ? composeSystemPrompt({ scene: "feishu", ...shared }) : composeSystemPrompt({ scene: "worker", ...shared });
+		if (context.scene === "feishu") return composeSystemPrompt({ scene: "feishu", ...shared });
+		if (context.scene === "wechat") return composeSystemPrompt({ scene: "wechat", ...shared });
+		return composeSystemPrompt({ scene: "worker", ...shared });
 	};
 
 	const defaultAgent = async (context: RunAgentContext): Promise<WorkerAgent> => {

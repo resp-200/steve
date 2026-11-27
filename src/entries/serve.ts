@@ -45,6 +45,13 @@ import {
 } from "../protocols/feishu/bot.js";
 import { checkImages, explainVisionFailure, modelSupportsImages, type ImageInput } from "../model/image.js";
 import { createFeishuLongConnection } from "../protocols/feishu/long-connection.js";
+import {
+	createWechatClient,
+	pollWechat,
+	readWechatSession,
+	WechatSessionExpired,
+} from "../features/wechat.js";
+import { parseAllowList, wechatAllowed, wechatStreamId, type WechatEvent } from "../model/wechat.js";
 import type { WorkspaceAccess } from "../types.js";
 
 const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch + HTTP/SSE
@@ -59,6 +66,8 @@ const HELP = `steve-serve ${VERSION} — 长驻进程：流 + 执行器 + Watch 
   --access <none|read|write|exec>  工具可用的本地能力（默认 exec）
   --streams-dir <path> 事件日志目录（默认 ~/.steve/streams）
   --no-watch           不启动 ~/.steve/watch.json 触发器
+  --no-wechat          不启用微信 ClawBot 渠道（默认在 ~/.steve/wechat.json 存在时启用；
+                       先在本机跑 steve-wechat 扫码登录）
   --no-feishu          不启用飞书机器人（等价 --feishu-mode off）
   --feishu-mode <ws|http|off>  飞书事件传输方式（默认 ws：长连接，无需公网回调；
                        http 兼容旧的回调地址，需要 FEISHU_VERIFICATION_TOKEN）
@@ -106,6 +115,7 @@ interface ServeOptions {
 	feishu: boolean;
 	feishuMode: "ws" | "http";
 	feishuModeExplicit: boolean;
+	wechat: boolean;
 	admin: boolean;
 	logLevel?: LogLevel;
 	logDir?: string;
@@ -118,7 +128,7 @@ function valueFor(argv: readonly string[], index: number, flag: string): string 
 }
 
 function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
-	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true, feishu: true, feishuMode: "ws", feishuModeExplicit: false, admin: true };
+	const options: ServeOptions = { host: "127.0.0.1", port: 8892, audience: "user", access: "exec", watch: true, feishu: true, feishuMode: "ws", feishuModeExplicit: false, wechat: true, admin: true };
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index] as string;
 		switch (arg) {
@@ -129,6 +139,9 @@ function parseArgv(argv: readonly string[]): ServeOptions | "help" | "version" {
 			case "--no-watch":
 				options.watch = false;
 				break;
+			case "--no-wechat":
+				options.wechat = false;
+				continue;
 			case "--no-feishu":
 				options.feishu = false;
 				break;
@@ -508,6 +521,104 @@ async function main(): Promise<void> {
 		log(`feishu bot: on (${transport}, ${feishuConfig.apiBase ?? FEISHU_API_BASE})`);
 	}
 
+	// ---- WeChat ClawBot -------------------------------------------------------
+	// A separate channel with its own login: `steve-wechat` writes the token,
+	// and serve only picks it up. Login is not done here on purpose — a server that
+	// blocks on someone scanning a QR code is a server that hangs on restart.
+	const wechatSession = parsed.wechat ? readWechatSession() : undefined;
+	if (parsed.wechat && wechatSession === undefined) {
+		log("wechat: off (no ~/.steve/wechat.json; run \"steve-wechat\" to connect an account)");
+	}
+	const wechatClient = wechatSession !== undefined ? createWechatClient(wechatSession, log) : undefined;
+	// ClawBot is at-least-once, exactly like the Feishu callback: without this, a
+	// redelivered message would start a second run and answer the user twice.
+	const seenWechatMessages = new Set<string>();
+	const wechatAllowList = parseAllowList(process.env.STEVE_WECHAT_ALLOW);
+	if (wechatSession !== undefined && wechatSession.ownerId === undefined && wechatAllowList.length === 0) {
+		// Refusing everything is deliberate: without an owner there is no way to tell
+		// the account holder from a stranger, and a silent empty bot looks broken.
+		log("wechat: on but refusing every message — the saved login has no owner; run \"steve-wechat\" again");
+	}
+	let wechatRunning = true;
+
+	const replyToWechat = async (event: WechatEvent): Promise<void> => {
+		if (wechatClient === undefined) return;
+		if (event.kind === "ignored") {
+			log(`wechat: ignored event (${event.reason})`);
+			return;
+		}
+		if (wechatClient !== undefined) void wechatClient.setTyping({ userId: event.userId, contextToken: event.contextToken, on: true });
+		if (event.kind === "unsupported") {
+			// The channel is text-only for now, and saying so beats silence: a user
+			// who sent a photo would otherwise conclude the bot is broken.
+			log(`wechat: unsupported ${event.label} from ${event.userId}`);
+			await wechatClient.sendText({ to: event.userId, contextToken: event.contextToken, text: `暂时只能处理文字消息，这条${event.label}没有处理。` });
+			return;
+		}
+		const streamId = wechatStreamId(event.userId);
+		const existing = await log2.read(streamId);
+		if (existing.length === 0) {
+			await log2.append(streamId, [{ type: "stream.created", streamId, cwd, title: "WeChat" }]);
+		}
+		const from = (await log2.read(streamId)).at(-1)?.seq ?? 0;
+		const submitted = await worker.submit(streamId, { text: event.text, scene: "wechat" }, "foreground");
+		if (!submitted.accepted) {
+			await wechatClient.sendText({ to: event.userId, contextToken: event.contextToken, text: `现在不能开始执行：${submitted.reason ?? "busy"}` });
+			return;
+		}
+		const terminal = await worker.wait(submitted.runId);
+		const events = await log2.read(streamId, from + 1);
+		await wechatClient.sendText({ to: event.userId, contextToken: event.contextToken, text: composeFeishuReply(events, terminal) });
+	};
+
+	const handleWechatEvent = (event: WechatEvent): void => {
+		if (event.kind === "message") {
+			if (wechatSession !== undefined && !wechatAllowed(event.userId, wechatSession, wechatAllowList)) {
+				// The bot is reachable by anyone who can message the account; the account
+				// owner is the only one who scanned it in, so only they drive the agent.
+				log(`wechat: ignored message from ${event.userId} (not the account owner)`);
+				void wechatClient?.sendText({ to: event.userId, contextToken: event.contextToken, text: "这个机器人只服务它的主人。" });
+				return;
+			}
+			if (seenWechatMessages.has(event.messageId)) {
+				log(`wechat: duplicate message ${event.messageId} ignored`);
+				return;
+			}
+			seenWechatMessages.add(event.messageId);
+			if (seenWechatMessages.size > 1_000) {
+				const oldest = seenWechatMessages.values().next().value;
+				if (oldest !== undefined) seenWechatMessages.delete(oldest);
+			}
+		}
+		void replyToWechat(event)
+			.catch((error: unknown) => {
+				log(`wechat: could not answer ${event.kind === "ignored" ? "event" : event.messageId}: ${error instanceof Error ? error.message : String(error)}`);
+			})
+			.finally(() => {
+				if (event.kind !== "ignored" && wechatClient !== undefined) void wechatClient.setTyping({ userId: event.userId, contextToken: event.contextToken, on: false });
+			});
+	};
+
+	const wechatLoop =
+		wechatSession === undefined
+			? undefined
+			: pollWechat({
+					session: wechatSession,
+					logger: log,
+					shouldContinue: () => wechatRunning,
+					onEvent: handleWechatEvent,
+				}).catch((error: unknown) => {
+					if (error instanceof WechatSessionExpired) {
+						log(`wechat: ${error.message}`);
+						return;
+					}
+					log(`wechat: stopped polling: ${error instanceof Error ? error.message : String(error)}`);
+				});
+	if (wechatSession !== undefined) log(`wechat bot: on (${wechatSession.baseUrl ?? "default"})`);
+
+	// Holds the listener; without it a failed poll would be an unhandled rejection.
+	void wechatLoop;
+
 	// Watch triggers fire `user.message` events; the worker is pulled in by them.
 	const claims = new Set<number>();
 	const triggerUnsubscribes: (() => void)[] = [];
@@ -771,6 +882,9 @@ async function main(): Promise<void> {
 		closing = true;
 		log(`shutting down (${reason})`);
 		longConnection?.stop();
+		// The poll only checks this between requests, so it can lag by one long poll
+		// (up to 40s). It is not awaited: a shutdown must not wait on ClawBot.
+		wechatRunning = false;
 		await engine?.stop();
 		for (const unsubscribe of triggerUnsubscribes.splice(0)) unsubscribe();
 		await worker.drain();
