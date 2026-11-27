@@ -21,7 +21,7 @@ import { buildFeishuCard, CARD_THEMES, type CardInput } from "../model/feishu-ca
 const CardParams = Type.Object({
 	body: Type.String({
 		description:
-			"Card body in Markdown (lists, bold, code blocks all render). This is the reply the user reads, so write the answer here.",
+			"Card body in Markdown. Lists, bold, links and tables render as written; fenced code blocks become Feishu code elements, so always fence code. This is the reply the user reads, so write the answer here.",
 	}),
 	title: Type.Optional(Type.String({ description: "Header title, one short line. Omit for a card with no header." })),
 	theme: Type.Optional(

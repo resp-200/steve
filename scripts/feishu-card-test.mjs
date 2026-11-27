@@ -33,6 +33,38 @@ const check = (name, passed, detail = "") => {
 	check("the card is JSON-serialisable", typeof JSON.stringify(buildFeishuCard({ body: "x" })) === "string");
 }
 
+/* ---------- A2. fenced code ---------- */
+
+{
+	// A fence inside a card's `markdown` element arrives as literal backticks, so
+	// each fenced run has to become a code_block element of its own.
+	const card = buildFeishuCard({ body: "先说明。\n\n\`\`\`ts\nconst a = 1;\n\`\`\`\n\n**复杂度**：O(n²)" });
+	check("围栏代码块被拆成独立元素", card.elements.length === 3, JSON.stringify(card.elements).slice(0, 200));
+	check("代码块元素是 code_block", card.elements[1]?.tag === "code_block", String(card.elements[1]?.tag));
+	check("代码块的语言被保留", card.elements[1]?.language === "typescript", String(card.elements[1]?.language));
+	check("代码块正文不含围栏", card.elements[1]?.text === "const a = 1;", String(card.elements[1]?.text));
+	check("代码块前后的说明仍是 markdown", card.elements[0]?.content === "先说明。" && card.elements[2]?.content.includes("复杂度"));
+
+	const alias = buildFeishuCard({ body: "\`\`\`js\nx()\n\`\`\`" });
+	check("语言别名归一化", alias.elements[0]?.language === "javascript", String(alias.elements[0]?.language));
+
+	const unknown = buildFeishuCard({ body: "\`\`\`nonsense\nx\n\`\`\`" });
+	check("未知语言回落 plaintext", unknown.elements[0]?.language === "plaintext", String(unknown.elements[0]?.language));
+
+	const noLanguage = buildFeishuCard({ body: "\`\`\`\nx\n\`\`\`" });
+	check("无语言标记也能识别", noLanguage.elements[0]?.tag === "code_block" && noLanguage.elements[0]?.language === "plaintext", String(noLanguage.elements[0]?.tag));
+
+	const twoBlocks = buildFeishuCard({ body: "\`\`\`go\na\n\`\`\`\n\n中间\n\n\`\`\`sql\nb\n\`\`\`" });
+	check("多个代码块各自成元素", twoBlocks.elements.filter((element) => element.tag === "code_block").length === 2, JSON.stringify(twoBlocks.elements.map((element) => element.tag)));
+	check("代码块之间的散文保留", twoBlocks.elements.some((element) => element.tag === "markdown" && element.content === "中间"), JSON.stringify(twoBlocks.elements.map((element) => element.tag)));
+
+	const unclosed = buildFeishuCard({ body: "前言\n\`\`\`ts\nconst a = 1;" });
+	check("没闭合的围栏不会吞掉整篇", unclosed.elements.length === 1 && unclosed.elements[0]?.tag === "markdown", JSON.stringify(unclosed.elements.map((element) => element.tag)));
+
+	const noFence = buildFeishuCard({ body: "- 列表\n- **粗体**" });
+	check("没有围栏时仍是一个 markdown 元素", noFence.elements.length === 1 && noFence.elements[0]?.tag === "markdown");
+}
+
 /* ---------- B. header ---------- */
 
 {
