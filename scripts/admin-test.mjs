@@ -385,6 +385,95 @@ try {
 	check("恢复网关配置成功", gatewayRestored.status === 200 && gatewayRestored.body.restartRequired === true);
 
 	/* ---------------------------------------------------------------- */
+	/* C2. 联网搜索                                                      */
+	/* ---------------------------------------------------------------- */
+	const searchInitial = await request("GET", "/admin/api/search");
+	check("搜索列出全部 provider", searchInitial.status === 200 && searchInitial.body.providers.length === 5, JSON.stringify(searchInitial.body.providers?.map((item) => item.id)));
+	check("无 key 时默认走无 key 源", searchInitial.body.active === "duckduckgo", String(searchInitial.body.active));
+	check("无 key 时未点名", searchInitial.body.pinned === false && searchInitial.body.requested === null);
+	check("无 key 源标注为无需 key", searchInitial.body.providers.filter((item) => item.keyless).map((item) => item.id).join(",") === "duckduckgo,wikipedia");
+	check("响应不回传 key 本身", !JSON.stringify(searchInitial.body).includes("tvly-"));
+
+	const searchSaved = await request("POST", "/admin/api/search/save", {
+		body: { tavily: "tvly-test-1234" },
+	});
+	check("保存搜索 key 成功", searchSaved.status === 200 && searchSaved.body.ok === true);
+	check("保存搜索 key 不需要重启", searchSaved.body.restartRequired === false);
+	const envSearch = readFileSync(envFile, "utf8");
+	check("~/.steve/.env 写入 TAVILY_API_KEY", /TAVILY_API_KEY=tvly-test-1234/.test(envSearch), envSearch.split("\n").filter((line) => line.includes("TAVILY")).join("|"));
+	const searchAfterKey = await request("GET", "/admin/api/search");
+	check("配了 key 后自动切到 Tavily", searchAfterKey.body.active === "tavily", String(searchAfterKey.body.active));
+	check("配了 key 后 provider 标记为已配置", searchAfterKey.body.providers.find((item) => item.id === "tavily")?.hasKey === true);
+
+	const pinned = await request("POST", "/admin/api/search/save", { body: { provider: "brave" } });
+	check("点名 provider 保存成功", pinned.status === 200);
+	const pinnedState = await request("GET", "/admin/api/search");
+	check("点名但缺 key 时搜索关闭而不是降级", pinnedState.body.active === null && pinnedState.body.pinned === true, JSON.stringify(pinnedState.body.active));
+	const unpinned = await request("POST", "/admin/api/search/save", { body: { provider: "" } });
+	check("清空点名恢复自动", unpinned.status === 200);
+	const autoAgain = await request("GET", "/admin/api/search");
+	check("清空点名后回到有 key 的源", autoAgain.body.active === "tavily" && autoAgain.body.pinned === false);
+
+	const clearedKey = await request("POST", "/admin/api/search/save", { body: { clear: "tavily" } });
+	check("清除单个 provider 的 key 成功", clearedKey.status === 200);
+	const afterClearKey = await request("GET", "/admin/api/search");
+	check("清除 key 后回落到无 key 源", afterClearKey.body.active === "duckduckgo", String(afterClearKey.body.active));
+	check("清除 key 后 .env 不再有该行", !readFileSync(envFile, "utf8").includes("TAVILY_API_KEY"));
+
+	const unknownProvider = await request("POST", "/admin/api/search/save", { body: { provider: "nope" } });
+	check("未知 provider 被拒绝", unknownProvider.status === 400);
+	const clearMissing = await request("POST", "/admin/api/search/save", { body: { clear: "exa" } });
+	check("清除不存在的 key 返回 400", clearMissing.status === 400);
+	const emptySave = await request("POST", "/admin/api/search/save", { body: {} });
+	check("空提交被拒绝", emptySave.status === 400);
+	const badTest = await request("POST", "/admin/api/search/test", { body: { provider: "exa" } });
+	check("测试未配 key 的 provider 时提示先填 key", badTest.status === 400, JSON.stringify(badTest.body));
+	const unknownTest = await request("POST", "/admin/api/search/test", { body: { provider: "nope" } });
+	check("测试未知 provider 返回 400", unknownTest.status === 400);
+
+	// The console renders the payload above; check the states it has to survive, using the
+	// page's own renderSearch lifted out of the inline script.
+	const pageScript = inlineScripts.join("\n");
+	const renderSource = (() => {
+		const start = pageScript.indexOf("function renderSearch(");
+		if (start < 0) return "";
+		let depth = 0;
+		const open = pageScript.indexOf("{", start);
+		for (let index = open; index < pageScript.length; index += 1) {
+			if (pageScript[index] === "{") depth += 1;
+			else if (pageScript[index] === "}" && --depth === 0) return pageScript.slice(start, index + 1);
+		}
+		return "";
+	})();
+	const renderWith = (search) => {
+		const nodes = new Map();
+		const byId = (id) => {
+			if (!nodes.has(id)) nodes.set(id, { id, innerHTML: "", textContent: "", value: "" });
+			return nodes.get(id);
+		};
+		const scope = {
+			byId,
+			state: { search },
+			escapeHtml: (value) => String(value).replace(/[&<>"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]),
+			badge: (text, tone) => `<span class="badge ${tone}">${text}</span>`,
+			kvRow: (label, value) => `<div class="kv"><span class="kv-key">${label}</span><span class="kv-val">${value}</span></div>`,
+		};
+		new Function(...Object.keys(scope), `${renderSource}\nrenderSearch();`)(...Object.values(scope));
+		return byId;
+	};
+	check("控制台渲染函数可从页面里提取", renderSource !== "");
+	const autoView = await request("GET", "/admin/api/search");
+	const rendered = renderWith(autoView.body);
+	check("控制台渲染出每个 provider 一行", rendered("searchProviders").innerHTML.split('class="kv"').length - 1 === 5);
+	check("控制台渲染出活跃源徽标", rendered("searchActive").innerHTML.includes("DuckDuckGo"), rendered("searchActive").innerHTML);
+	check("控制台为无 key 源标注不稳定", rendered("searchActive").innerHTML.includes("无 key"));
+	const pinnedView = renderWith({ ...autoView.body, active: null, requested: "brave", pinned: true });
+	check("点名缺 key 时控制台说清搜索不会注册", pinnedView("searchActiveNote").innerHTML.includes("不会注册"));
+	check("点名缺 key 时徽标显示已关闭", pinnedView("searchActive").innerHTML.includes("已关闭"));
+	const offView = renderWith({ ...autoView.body, active: null, requested: "none", pinned: false });
+	check("关闭搜索时提示只留 web_fetch", offView("searchActiveNote").textContent.includes("web_fetch"));
+
+	/* ---------------------------------------------------------------- */
 	/* D. 定时任务                                                       */
 	/* ---------------------------------------------------------------- */
 	const emptySchedules = await request("GET", "/admin/api/schedules");

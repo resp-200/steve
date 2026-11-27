@@ -572,6 +572,74 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 		},
 		{
 			method: "GET",
+			path: `${ADMIN_API}/search`,
+			handle: (exchange) => {
+				exchange.json(200, deps.search.view());
+			},
+		},
+		{
+			method: "POST",
+			path: `${ADMIN_API}/search/save`,
+			handle: async (exchange) => {
+				let body: Record<string, unknown>;
+				try {
+					body = parseBody(exchange);
+				} catch (error) {
+					fail(exchange, 400, describe(error));
+					return;
+				}
+				try {
+					if (typeof body.clear === "string") {
+						const envKey = await deps.search.clear(body.clear);
+						logger.info(`[admin] cleared ${envKey} from ~/.steve/.env`);
+					} else {
+						const keys: Record<string, string> = {};
+						for (const id of Object.keys(deps.search.keyEnv)) {
+							if (body[id] !== undefined) keys[id] = asString(body[id]);
+						}
+						const changed = await deps.search.save({
+							keys,
+							...(body.provider !== undefined ? { provider: asString(body.provider) } : {}),
+						});
+						logger.info(`[admin] saved web search settings (${changed.join(", ")})`);
+					}
+				} catch (error) {
+					// A bad value is the caller's fault; a write failure is ours.
+					const message = describe(error);
+					fail(exchange, /unknown search provider|no stored key|must not contain|nothing to update|enter a/.test(message) ? 400 : 500, message);
+					return;
+				}
+				// No restart: the plugin resolves its provider when a session starts, so the next
+				// conversation picks the new key up while this one keeps the old one.
+				exchange.json(200, { ok: true, restartRequired: false });
+			},
+		},
+		{
+			method: "POST",
+			path: `${ADMIN_API}/search/test`,
+			handle: async (exchange) => {
+				let body: Record<string, unknown>;
+				try {
+					body = parseBody(exchange);
+				} catch (error) {
+					fail(exchange, 400, describe(error));
+					return;
+				}
+				try {
+					exchange.json(
+						200,
+						await deps.search.probe(asString(body.provider), {
+							...(body.query !== undefined ? { query: asString(body.query) } : {}),
+							...(body.key !== undefined ? { key: asString(body.key) } : {}),
+						}),
+					);
+				} catch (error) {
+					fail(exchange, 400, describe(error));
+				}
+			},
+		},
+		{
+			method: "GET",
 			path: `${ADMIN_API}/gateways`,
 			handle: (exchange) => {
 				const feishu = feishuState();

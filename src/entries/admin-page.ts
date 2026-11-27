@@ -566,6 +566,7 @@ pre.code {
         <a class="nav-item" href="#overview" data-view="overview"><span class="nav-icon" aria-hidden="true">📊</span><span>概览</span></a>
         <a class="nav-item" href="#providers" data-view="providers"><span class="nav-icon" aria-hidden="true">🧠</span><span>模型供应商</span></a>
         <a class="nav-item" href="#gateways" data-view="gateways"><span class="nav-icon" aria-hidden="true">🌉</span><span>网关</span></a>
+        <a class="nav-item" href="#search" data-view="search"><span class="nav-icon" aria-hidden="true">🔍</span><span>联网搜索</span></a>
         <a class="nav-item" href="#schedules" data-view="schedules"><span class="nav-icon" aria-hidden="true">⏰</span><span>定时任务</span></a>
         <a class="nav-item" href="#system" data-view="system"><span class="nav-icon" aria-hidden="true">⚙️</span><span>系统</span></a>
       </nav>
@@ -763,6 +764,67 @@ pre.code {
             <h3>🐧 QQ</h3>
             <p>规划中：QQ 机器人接入。</p>
           </div>
+        </div>
+      </section>
+
+      <!-- 联网搜索 -->
+      <section class="view" id="view-search" hidden>
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">联网搜索</h1>
+            <p class="page-desc">决定 <span class="mono">web_search</span> 用谁的数据。不配任何 key 也能搜（走 DuckDuckGo），配了 key 的会自动优先；保存后<b>下一个会话</b>即生效，无需重启。</p>
+          </div>
+        </div>
+        <div class="card card-pad">
+          <div class="card-head">
+            <div>
+              <div class="card-title">当前搜索源 <span id="searchActive"></span></div>
+              <div class="card-sub" id="searchActiveNote"></div>
+            </div>
+          </div>
+          <div class="kv-list" id="searchProviders">
+            <div class="loading">加载中…</div>
+          </div>
+        </div>
+        <div class="card card-pad mt">
+          <div class="card-head">
+            <div>
+              <div class="card-title">API Key</div>
+              <div class="card-sub">写入 <span class="mono">~/.steve/.env</span>；key 保存后不回显，留空表示保持不变。</div>
+            </div>
+          </div>
+          <form id="searchForm" novalidate>
+            <div class="form-grid">
+              <div class="field">
+                <label for="search-tavily">Tavily API Key（<a href="https://app.tavily.com" target="_blank" rel="noopener">获取</a>，每月 1000 次免费）</label>
+                <input id="search-tavily" type="password" placeholder="留空保持不变" autocomplete="new-password">
+              </div>
+              <div class="field">
+                <label for="search-exa">Exa API Key（<a href="https://dashboard.exa.ai" target="_blank" rel="noopener">获取</a>）</label>
+                <input id="search-exa" type="password" placeholder="留空保持不变" autocomplete="new-password">
+              </div>
+              <div class="field">
+                <label for="search-brave">Brave API Key（<a href="https://brave.com/search/api" target="_blank" rel="noopener">获取</a>，有免费额度）</label>
+                <input id="search-brave" type="password" placeholder="留空保持不变" autocomplete="new-password">
+              </div>
+              <div class="field">
+                <label for="search-provider">优先使用</label>
+                <select id="search-provider">
+                  <option value="">自动（有 key 用有 key 的）</option>
+                  <option value="tavily">Tavily</option>
+                  <option value="exa">Exa</option>
+                  <option value="brave">Brave</option>
+                  <option value="duckduckgo">DuckDuckGo（无 key）</option>
+                  <option value="wikipedia">Wikipedia（无 key）</option>
+                  <option value="none">关闭搜索</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn primary" id="searchSaveBtn">保存</button>
+              <span class="muted small">点名但不填 key 会关掉搜索，不会偷偷换成别家。</span>
+            </div>
+          </form>
         </div>
       </section>
 
@@ -1002,7 +1064,7 @@ pre.code {
 (function () {
   "use strict";
 
-  var VIEWS = ["overview", "providers", "gateways", "schedules", "system"];
+  var VIEWS = ["overview", "providers", "gateways", "search", "schedules", "system"];
   var TOKEN_KEY = "steve-admin-token";
   var THEME_KEY = "steve-admin-theme";
   var NEWLINE = String.fromCharCode(10);
@@ -1021,6 +1083,7 @@ pre.code {
     catalogUrl: "",
     pickerSelected: {},
     gateways: null,
+    search: null,
     schedules: [],
     watchFile: "",
     editingScheduleName: "",
@@ -1366,6 +1429,7 @@ pre.code {
     }
     if (state.current === "providers") loadProviders();
     else if (state.current === "gateways") loadGateways();
+    else if (state.current === "search") loadSearch();
     else if (state.current === "schedules") loadSchedules();
     else if (state.current === "system") loadSystem();
     else loadOverview();
@@ -1980,6 +2044,119 @@ pre.code {
     });
   }
 
+  /* ---------- 联网搜索 ---------- */
+
+  function loadSearch() {
+    return api("/admin/api/search").then(function (data) {
+      state.search = data || {};
+      renderSearch();
+    }).catch(fail);
+  }
+
+  function renderSearch() {
+    var data = state.search || {};
+    var providers = Array.isArray(data.providers) ? data.providers : [];
+    var active = data.active;
+    var badgeElement = byId("searchActive");
+    if (badgeElement) {
+      if (!active) badgeElement.innerHTML = badge("已关闭", "warn");
+      else {
+        var current = providers.filter(function (item) { return item.id === active; })[0];
+        badgeElement.innerHTML = badge((current ? current.label : active), current && !current.keyless ? "ok" : "muted") +
+          (current && !current.keyless ? "" : ' <span class="muted small">无 key，可能不稳定</span>');
+      }
+    }
+    var note = byId("searchActiveNote");
+    if (note) {
+      var pinnedWithoutKey = data.pinned && !active;
+      if (pinnedWithoutKey) {
+        note.innerHTML = '已指定 <span class="mono">WEB_SEARCH_PROVIDER=' + escapeHtml(String(data.requested)) + '</span>，但它需要的 key 没有配置，所以 <span class="mono">web_search</span> 不会注册。填上 key 或把「优先使用」改回自动。';
+      } else if (!active) {
+        note.textContent = "web_search 已关闭，只保留 web_fetch。";
+      } else {
+        note.textContent = data.pinned ? "已显式指定，不会自动换源。" : "自动选择：有 key 的优先于无 key 的。";
+      }
+    }
+
+    var list = byId("searchProviders");
+    if (list) {
+      var rows = "";
+      providers.forEach(function (provider) {
+        var status = provider.hasKey ? badge("已配置", "ok") : provider.keyless ? badge("无需 key", "muted") : badge("未配置", "muted");
+        rows += kvRow(
+          escapeHtml(provider.label),
+          status + (provider.hasKey && provider.envKey
+            ? ' <button type="button" class="btn small secondary" data-clear-search="' + escapeHtml(provider.id) + '">清除</button>'
+            : "") + ' <button type="button" class="btn small secondary" data-test-search="' + escapeHtml(provider.id) + '">测试</button>' +
+            '<div class="muted small">' + escapeHtml(provider.blurb) + (provider.envKey ? ' · <span class="mono">' + escapeHtml(provider.envKey) + "</span>" : "") + "</div>"
+        );
+      });
+      rows += '<div class="muted small" id="searchTestResult"></div>';
+      list.innerHTML = rows;
+    }
+
+    var select = byId("search-provider");
+    if (select) select.value = data.requested ? String(data.requested) : "";
+  }
+
+  function saveSearch() {
+    var body = {};
+    ["tavily", "exa", "brave"].forEach(function (id) {
+      var value = valueOf("search-" + id).trim();
+      if (value) body[id] = value;
+    });
+    var select = byId("search-provider");
+    var provider = select ? select.value : "";
+    var current = state.search || {};
+    var currentRequested = current.requested ? String(current.requested) : "";
+    if (provider !== currentRequested) body.provider = provider;
+    if (Object.keys(body).length === 0) {
+      toast("没有需要保存的改动", "error");
+      return;
+    }
+    var button = byId("searchSaveBtn");
+    setBusy(button, true, "保存中…");
+    api("/admin/api/search/save", { method: "POST", body: body }).then(function () {
+      setBusy(button, false);
+      ["tavily", "exa", "brave"].forEach(function (id) {
+        var input = byId("search-" + id);
+        if (input) input.value = "";
+      });
+      toast("已保存，下一个会话生效", "success");
+      return loadSearch();
+    }).catch(function (error) {
+      setBusy(button, false);
+      fail(error);
+    });
+  }
+
+  function clearSearchKey(id) {
+    if (!window.confirm("确定清除 " + id + " 的 API Key 吗？")) return;
+    api("/admin/api/search/save", { method: "POST", body: { clear: id } }).then(function () {
+      toast("已清除 " + id + " 的 key", "success");
+      return loadSearch();
+    }).catch(fail);
+  }
+
+  function testSearch(id) {
+    var target = byId("searchTestResult");
+    if (target) target.textContent = "正在用 " + id + " 发一次真实查询…";
+    var draftInput = byId("search-" + id);
+    var body = { provider: id, query: "web search connectivity check" };
+    if (draftInput && draftInput.value.trim()) body.key = draftInput.value.trim();
+    api("/admin/api/search/test", { method: "POST", body: body }).then(function (data) {
+      if (!target) return;
+      if (data && data.ok) {
+        var titles = (data.sample || []).map(function (item) { return item.title; }).join(" / ");
+        target.innerHTML = '<span style="color:var(--success)">✓ ' + escapeHtml(id) + " 可用，" + data.count + " 条结果，" + data.elapsedMs + 'ms</span> <span class="muted small">' + escapeHtml(titles) + "</span>";
+      } else {
+        target.innerHTML = '<span style="color:var(--danger)">✗ ' + escapeHtml(id) + " 不可用：" + escapeHtml(String((data && data.error) || "unknown error")) + "</span>";
+      }
+    }).catch(function (error) {
+      if (target) target.innerHTML = '<span style="color:var(--danger)">✗ ' + escapeHtml(String(error && error.message ? error.message : error)) + "</span>";
+    });
+  }
+
   /* ---------- 定时任务 ---------- */
 
   function loadSchedules() {
@@ -2493,6 +2670,21 @@ pre.code {
     });
     var gatewayClearBtn = byId("gatewayClearBtn");
     if (gatewayClearBtn) gatewayClearBtn.addEventListener("click", clearGateway);
+
+    var searchForm = byId("searchForm");
+    if (searchForm) searchForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      saveSearch();
+    });
+    var searchProviders = byId("searchProviders");
+    if (searchProviders) searchProviders.addEventListener("click", function (event) {
+      var target = event.target;
+      if (!target || !target.getAttribute) return;
+      var clearId = target.getAttribute("data-clear-search");
+      var testId = target.getAttribute("data-test-search");
+      if (clearId) clearSearchKey(clearId);
+      else if (testId) testSearch(testId);
+    });
 
     var scheduleNewBtn = byId("scheduleNewBtn");
     if (scheduleNewBtn) scheduleNewBtn.addEventListener("click", function () {
