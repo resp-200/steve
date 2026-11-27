@@ -118,6 +118,9 @@ function startFakeFeishu() {
 	const images = new Map();
 	const imageRequests = [];
 	const imageQueries = [];
+	// When on, a card 2.0 request is answered the way an old platform would.
+	let rejectCardV2 = false;
+	const rejectedCards = [];
 	const server = createServer((request, response) => {
 		const chunks = [];
 		request.on("data", (chunk) => chunks.push(chunk));
@@ -151,6 +154,14 @@ function startFakeFeishu() {
 			}
 			if (request.url !== undefined && /^\/open-apis\/im\/v1\/messages\/[^/]+\/reply$/.test(request.url)) {
 				replies.push({ path: request.url, body: parsed, authorization: request.headers.authorization, at: Date.now() });
+				// Tenants on an older platform reject card JSON 2.0 with 200621. The
+				// switch lets a test pretend to be one, so the 1.0 retry is exercised.
+				const isCardV2Request = parsed.msg_type === "interactive" && String(parsed.content ?? "").includes('"schema":"2.0"');
+				if (rejectCardV2 && isCardV2Request) {
+					rejectedCards.push(parsed);
+					reply(200, { code: 200621, msg: "parse card json err" });
+					return;
+				}
 				reply(200, { code: 0, msg: "success", data: { message_id: "om_reply" } });
 				return;
 			}
@@ -196,7 +207,21 @@ function startFakeFeishu() {
 		});
 	});
 	return new Promise((resolve) => {
-		server.listen(FEISHU_PORT, "127.0.0.1", () => resolve({ server, replies, tokenCalls, endpointCalls, images, imageRequests, imageQueries }));
+		server.listen(FEISHU_PORT, "127.0.0.1", () =>
+			resolve({
+				server,
+				replies,
+				tokenCalls,
+				endpointCalls,
+				images,
+				imageRequests,
+				imageQueries,
+				rejectedCards,
+				rejectCardV2: (on) => {
+					rejectCardV2 = on;
+				},
+			}),
+		);
 	});
 }
 
@@ -397,17 +422,10 @@ try {
 	await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_long", text: "回显长文" }));
 	const longStreamId = streamIdForChat(CHAT_ID);
 	const settledBeforeLong = readStreamEvents(streamsDir, longStreamId).filter((event) => event.type === "run.settled").length;
-	try {
-		await waitFor(
-			() => readStreamEvents(streamsDir, longStreamId).filter((event) => event.type === "run.settled").length > settledBeforeLong,
-			{ label: "long run settled", timeout: 30_000 },
-		);
-	} catch (error) {
-		const all = readStreamEvents(streamsDir, longStreamId);
-		process.stderr.write(`[dbg] settledBefore=${settledBeforeLong} total=${all.length} types=${[...new Set(all.map((e) => e.type))].join(",")}\n`);
-		process.stderr.write(`[dbg] replies=${fakeFeishu.replies.length} beforeLong=${repliesBeforeLong}\n`);
-		throw error;
-	}
+	await waitFor(
+		() => readStreamEvents(streamsDir, longStreamId).filter((event) => event.type === "run.settled").length > settledBeforeLong,
+		{ label: "long run settled", timeout: 30_000 },
+	);
 	// Several replies share one chat stream; wait until the split half is over.
 	await sleepAsync(600);
 
@@ -445,6 +463,73 @@ try {
 	const cardMarkdown = (cardBody.elements ?? []).find((element) => element.tag === "markdown")?.content ?? "";
 	check("卡片正文 Markdown 原样下发", cardMarkdown.includes("**第一行**") && cardMarkdown.includes("- 一条列表"), cardMarkdown);
 	check("发了卡片就不再补纯文本", fakeFeishu.replies.filter((reply) => reply.body.msg_type === "text" && reply.at >= (cardReply?.at ?? 0)).length === 0);
+
+	// B3. Card 2.0 and the 1.0 retry. A card whose body has a code block must be
+	// sent as 2.0 (1.0's markdown element shows the fence as literal backticks),
+	// and when a tenant rejects 2.0 the retry must still arrive as a card.
+	//
+	// Let the previous card run settle first: a chat's runs are serial, and a new
+	// message that lands mid-run cancels the old one — which then leaves the
+	// transcript ending on an assistant turn and the next `continue` fails.
+	await waitFor(
+		() => {
+			const settled = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID)).filter(
+				(event) => event.type === "run.settled" || event.type === "run.failed" || event.type === "run.cancelled",
+			);
+			return settled.length;
+		},
+		{ label: "card run settled" },
+	).catch(() => 0);
+	await sleepAsync(800);
+	const settledBeforeCodeCard = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID)).filter(
+		(event) => event.type === "run.settled" || event.type === "run.failed" || event.type === "run.cancelled",
+	).length;
+	const repliesBeforeCodeCard = fakeFeishu.replies.length;
+	// The mock matches on the newest user message, which the running chat stream
+	// keeps appending to — so the trigger text must be whole and unambiguous.
+	const codeCardRequest = "请发一张带代码的卡片";
+	await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_card_code", text: codeCardRequest }));
+	await waitFor(() => (fakeFeishu.replies.length > repliesBeforeCodeCard ? fakeFeishu.replies : false), { label: "code card reply" });
+	const codeCardReply = fakeFeishu.replies.slice(repliesBeforeCodeCard).find((reply) => reply.body.msg_type === "interactive");
+	let codeCard = {};
+	try {
+		codeCard = JSON.parse(codeCardReply?.body.content ?? "{}");
+	} catch {
+		// reported below
+	}
+	check("含代码的卡片按 2.0 结构发送", codeCard.schema === "2.0", JSON.stringify(Object.keys(codeCard)));
+	check("2.0 卡片把元素放在 body 里", Array.isArray(codeCard.body?.elements), JSON.stringify(Object.keys(codeCard)));
+	const codeElement = (codeCard.body?.elements ?? []).find((element) => element.tag === "code_block");
+	check("代码块是 code_block 元素", codeElement !== undefined, JSON.stringify(codeCard.body?.elements));
+	check("code_block 带语言和正文", codeElement?.language === "typescript" && codeElement?.text === "const a = 1;", JSON.stringify(codeElement));
+
+	// Now pretend to be an old tenant: 2.0 is refused, the retry must be 1.0.
+	// Same reason as above — the card run has to finish before the chat takes the
+	// next message, or the new one cancels it and never gets answered.
+	await waitFor(
+		() =>
+			readStreamEvents(streamsDir, streamIdForChat(CHAT_ID)).filter(
+				(event) => event.type === "run.settled" || event.type === "run.failed" || event.type === "run.cancelled",
+			).length > settledBeforeCodeCard,
+		{ label: "code card run settled" },
+	).catch(() => false);
+	await sleepAsync(800);
+	fakeFeishu.rejectCardV2(true);
+	const repliesBeforeFallback = fakeFeishu.replies.length;
+	await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_card_code_fallback", text: codeCardRequest }));
+	await waitFor(() => (fakeFeishu.replies.length > repliesBeforeFallback ? fakeFeishu.replies : false), { label: "card fallback reply" });
+	fakeFeishu.rejectCardV2(false);
+	const rejected = fakeFeishu.rejectedCards.at(-1);
+	check("老租户拒绝 2.0 卡片（200621）", rejected !== undefined, `${fakeFeishu.rejectedCards.length} rejected`);
+	const fallbackReply = fakeFeishu.replies.slice(repliesBeforeFallback).filter((reply) => reply.body.msg_type === "interactive").at(-1);
+	let fallbackCard = {};
+	try {
+		fallbackCard = JSON.parse(fallbackReply?.body.content ?? "{}");
+	} catch {
+		// reported below
+	}
+	check("2.0 被拒后重试 1.0 卡片", fallbackCard.schema === undefined && Array.isArray(fallbackCard.elements), JSON.stringify(Object.keys(fallbackCard)));
+	check("降级后代码以围栏 markdown 保留", (fallbackCard.elements ?? []).some((element) => String(element.content ?? "").includes("```typescript")), JSON.stringify(fallbackCard.elements));
 
 	// C. Dedupe: Feishu retries the same event id
 	// The card run writes into the same chat stream, so let it settle first:

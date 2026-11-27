@@ -161,6 +161,18 @@ function planToolCall(text) {
 	// Error path: an out-of-workspace path, so the tool result comes back isError.
 	if (text.includes("boom")) return { name: "read_file", input: { path: "/nonexistent/boom.txt" } };
 	if (/\btime\b|几点|时间/i.test(text)) return { name: "get_current_time", input: {} };
+	// Card replies that carry code: card JSON 2.0 is what renders a code block, and
+	// an old tenant rejects it — this is the shape the 1.0 fallback has to survive.
+	if (/\u5e26\u4ee3\u7801\u7684\u5361\u7247|card-with-code/i.test(text)) {
+		return {
+			name: "send_feishu_card",
+			input: {
+				title: "代码卡片",
+				theme: "blue",
+				body: "下面是一段代码：\n\n```ts\nconst a = 1;\n```\n\n以上。",
+			},
+		};
+	}
 	// Feishu card replies: the tool is only offered to runs started by a Feishu
 	// message, so this also proves the per-run tool reached the model.
 	if (/\bcard\b|卡片|feishu_card/i.test(text)) {

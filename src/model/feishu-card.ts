@@ -2,20 +2,23 @@
  * Feishu interactive card builder (model layer, zero upward dependencies).
  *
  * The model never hands us raw card JSON: a wrong nesting there is a reply that
- * Feishu refuses, and the user just sees silence. It fills a handful of fields
- * (title, body, colour) and this module produces the card, so anything it
- * returns is a card Feishu will accept.
+ * Feishu refuses — and a refused card is silence, not an error the user can act
+ * on. It fills a handful of fields (title, body, colour) and this module produces
+ * the card, so anything it returns is a card Feishu accepts.
  *
- * Shape (Feishu "card 2.0"-safe subset): a header with a plain-text title and an
- * optional colour, then either one markdown element or — when the body has fenced
- * code — a run of alternating markdown and code-block elements.
+ * Two card shapes exist and only one of them renders code:
  *
- * Code blocks are split out on purpose. A fenced block inside a card's `markdown`
- * element arrives as literal backticks: the card renderer treats the element as
- * inline markdown, so lists and bold work and fences do not. Feishu's dedicated
- * `code_block` element is the one that renders as code, so a body with fences
- * becomes [markdown, code_block, markdown, …] and the prose around the code keeps
- * rendering as prose.
+ * - Card JSON 1.0: `{ config, elements, header }`. Its `markdown` element is
+ *   inline markdown only — lists, bold, links, tables render; a fenced code
+ *   block shows up as literal backticks.
+ * - Card JSON 2.0: `{ schema: "2.0", config, body: { elements }, header }`. Its
+ *   `markdown` element renders GFM including fences, and it has a dedicated
+ *   `code_block` element with syntax highlighting.
+ *
+ * 1.0 was what we sent, so code in cards arrived as ```ts … ``` source. 2.0 fixes
+ * that, at the cost of a shape older clients may reject — so `buildFeishuCard`
+ * returns 1.0 when there is no code (nothing to gain, less to break) and 2.0 when
+ * there is, and `toCardV1` converts a 2.0 card back for the retry path.
  */
 
 /** Feishu's documented header themes; anything else is dropped rather than sent. */
@@ -49,10 +52,25 @@ export type CardElement =
 	| { tag: "markdown"; content: string }
 	| { tag: "code_block"; language: string; text: string };
 
+interface CardHeader {
+	title: { tag: "plain_text"; content: string };
+	template: string;
+}
+
+/** Feishu's `interactive` message content. Which fields exist depends on the version. */
 export interface FeishuCard {
-	config: { wide_screen_mode: boolean };
-	elements: CardElement[];
-	header?: { title: { tag: "plain_text"; content: string }; template: string };
+	/** Present only on 2.0 cards; a 1.0 card is recognised by its absence. */
+	schema?: "2.0";
+	config: { wide_screen_mode: boolean; update_multi?: boolean };
+	/** 1.0 puts elements here. */
+	elements?: CardElement[];
+	/** 2.0 nests them one level down. */
+	body?: { elements: CardElement[] };
+	header?: CardHeader;
+}
+
+export function isCardV2(card: FeishuCard): boolean {
+	return card.schema === "2.0";
 }
 
 function normalizeLanguage(raw: string): string {
@@ -119,9 +137,22 @@ function isTheme(value: string): value is CardTheme {
 	return (CARD_THEMES as readonly string[]).includes(value);
 }
 
+function cardHeader(input: CardInput): CardHeader | undefined {
+	const title = input.title?.trim() ?? "";
+	if (title === "") return undefined;
+	const theme = input.theme?.trim() ?? "";
+	return {
+		title: { tag: "plain_text", content: title.slice(0, MAX_CARD_TITLE_CHARS) },
+		template: isTheme(theme) ? theme : "blue",
+	};
+}
+
 /**
- * Builds a card from model-supplied fields. Returns the card body Feishu's
+ * Builds a card from model-supplied fields. Returns the card JSON Feishu's
  * `interactive` message type expects, ready to be JSON-stringified.
+ *
+ * Card 2.0 only when the body has code — that is the only thing 2.0 buys us here.
+ * Everything else stays 1.0, which every client renders.
  *
  * Throws on an empty body: a card with nothing in it is never what was meant,
  * and the model can retry with content instead of the user receiving a blank box.
@@ -133,19 +164,41 @@ export function buildFeishuCard(input: CardInput): FeishuCard {
 		throw new Error(`card body is too long (${body.length} chars, max ${MAX_CARD_BODY_CHARS})`);
 	}
 
-	const card: FeishuCard = {
-		config: { wide_screen_mode: true },
-		elements: segmentCardBody(body),
-	};
+	const elements = segmentCardBody(body);
+	const header = cardHeader(input);
 
-	const title = input.title?.trim() ?? "";
-	if (title !== "") {
-		const theme = input.theme?.trim() ?? "";
-		card.header = {
-			title: { tag: "plain_text", content: title.slice(0, MAX_CARD_TITLE_CHARS) },
-			template: isTheme(theme) ? theme : "blue",
-		};
+	if (!elements.some((element) => element.tag === "code_block")) {
+		const card: FeishuCard = { config: { wide_screen_mode: true }, elements };
+		if (header !== undefined) card.header = header;
+		return card;
 	}
 
+	const card: FeishuCard = {
+		// update_multi lets a card be updated in place; cards we send today are not,
+		// but declaring it costs nothing and saves a breaking change later.
+		schema: "2.0",
+		config: { wide_screen_mode: true, update_multi: true },
+		body: { elements },
+	};
+	if (header !== undefined) card.header = header;
 	return card;
+}
+
+/**
+ * Converts any card to card JSON 1.0, for the retry path when Feishu rejects 2.0.
+ *
+ * `code_block` has no 1.0 equivalent, so it becomes a fenced markdown element:
+ * the reader sees the code, unhighlighted — which is what they would have got
+ * before 2.0 existed, and better than no reply at all.
+ */
+export function toCardV1(card: FeishuCard): FeishuCard {
+	if (!isCardV2(card)) return card;
+	const elements: CardElement[] = (card.body?.elements ?? []).map((element) =>
+		element.tag === "code_block"
+			? { tag: "markdown", content: `\`\`\`${element.language}\n${element.text}\n\`\`\`` }
+			: element,
+	);
+	const fallback: FeishuCard = { config: { wide_screen_mode: true }, elements };
+	if (card.header !== undefined) fallback.header = card.header;
+	return fallback;
 }

@@ -11,6 +11,7 @@
  * a local fake.
  */
 import { createDecipheriv, createHash, timingSafeEqual } from "node:crypto";
+import { toCardV1, type FeishuCard } from "../../model/feishu-card.js";
 import { buildPostContent, looksLikeMarkdown, MAX_MESSAGE_CHARS, splitMessage, stripMarkdown } from "../../model/feishu-markdown.js";
 import type { Logger } from "../../types.js";
 
@@ -613,10 +614,18 @@ export function createFeishuClient(config: FeishuConfig): FeishuClient {
 		async replyCard(messageId, card) {
 			// Cards are not clamped: the builder caps the body, and truncating JSON
 			// would produce a card Feishu cannot parse.
-			await send(`/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`, {
-				msg_type: "interactive",
-				content: JSON.stringify(card),
-			});
+			const path = `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`;
+			try {
+				await send(path, { msg_type: "interactive", content: JSON.stringify(card) });
+			} catch (error) {
+				// Card JSON 2.0 is only accepted by tenants on a recent platform. A
+				// rejected card used to mean silence, so fall back to the 1.0 shape:
+				// the code block loses its highlight, the reply still arrives.
+				const v1 = toCardV1(card as FeishuCard);
+				if (JSON.stringify(v1) === JSON.stringify(card)) throw error;
+				log(`feishu: card 2.0 rejected (${error instanceof Error ? error.message : String(error)}); retrying as card 1.0`);
+				await send(path, { msg_type: "interactive", content: JSON.stringify(v1) });
+			}
 			log(`feishu: replied with a card to message ${messageId}`);
 		},
 	};

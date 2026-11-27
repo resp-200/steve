@@ -47,6 +47,15 @@ const textOf = (result) => (result?.content ?? []).map((part) => part.text ?? ""
 	check("the card is the built card, not raw JSON", sent[0]?.elements?.[0]?.tag === "markdown", JSON.stringify(sent[0]));
 	check("the title came through", sent[0]?.header?.title?.content === "结果");
 	check("onSent fired once", notified === 1, String(notified));
+
+	// Code is the reason card 2.0 exists here: a fenced block in 1.0's markdown
+	// element shows as literal backticks, so the tool must send 2.0 for code.
+	const codeResult = await tool.execute("call-code", { body: "\`\`\`ts\nconst a = 1;\n\`\`\`", title: "代码" }, undefined, undefined);
+	const codeCard = sent[1];
+	check("含代码的卡片是 2.0", codeCard?.schema === "2.0", JSON.stringify(Object.keys(codeCard ?? {})));
+	check("代码块是 code_block 元素", codeCard?.body?.elements?.some((element) => element.tag === "code_block"), JSON.stringify(codeCard?.body?.elements));
+	check("含代码的卡片也被报告为已发送", textOf(codeResult).startsWith("Card sent"), textOf(codeResult));
+
 	check("the model is told it was sent", textOf(result).startsWith("Card sent"), textOf(result));
 	check("the model is told not to repeat it", textOf(result).includes("do not repeat"), textOf(result));
 	check("the result is not an error", result.details?.ok === true);
