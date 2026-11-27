@@ -10,6 +10,11 @@
  */
 import type { ExtensionAPI } from "../api.js";
 
+/** `128000` → `128k`, `980` → `980`: counters are read at a glance, not parsed. */
+function formatTokens(tokens: number): string {
+	return tokens >= 1_000 ? `${Math.round(tokens / 1_000)}k` : String(tokens);
+}
+
 export function sessionCommands(pi: ExtensionAPI): void {
 	pi.registerCommand({
 		name: "tools",
@@ -26,9 +31,13 @@ export function sessionCommands(pi: ExtensionAPI): void {
 		description: "Show turn and token counters.",
 		run: () => {
 			const stats = pi.ctx.session.stats();
+			const window = pi.ctx.session.contextWindow;
+			// Context fill is the number that explains an unexplained slowdown (and,
+			// once compaction kicks in, a sudden drop): show it beside the counters.
+			const context = stats.contextTokens === undefined || window <= 0 ? "" : ` · context ~${formatTokens(stats.contextTokens)}/${formatTokens(window)}`;
 			return (
 				`turns ${stats.turns} · user messages ${stats.userMessages} · tool calls ${stats.toolCalls}` +
-				` · tokens in/out ${stats.inputTokens}/${stats.outputTokens}`
+				` · tokens in/out ${stats.inputTokens}/${stats.outputTokens}${context}`
 			);
 		},
 	});

@@ -12,6 +12,7 @@
  * a newer log still opens in an older process.
  */
 import type { AgentMessage } from "./contract.js";
+import { COMPACTION_PREFIX } from "./compaction.js";
 import type { PromptImage, RunMode, StreamEvent, TurnUsage } from "./events.js";
 
 /** A read-only projection of a stream, for status endpoints and UIs. */
@@ -135,6 +136,29 @@ export function foldTranscript(events: readonly StreamEvent[], read?: BlobReader
 			}
 			case "run.turn.settled": {
 				if (isAgentMessage(event.message)) messages.push(event.message);
+				break;
+			}
+			case "compaction": {
+				// The log replays what the model saw: the summary replaced everything
+				// before it, so folding the untouched history would undo the compaction
+				// and walk straight back into the overflow it was there to prevent.
+				// The event names how many trailing messages the model kept, so the
+				// ones before them are exactly what the summary speaks for. Anything
+				// older that somehow survived goes too: the summary already covers it,
+				// and keeping both would undo the compaction on the next restore.
+				const kept = typeof event.keptMessages === "number" && event.keptMessages >= 0 ? event.keptMessages : 0;
+				// A claimed tail longer than the messages folded so far means the log lost
+				// messages; keeping the ones it does hold would resurrect history that the
+				// summary already replaced, so keep nothing in that case.
+				const from = kept === 0 || kept > messages.length ? messages.length : messages.length - kept;
+				const retained = messages.slice(from);
+				messages.length = 0;
+				const summaryMessage: AgentMessage = {
+					role: "user",
+					content: `${COMPACTION_PREFIX}\n\n${event.summary ?? ""}`,
+					timestamp: event.ts,
+				} as AgentMessage;
+				messages.push(summaryMessage, ...retained);
 				break;
 			}
 			case "tool_end": {

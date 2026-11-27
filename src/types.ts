@@ -62,4 +62,19 @@ export interface ModelInfo {
 	api: string;
 	baseUrl: string;
 	supportsImages: boolean;
+	/** The model's context window in tokens, when the caller knows it. */
+	contextWindow?: number;
+}
+
+/** Session counters, shared by `/stats`, the runtime and the plugin accessors. */
+export interface AgentStats {
+	turns: number;
+	userMessages: number;
+	toolCalls: number;
+	inputTokens: number;
+	outputTokens: number;
+	/** Tokens the transcript is estimated to occupy right now. */
+	contextTokens?: number;
+	/** How many times the transcript was compacted in this process. */
+	compactions?: number;
 }

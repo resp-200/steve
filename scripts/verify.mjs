@@ -73,6 +73,7 @@ run("插件", "node", ["scripts/plugin-test.mjs"]);
 run("会话持久化", "node", ["scripts/session-test.mjs"]);
 run("事件日志（stream-log + 兼容层）", "node", ["scripts/stream-log-test.mjs"]);
 run("状态折叠（state-fold）", "node", ["scripts/state-fold-test.mjs"]);
+run("上下文压缩（compaction）", "node", ["scripts/compaction-test.mjs"]);
 run("触发器（trigger）", "node", ["scripts/trigger-test.mjs"]);
 run("常驻服务（serve）", "node", ["scripts/serve-test.mjs"]);
 run("飞书机器人（feishu）", "node", ["scripts/feishu-test.mjs"]);

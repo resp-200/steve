@@ -15,10 +15,10 @@ import { Type } from "../features/contract.js";
 import type { AgentMessage, AgentTool } from "../features/contract.js";
 import type { AgentRuntimeEvent } from "../features/events.js";
 import type { TriggerRegistration } from "../features/trigger.js";
-import type { McpServerStatus, ModelInfo, WorkspacePolicy } from "../types.js";
+import type { AgentStats, McpServerStatus, ModelInfo, WorkspacePolicy } from "../types.js";
 
 // Plugin-facing re-exports: authors import everything from this module.
-export type { ModelInfo, WorkspaceAccess, WorkspacePolicy } from "../types.js";
+export type { AgentStats, ModelInfo, WorkspaceAccess, WorkspacePolicy } from "../types.js";
 import type { ToolAnnotations } from "../features/tool-annotations.js";
 
 const run = promisify(execFile);
@@ -53,9 +53,14 @@ export interface SessionAccessors {
 	readonly commands: { name: string; description: string }[];
 	/** Which model and endpoint this session talks to. */
 	readonly model: ModelInfo;
+	/**
+	 * The model's context window in tokens: the budget a plugin's own context
+	 * policy (`on("context")`) has to stay under.
+	 */
+	readonly contextWindow: number;
 	/** MCP servers configured for this session, with their connection status. */
 	readonly mcp: McpServerStatus[];
-	stats(): { turns: number; userMessages: number; toolCalls: number; inputTokens: number; outputTokens: number };
+	stats(): AgentStats;
 	/** Forgets the transcript (used by a `/new`-style command). */
 	reset(): void;
 }
@@ -272,6 +277,7 @@ export function createExtensionContext(options: {
 			tools: [],
 			commands: [],
 			model: options.model,
+			contextWindow: options.model.contextWindow ?? 0,
 			mcp: [],
 			stats: () => ({ turns: 0, userMessages: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0 }),
 			reset: () => {},

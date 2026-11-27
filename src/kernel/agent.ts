@@ -16,6 +16,7 @@ import {
 	type AfterToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { AppConfig } from "../model/config.js";
 import { composeSystemPrompt } from "../model/prompt.js";
 import { createStreamFn } from "../model/stream.js";
@@ -30,6 +31,11 @@ export interface KernelHooks {
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]> | AgentMessage[];
 	/** Mutates provider request headers in place (synchronous, see `createStreamFn`). */
 	beforeProviderHeaders?: (headers: Record<string, string>, model: Model<Api>) => void;
+	/**
+	 * Called once before the agent's first request of every prompt, so a policy
+	 * that is only due once per user message (context compaction) can reset.
+	 */
+	beforePrompt?: () => void;
 }
 
 export interface KernelAgentOptions {
@@ -56,13 +62,16 @@ function withoutFailedTurns(messages: AgentMessage[]): AgentMessage[] {
 }
 
 export function createKernelAgent(options: KernelAgentOptions): Agent {
-	return new Agent({
-		streamFn: createStreamFn(
-			() => options.config.apiKey,
-			options.config.authStyle,
-			options.hooks?.beforeProviderHeaders,
-			() => options.config.requestHeaders,
-		),
+	// The stream function is what both the agent loop and the compaction
+	// summarizer talk through, so it is built once here and shared.
+	const streamFn: StreamFn = createStreamFn(
+		() => options.config.apiKey,
+		options.config.authStyle,
+		options.hooks?.beforeProviderHeaders,
+		() => options.config.requestHeaders,
+	);
+	const agent = new Agent({
+		streamFn,
 		getApiKey: () => options.config.apiKey,
 		// The failed-turn filter always runs first; extensions may refine it further.
 		transformContext: async (messages, signal) => {
@@ -83,4 +92,15 @@ export function createKernelAgent(options: KernelAgentOptions): Agent {
 			messages: [],
 		},
 	});
+	const beforePrompt = options.hooks?.beforePrompt;
+	if (beforePrompt !== undefined) {
+		// pi has no "a prompt is starting" hook; `prompt()` is the one call that
+		// begins a user turn, and a prompt is the unit compaction budgets per.
+		const prompt = agent.prompt.bind(agent) as (message: AgentMessage | AgentMessage[] | string, images?: unknown) => Promise<void>;
+		agent.prompt = ((message: AgentMessage | AgentMessage[] | string, images?: unknown) => {
+			beforePrompt();
+			return prompt(message, images);
+		}) as typeof agent.prompt;
+	}
+	return agent;
 }

@@ -60,6 +60,7 @@
 		"sessions:test": "node scripts/session-test.mjs",
 		"streams:test": "node scripts/stream-log-test.mjs",
 		"folds:test": "node scripts/state-fold-test.mjs",
+		"compaction:test": "node scripts/compaction-test.mjs",
 		"triggers:test": "node scripts/trigger-test.mjs",
 		"serve:test": "node scripts/serve-test.mjs",
 		"feishu:test": "node scripts/feishu-test.mjs",

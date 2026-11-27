@@ -48,6 +48,8 @@ export type AgentRuntimeEvent =
 			errorMessage?: string;
 			/** Retries that were needed before the turn settled. */
 			retries: number;
+			/** Set when this turn's request carried a compacted transcript. */
+			compacted?: { droppedMessages: number; keptMessages: number; before: number; after: number };
 	  };
 
 /* ------------------------------------------------------------------------- */
@@ -172,6 +174,25 @@ export interface RunCancelledEvent {
 }
 
 /**
+ * 上下文压缩：一次摘要替换掉了前段历史。落盘是为了让「日志的真相」包含它——
+ * `foldTranscript` 据此重建压缩后的上下文，否则恢复会话会把摘要丢掉、再次爆窗。
+ *
+ * 决策见 `features/compaction.ts`；`message` 是替换前段的那条摘要消息。
+ */
+export interface CompactionEvent {
+	type: "compaction";
+	/** 被摘要覆盖的消息条数。 */
+	droppedMessages: number;
+	/** 原样保留在摘要之后的消息条数。 */
+	keptMessages: number;
+	/** 压缩前后估算的上下文 token（仅供参考，不参与重放）。 */
+	beforeTokens: number;
+	afterTokens: number;
+	/** 摘要文本，供排查「它到底记住了什么」。 */
+	summary: string;
+}
+
+/**
  * 内部事件：一个 turn 的最终 assistant 消息，专供 `foldTranscript` 重建上下文。
  * 不投影给 `user` 受众（避免把工具参数原文再泄一遍）。
  */
@@ -222,6 +243,7 @@ export type StreamEventBody =
 	| RunFailedEvent
 	| RunCancelledEvent
 	| RunTurnSettledEvent
+	| CompactionEvent
 	| StreamCreatedEvent
 	| ConfigChangedEvent
 	| WatchArmedEvent

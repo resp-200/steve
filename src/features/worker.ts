@@ -27,6 +27,10 @@ import type { EnvironmentSnapshot } from "./environment.js";
 import { normalizeKernelEvent } from "./normalize.js";
 import { foldTranscript } from "./state-fold.js";
 import { runTurn, type PromptOptions, type TurnDriver } from "./retry.js";
+import { createContextCompactor } from "./compaction-hook.js";
+import { resolveCompactionPolicy } from "./compaction.js";
+import { createSummaryStreamer } from "./compaction-summary.js";
+import { createStreamFn } from "../model/stream.js";
 import { isStreamId, type StreamEventInput, type StreamLog } from "./stream-log.js";
 import type { Logger } from "../types.js";
 
@@ -86,6 +90,11 @@ export interface RunAgentContext {
 	config: AppConfig;
 	/** Set by the host when the run answers a message on that channel; picks the scene prompt. */
 	scene?: "feishu" | "wechat";
+	/**
+	 * The transcript at the moment a compaction happened, read back by the
+	 * worker so `onCompaction` can log the summary the model actually saw.
+	 */
+	transcript?: AgentMessage[];
 	/** Ends the run as cancelled (used when a parked approval times out). */
 	cancel?: (reason?: string) => void;
 }
@@ -138,6 +147,13 @@ export interface RunWorkerOptions {
 	 * (HTTP endpoint, CLI prompt, ACP client) through an approval gate.
 	 */
 	approvals?: (context: RunAgentContext, request: { toolName: string; args: unknown }) => Promise<WorkerApproval>;
+	/**
+	 * Called once per compaction in a run. A background run's transcript comes
+	 * from the stream, so a compaction that the log never hears about is undone
+	 * by the next run's fold — this is where a host appends the `compaction`
+	 * event.
+	 */
+	onCompaction?: (context: RunAgentContext, result: { droppedMessages: number; keptMessages: number; before: number; after: number }) => void | Promise<void>;
 	/** Test seam; the default builds a one-shot kernel agent. */
 	createAgent?: (context: RunAgentContext) => WorkerAgent | Promise<WorkerAgent>;
 }
@@ -320,7 +336,54 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 	};
 
 	const defaultAgent = async (context: RunAgentContext): Promise<WorkerAgent> => {
-		const hooks = hooksFor(context);
+		const base = hooksFor(context);
+		// A compaction replaces the history this run started from, so the log has to
+		// learn about it: the next run folds the stream, and an uncompacted stream
+		// would hand it the same overflowing transcript again.
+		const headerHook =
+			base?.beforeProviderHeaders === undefined
+				? undefined
+				: (headers: Record<string, string>, model: { id: string; api: string }): void =>
+						base.beforeProviderHeaders!(headers, model as never);
+		const compactor =
+			options.onCompaction === undefined
+				? undefined
+				: createContextCompactor({
+						policy: resolveCompactionPolicy({
+							contextWindow: context.config.model.contextWindow ?? 128_000,
+							maxTokens: context.config.model.maxTokens ?? 8_192,
+						}),
+						summarize: createSummaryStreamer(
+							createStreamFn(
+								() => context.config.apiKey,
+								context.config.authStyle,
+								headerHook,
+								() => context.config.requestHeaders,
+							),
+							context.config.model,
+							headerHook,
+						),
+						log: logger,
+						onCompact: (result) => options.onCompaction!(context, result),
+					});
+		const hooks: KernelHooks | undefined =
+			compactor === undefined
+				? base
+				: {
+						...base,
+						transformContext: async (messages) => (base?.transformContext ? await base.transformContext(messages) : messages),
+						beforePrompt: () => {
+							compactor.beginRun();
+							base?.beforePrompt?.();
+						},
+					};
+		if (compactor !== undefined) {
+			const inner = hooks!.transformContext;
+			hooks!.transformContext = async (messages, signal) => {
+				const refined = inner !== undefined ? await inner(messages, signal) : messages;
+				return compactor.apply(refined, signal);
+			};
+		}
 		const editable = options.refreshPrompt !== undefined ? (await options.refreshPrompt()) ?? {} : {};
 		const agent = createKernelAgent({
 			// Provider request headers follow the background run, not the session:
@@ -334,6 +397,9 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 			...(hooks !== undefined ? { hooks } : {}),
 		});
 		agent.state.messages = [...context.messages];
+		// Hand the hook a live view: by the time it runs, the model's transcript is
+		// the agent's, and that is what the event has to quote.
+		context.transcript = agent.state.messages;
 		return {
 			messages: () => agent.state.messages,
 			setMessages: (messages) => {
@@ -391,7 +457,11 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 
 			const driver: TurnDriver = {
 				messages: () => agent.messages(),
-				setMessages: (next) => agent.setMessages(next),
+				setMessages: (next) => {
+				agent.setMessages(next);
+				// The wrapper owns the array it was handed; keep the hook's view current.
+				context.transcript = agent.messages();
+			},
 				prompt: () => agent.proceed(),
 				abort: () => agent.abort(),
 			};

@@ -15,7 +15,7 @@ import type {
 	BeforeToolCallResult,
 } from "./contract.js";
 import type { PluginCommand, SessionAccessors } from "../extensions/api.js";
-import { assembleAgent, type AgentAssembly } from "./agent-assembly.js";
+import { assembleAgent, type AgentAssembly, type AgentAssemblyOptions } from "./agent-assembly.js";
 import { composeSystemPrompt } from "../model/prompt.js";
 import { modelInfo } from "./session-policy.js";
 import type { ExtensionHost } from "../extensions/host.js";
@@ -24,18 +24,25 @@ import { createKernelAgent } from "../kernel/agent.js";
 import type { PermissionDecision, PermissionRequest, ToolChangePreview } from "./permissions.js";
 import type { AgentRuntimeEvent, TranscriptEntry } from "./events.js";
 import type { ToolRegistry } from "./tool-annotations.js";
-import type { Logger, McpServerStatus } from "../types.js";
+import type { AgentStats, Logger, McpServerStatus } from "../types.js";
 import { normalizeKernelEvent, toTranscript } from "./normalize.js";
 import { runTurn, type PromptOptions, type TurnDriver, type TurnResult } from "./retry.js";
+import { estimateContextTokens, resolveCompactionPolicy } from "./compaction.js";
+import type { CompactionResult } from "./compaction-hook.js";
 
 export type { PromptOptions, TurnResult } from "./retry.js";
 
-export interface AgentStats {
-	turns: number;
-	userMessages: number;
-	toolCalls: number;
-	inputTokens: number;
-	outputTokens: number;
+export type { AgentStats } from "../types.js";
+
+export interface CompactionView {
+	/** Estimated tokens the next request would carry. */
+	contextTokens: number;
+	/** The budget compaction keeps the transcript under. */
+	triggerTokens: number;
+	/** The model's context window. */
+	contextWindow: number;
+	/** The last compaction this runtime performed, if any. */
+	last?: CompactionResult;
 }
 
 export interface AgentRuntimeOptions {
@@ -66,6 +73,11 @@ export interface AgentRuntimeOptions {
 	 * Permission policy: the runtime asks before any tool that declared
 	 * `permission: "ask"` (core tools and plugins alike).
 	 */
+	/**
+	 * Context compaction settings, passed through to the assembly (on unless
+	 * `false`). Front ends that own an event log supply `onCompact` to record it.
+	 */
+	compaction?: AgentAssemblyOptions["compaction"];
 	permissions?: {
 		mode: "ask" | "allow";
 		ask: (request: PermissionRequest) => Promise<PermissionDecision>;
@@ -113,6 +125,8 @@ export interface AgentRuntime {
 	stats(): AgentStats;
 	/** The system prompt the next turn will use (it can change between turns). */
 	systemPrompt(): string;
+	/** How much context the transcript is carrying, and the budget it is held to. */
+	compaction(): CompactionView;
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
@@ -124,6 +138,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 			? options.config
 			: { ...options.config, requestHeaders: { ...options.config.requestHeaders, sessionId: options.requestSessionId } };
 	const extensions = options.extensions;
+	/** Set by the compaction hook, so `/stats` and the event log can report it. */
+	let lastCompaction: CompactionResult | undefined;
+	const compactionSetting: AgentAssemblyOptions["compaction"] =
+		options.compaction === false
+			? false
+			: { ...(typeof options.compaction === "object" ? options.compaction : {}), onCompact: (result) => { lastCompaction = result; } };
 	const assembly =
 		options.assembly ??
 		assembleAgent({
@@ -133,6 +153,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 			logger: options.logger,
 			beforeToolCall: options.beforeToolCall,
 			permissions: options.permissions,
+			compaction: compactionSetting,
 		});
 	const agentTools = assembly.tools;
 	const registry = assembly.registry;
@@ -227,6 +248,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 			tools: agentTools.map((tool) => ({ name: tool.name, description: tool.description })),
 			commands: (extensions?.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
 			model: modelInfo(config),
+			contextWindow: config.model.contextWindow ?? 0,
 			mcp: mcpServers,
 			stats: () => runtime.stats(),
 			reset: () => runtime.reset(),
@@ -263,6 +285,19 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
 		systemPrompt: () => systemPrompt,
 
+		compaction: () => {
+			const policy = resolveCompactionPolicy({
+				contextWindow: config.model.contextWindow ?? 128_000,
+				maxTokens: config.model.maxTokens ?? 8_192,
+			});
+			return {
+				contextTokens: estimateContextTokens(agent.state.messages),
+				triggerTokens: policy.triggerTokens,
+				contextWindow: config.model.contextWindow,
+				...(lastCompaction !== undefined ? { last: lastCompaction } : {}),
+			};
+		},
+
 		stats: () => {
 			let turns = 0;
 			let userMessages = 0;
@@ -280,7 +315,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 				}
 			}
 
-			return { turns, userMessages, toolCalls, inputTokens, outputTokens };
+			return {
+				turns,
+				userMessages,
+				toolCalls,
+				inputTokens,
+				outputTokens,
+				// What the next request would carry: the number compaction acts on.
+				contextTokens: estimateContextTokens(agent.state.messages),
+			};
 		},
 	};
 

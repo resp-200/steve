@@ -8,6 +8,7 @@
  * same event vocabulary the CLI and ACP speak, so the views stay consistent.
  */
 import { randomUUID } from "node:crypto";
+import { compactionEventFor } from "../features/compaction.js";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -361,6 +362,11 @@ async function main(): Promise<void> {
 			return admin.persona === undefined ? undefined : { persona: admin.persona };
 		},
 		hooks: assembly.hooks,
+		// A background run's compaction has to reach the same log as its turns, or
+		// the next run rebuilds the pre-compaction history and overflows again.
+		onCompaction: async (context, result) => {
+			await log2.append(context.streamId, [compactionEventFor(context.transcript ?? [], result)]);
+		},
 		logger: log,
 		concurrency: "serial",
 		approvals: async (context, request) => {
@@ -846,6 +852,9 @@ async function main(): Promise<void> {
 				worker,
 				logger,
 				restart,
+				// Injected here, where the capability is assembled, so the admin entry stays
+				// a pure renderer over the contract.
+				search: (await import("../features/web-tools.js")).searchSettings,
 				feishuStatus: () => ({
 					mode: feishuMode,
 					configured: feishuConfig !== undefined,

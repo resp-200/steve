@@ -286,6 +286,12 @@ function projectUser(event: StreamEventBody, policy: ProjectionPolicy, hooks: Pr
 			// Internal bookkeeping for rebuilding the transcript; nobody should render it.
 			return [];
 
+		case "compaction": {
+			// A person sees that history was compacted, not what it said.
+			const counts = `${event.droppedMessages} 条消息折叠为摘要（保留 ${event.keptMessages} 条）`;
+			return [{ audience, event: { type: "compaction", droppedMessages: event.droppedMessages, keptMessages: event.keptMessages, beforeTokens: event.beforeTokens, afterTokens: event.afterTokens, summary: counts } }];
+		}
+
 		default:
 			return [{ audience, event: event as WithoutNarrowed<StreamEventBody> }];
 	}

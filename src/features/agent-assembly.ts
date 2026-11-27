@@ -19,6 +19,10 @@ import type { Logger } from "../types.js";
 import { createPermissionGate, type PermissionDecision, type PermissionRequest, type ToolChangePreview } from "./permissions.js";
 import { createToolRegistry, type AnnotatedTool, type ToolRegistry } from "./tool-annotations.js";
 import { firstText } from "./normalize.js";
+import { createContextCompactor, type CompactionResult, type ContextCompactor } from "./compaction-hook.js";
+import { resolveCompactionPolicy } from "./compaction.js";
+import { createSummaryStreamer, type SummaryStreamer } from "./compaction-summary.js";
+import { createStreamFn } from "../model/stream.js";
 
 export interface AgentAssemblyOptions {
 	config: AppConfig;
@@ -40,6 +44,13 @@ export interface AgentAssemblyOptions {
 		/** Fallback preview for tools that do not declare their own `describe`. */
 		describe?: (request: PermissionRequest) => Promise<ToolChangePreview | undefined> | ToolChangePreview | undefined;
 	};
+	/**
+	 * Context compaction. On by default, sized from the model's own limits
+	 * (`LLM_CONTEXT_WINDOW` / `LLM_MAX_TOKENS`); pass `false` to send the
+	 * transcript verbatim, as before it existed. A function replaces the
+	 * summarizer (tests, or a cheaper model).
+	 */
+	compaction?: boolean | { summarize?: SummaryStreamer; log?: (message: string) => void; onCompact?: (result: CompactionResult) => void };
 }
 
 export interface AgentAssembly {
@@ -134,10 +145,54 @@ export function assembleAgent(options: AgentAssemblyOptions): AgentAssembly {
 		};
 	};
 
+	/** Plugin-provided provider headers apply to the summary request too. */
+	const headerHook =
+		extensions?.counts.headers !== undefined
+			? (headers: Record<string, string>, model: { id: string; api: string }): void =>
+					extensions.runHeaders(headers, { model: model.id, api: model.api })
+			: undefined;
+
+	/** Compaction runs after plugin context hooks, so plugins only see trimmed input. */
+	let compactor: ContextCompactor | undefined;
+	if (options.compaction !== false) {
+		const settings = typeof options.compaction === "object" ? options.compaction : {};
+		compactor = createContextCompactor({
+			policy: resolveCompactionPolicy({
+				contextWindow: options.config.model.contextWindow ?? 128_000,
+				maxTokens: options.config.model.maxTokens ?? 8_192,
+			}),
+			...(settings.summarize !== undefined
+				? { summarize: settings.summarize }
+				: {
+						// Same provider, key and headers the session itself uses; the stream
+						// function is built here rather than borrowed so assembly stays the
+						// one place that decides how a request leaves this process.
+						summarize: createSummaryStreamer(
+							createStreamFn(
+								() => options.config.apiKey,
+								options.config.authStyle,
+								headerHook,
+								() => options.config.requestHeaders,
+							),
+							options.config.model,
+							headerHook,
+						),
+					}),
+			log: settings.log ?? options.logger,
+			...(settings.onCompact !== undefined ? { onCompact: settings.onCompact } : {}),
+		});
+	}
+
+	async function transformContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
+		const refined = extensions?.counts.context ? await extensions.runContext(messages) : messages;
+		return compactor === undefined ? refined : compactor.apply(refined, signal);
+	}
+
 	const hooks: KernelHooks = {
 		...(extensions || options.beforeToolCall || permissionGate ? { beforeToolCall } : {}),
 		...(extensions?.counts.toolResult ? { afterToolCall } : {}),
-		...(extensions?.counts.context ? { transformContext: (messages: AgentMessage[]) => extensions.runContext(messages) } : {}),
+		...(compactor !== undefined || extensions?.counts.context ? { transformContext } : {}),
+		...(compactor !== undefined ? { beforePrompt: () => compactor.beginRun() } : {}),
 		...(extensions?.counts.headers
 			? {
 					beforeProviderHeaders: (headers: Record<string, string>, model: { id: string; api: string }) =>

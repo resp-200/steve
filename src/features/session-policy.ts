@@ -19,6 +19,7 @@ export function modelInfo(config: AppConfig): ModelInfo {
 		api: String(config.model.api),
 		baseUrl: config.model.baseUrl,
 		supportsImages: config.model.input.includes("image"),
+		contextWindow: config.model.contextWindow,
 	};
 }
 

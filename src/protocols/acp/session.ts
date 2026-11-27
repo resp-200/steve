@@ -11,7 +11,7 @@ import {
 import type { AppConfig } from "../../model/config.js";
 import type { PromptImage, StreamEvent, TurnStopReason, TurnUsage } from "../../features/events.js";
 import type { ExtensionHost } from "../../extensions/host.js";
-import type { AgentTool } from "../../features/contract.js";
+import type { AgentMessage, AgentTool } from "../../features/contract.js";
 import { readFile } from "node:fs/promises";
 import { encodeTranscript, sessionRecord, type SessionStore, type StoredSession } from "../../features/session-store.js";
 import { isAbsolute, join } from "node:path";
@@ -22,6 +22,8 @@ import { createAgentRuntime, type AgentRuntime, type TurnResult } from "../../fe
 import { assembleAgent, type AgentAssembly } from "../../features/agent-assembly.js";
 import { createRunWorker, type RunTerminal, type RunWorker } from "../../features/worker.js";
 import { foldTranscript } from "../../features/state-fold.js";
+import { compactionEventFor } from "../../features/compaction.js";
+import type { CompactionResult } from "../../features/compaction-hook.js";
 import type { StreamLog } from "../../features/stream-log.js";
 import type { Logger, McpServerStatus } from "../../types.js";
 import { blocksToImages, blocksToText, locationsFromArgs } from "./content.js";
@@ -156,6 +158,14 @@ export class AcpSession {
 				mode: options.permissionMode,
 				ask: (request) => this.askPermission(request),
 			},
+			// The log is the truth for this session: a compaction must be recorded
+			// the moment it happens, or `restore` would fold the uncompacted history
+			// back and the session would overflow again on the next open.
+			compaction: {
+				onCompact: (result) => {
+					void this.recordCompaction(result);
+				},
+			},
 		});
 		this.runtime = createAgentRuntime({
 			config: options.config,
@@ -279,6 +289,23 @@ export class AcpSession {
 			}
 		});
 		this.runtime.restore(foldTranscript(events, (reference) => log.readBlob(reference)));
+	}
+
+	/**
+	 * Appends a compaction to the stream. The runtime keeps the summary itself;
+	 * the log needs it too, because every restart rebuilds the transcript from
+	 * here. Written through the same queue as everything else so history keeps
+	 * the order the model saw.
+	 */
+	private async recordCompaction(result: CompactionResult): Promise<void> {
+		const log = this.log;
+		if (!log) return;
+		const event = compactionEventFor(this.runtime.transcript() as unknown as AgentMessage[], result);
+		try {
+			await log.append(this.streamId, [event]);
+		} catch (error) {
+			this.options.logger(`session ${this.id}: could not record the compaction: ${String(error)}`);
+		}
 	}
 
 	/** Keeps the runtime's transcript (persistence, replay, `/stats`) in sync with the log. */
