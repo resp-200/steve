@@ -54,8 +54,80 @@ export interface AdminConfig {
 	logDir?: string;
 	/** The user's own role instructions, layered on top of the built-in identity. Absent = none. */
 	persona?: string;
+	/**
+	 * The context window the agent plans against, in tokens. Absent = the default;
+	 * `LLM_CONTEXT_WINDOW` still wins when it is set, because that is the escape
+	 * hatch for a single odd machine.
+	 */
+	contextWindow?: number;
+	/**
+	 * How many tokens one reply may spend. Anthropic-shaped endpoints require it,
+	 * and too large a value is as bad as too small: it is a per-request ceiling.
+	 * Absent = the default; `LLM_MAX_TOKENS` still wins when it is set.
+	 */
+	maxTokens?: number;
 }
 
+/**
+ * What a frontier model is assumed to hold, in tokens. Deliberately generous:
+ * planning for a window the model cannot take makes the request fail, but
+ * planning for less than it can take only compacts earlier than necessary —
+ * and every guess about this number has been too small so far.
+ */
+export const DEFAULT_CONTEXT_WINDOW = 350_000;
+/** Below this a window is a typo, not a small model; refuse it rather than compact every turn. */
+export const MIN_CONTEXT_WINDOW = 1_000;
+/** No provider takes a window this large; a value above it is a unit mistake (e.g. characters). */
+export const MAX_CONTEXT_WINDOW = 10_000_000;
+/** How many tokens one reply may spend unless someone says otherwise. */
+export const DEFAULT_MAX_TOKENS = 8_192;
+
+/** A window the agent can plan against: the admin file, else the default. */
+export function configContextWindow(config: AdminConfig): number {
+	const value = config.contextWindow;
+	return typeof value === "number" && Number.isFinite(value) && value >= MIN_CONTEXT_WINDOW ? Math.round(value) : DEFAULT_CONTEXT_WINDOW;
+}
+
+/**
+ * `LLM_CONTEXT_WINDOW`, when the environment sets it. It outranks the admin file
+ * on purpose: someone who exports it is debugging one machine and does not want
+ * a console save to quietly undo it.
+ */
+export function envContextWindow(): number | undefined {
+	return coerceContextWindow(process.env.LLM_CONTEXT_WINDOW);
+}
+
+/** The persisted window, tolerant: a hand-edited typo falls back instead of breaking startup. */
+export function coerceContextWindow(value: unknown, onDrop?: (message: string) => void, field = "contextWindow"): number | undefined {
+	if (value === undefined) return undefined;
+	const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
+	if (!Number.isFinite(parsed)) {
+		onDrop?.(`ignored ${field} ${JSON.stringify(value)}: expected a number of tokens`);
+		return undefined;
+	}
+	if (parsed < MIN_CONTEXT_WINDOW || parsed > MAX_CONTEXT_WINDOW) {
+		onDrop?.(`ignored ${field} ${parsed}: outside ${MIN_CONTEXT_WINDOW}..${MAX_CONTEXT_WINDOW}`);
+		return undefined;
+	}
+	return Math.round(parsed);
+}
+
+/** A reply budget the agent can plan with: the admin file, else the default. */
+export function configMaxTokens(config: AdminConfig): number {
+	const value = config.maxTokens;
+	return typeof value === "number" && Number.isFinite(value) && value >= MIN_CONTEXT_WINDOW ? Math.round(value) : DEFAULT_MAX_TOKENS;
+}
+
+/** `LLM_MAX_TOKENS`, when the environment sets it; outranks the admin file like the window. */
+export function envMaxTokens(): number | undefined {
+	return coerceContextWindow(process.env.LLM_MAX_TOKENS, undefined, "LLM_MAX_TOKENS");
+}
+
+/**
+ * The empty config. `contextWindow` and `maxTokens` are deliberately left absent:
+ * absent means "the user has not chosen", which is what the console reports so it
+ * can show a default while still writing only what was actually set.
+ */
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = { providers: [], logLevel: "info" };
 
 /**
@@ -112,8 +184,14 @@ const THINKING_OFF = { off: null, minimal: null, low: null, medium: null, high: 
 
 /** Merge the active provider over an environment-derived config. */
 export function applyProvider(base: AppConfig, config: AdminConfig): AppConfig {
+	// The window belongs to the agent, not to whichever provider happens to be
+	// active, so it is settled before the early return — otherwise a machine with
+	// no saved provider would keep planning against `LLM_CONTEXT_WINDOW` or the
+	// 128k fallback while the console shows 350k.
+	const window = envContextWindow() ?? configContextWindow(config);
+	const replyTokens = envMaxTokens() ?? configMaxTokens(config);
 	const provider = activeProvider(config);
-	if (provider === undefined) return base;
+	if (provider === undefined) return withContextWindow(base, config);
 	const baseUrl = provider.baseUrl.replace(/\/+$/, "");
 	const model: AppConfig["model"] = {
 		...base.model,
@@ -124,8 +202,8 @@ export function applyProvider(base: AppConfig, config: AdminConfig): AppConfig {
 		reasoning: provider.reasoning,
 		input: provider.images === false ? ["text"] : ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: base.model.contextWindow,
-		maxTokens: base.model.maxTokens,
+		contextWindow: window,
+		maxTokens: replyTokens,
 		...(provider.reasoning ? {} : { thinkingLevelMap: { ...THINKING_OFF } }),
 	};
 	// Provider request headers travel with the config so the stream layer (which
@@ -138,7 +216,7 @@ export function applyProvider(base: AppConfig, config: AdminConfig): AppConfig {
  * The shape mirrors `buildModel()` in `model/config.ts`; keeping it here avoids
  * touching the kernel layer, which is deliberately frozen.
  */
-export function configFromProvider(provider: ProviderEntry): AppConfig {
+export function configFromProvider(provider: ProviderEntry, admin?: AdminConfig): AppConfig {
 	const baseUrl = provider.baseUrl.replace(/\/+$/, "");
 	const model: AppConfig["model"] = {
 		id: provider.defaultModel,
@@ -149,8 +227,8 @@ export function configFromProvider(provider: ProviderEntry): AppConfig {
 		reasoning: provider.reasoning,
 		input: provider.images === false ? ["text"] : ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 128_000,
-		maxTokens: 8_192,
+		contextWindow: envContextWindow() ?? configContextWindow(admin ?? DEFAULT_ADMIN_CONFIG),
+		maxTokens: envMaxTokens() ?? configMaxTokens(admin ?? DEFAULT_ADMIN_CONFIG),
 		...(provider.reasoning ? {} : { thinkingLevelMap: { ...THINKING_OFF } }),
 	};
 	return { apiKey: provider.apiKey, model, authStyle: "auto", requestHeaders: { provider } };
@@ -177,14 +255,29 @@ export function resolveRuntimeConfig(
 	onWarning?: (message: string) => void,
 ): AppConfig {
 	const provider = activeProvider(admin);
-	if (provider === undefined) return withPersona(loadEnvironment(), admin);
+	// Case 1 also settles the window: it is the agent's setting, not the
+	// provider's, so a machine configured only through `.env` still plans against
+	// what the console shows.
+	if (provider === undefined) return withPersona(withContextWindow(loadEnvironment(), admin), admin);
 	let base: AppConfig | undefined;
 	try {
 		base = loadEnvironment();
 	} catch (error) {
 		onWarning?.(`environment config unavailable (${describe(error)}); using provider "${provider.name}"`);
 	}
-	return withPersona(base === undefined ? configFromProvider(provider) : applyProvider(base, admin), admin);
+	return withPersona(base === undefined ? configFromProvider(provider, admin) : applyProvider(base, admin), admin);
+}
+
+/**
+ * Replace the window `loadConfig()` derived from the environment with the one
+ * the console manages. `LLM_CONTEXT_WINDOW` still wins when it is set, so an
+ * exported variable keeps working as a per-machine override.
+ */
+export function withContextWindow(config: AppConfig, admin: AdminConfig): AppConfig {
+	const contextWindow = envContextWindow() ?? configContextWindow(admin);
+	const maxTokens = envMaxTokens() ?? configMaxTokens(admin);
+	if (config.model.contextWindow === contextWindow && config.model.maxTokens === maxTokens) return config;
+	return { ...config, model: { ...config.model, contextWindow, maxTokens } };
 }
 
 /**
@@ -327,12 +420,18 @@ export async function readAdminConfig(logger?: Logger): Promise<AdminConfig> {
 		if (provider !== undefined) providers.push(provider);
 	}
 	const activeId = typeof raw.activeProviderId === "string" && providers.some((provider) => provider.id === raw.activeProviderId) ? raw.activeProviderId : undefined;
+	const contextWindow = coerceContextWindow(raw.contextWindow, logger);
+	const maxTokens = coerceContextWindow(raw.maxTokens, logger, "maxTokens");
 	return {
 		providers,
 		...(activeId !== undefined ? { activeProviderId: activeId } : {}),
 		logLevel: isLogLevel(raw.logLevel) ? raw.logLevel : "info",
 		...(nonEmptyString(raw.logDir) !== undefined ? { logDir: nonEmptyString(raw.logDir) as string } : {}),
 		...(nonEmptyString(raw.persona) !== undefined ? { persona: nonEmptyString(raw.persona) as string } : {}),
+		// Only what the file actually says. Leaving it absent is what lets the
+		// console report "default" instead of claiming the user picked 350000.
+		...(contextWindow !== undefined ? { contextWindow } : {}),
+		...(maxTokens !== undefined ? { maxTokens } : {}),
 	};
 }
 
@@ -350,6 +449,8 @@ export async function writeAdminConfig(config: AdminConfig): Promise<void> {
 		logLevel: config.logLevel,
 		...(config.logDir !== undefined ? { logDir: config.logDir } : {}),
 		...(config.persona !== undefined ? { persona: config.persona } : {}),
+		...(config.contextWindow !== undefined ? { contextWindow: config.contextWindow } : {}),
+		...(config.maxTokens !== undefined ? { maxTokens: config.maxTokens } : {}),
 	};
 	await writeFileAtomic(adminConfigPath(), `${JSON.stringify(body, null, 2)}\n`);
 }

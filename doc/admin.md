@@ -26,7 +26,7 @@ steve-serve --port 8892 --token <你的-token>
   （仅回环地址允许）时接口直接开放。
 - 不想启用后台时加 `--no-admin`。
 
-## 五个板块
+## 六个板块
 
 ### 1. 概览
 
@@ -107,7 +107,24 @@ steve-serve --port 8892 --token <你的-token>
   全部 `FEISHU_*` 行（含 `FEISHU_MODE`）。
 - 建应用与事件订阅步骤见 [serve.md](./serve.md#飞书机器人)。保存后需重启。
 
-### 4. 定时任务
+### 4. 联网搜索
+
+决定 `web_search` 用谁的数据。默认**不开箱即用也开箱即用**：一个 key 都不配时走
+DuckDuckGo，配了任一 key 就自动换成那一家。
+
+- 列出五个源（Tavily / Exa / Brave / DuckDuckGo / Wikipedia），标出哪些已配 key、
+  当前实际用的是哪个。**key 本身不回传**，只显示「已配置 / 未配置」。
+- 三个输入框写 `TAVILY_API_KEY` / `EXA_API_KEY` / `BRAVE_API_KEY` 到 `~/.steve/.env`，
+  留空表示保持不变；有 key 的行可以单独「清除」。
+- 「优先使用」写 `WEB_SEARCH_PROVIDER`。**点名是绑定的**：选了 Brave 却没配 key，
+  搜索直接被关掉而不是偷换成别家——页面会明说「不会注册」，而不是假装在用 Brave。
+- 每行有「测试」按钮，发一次真实查询并回报条数、耗时与前三条标题；还没保存的 key 也
+  可以先测（只用于这一次请求，不落盘）。失败时原样显示对方的错误，比如
+  `Tavily returned HTTP 401`。
+- **不需要重启**：插件在会话启动时解析 provider，所以下一个会话就生效，正在进行的
+  会话继续用旧的。
+
+### 5. 定时任务
 
 业内常见做法就是把「定时任务」实现为一条 **cron 触发器**：到点向某个流投递一条提示
 词，由运行执行器在后台跑一轮，结果写进该流的事件日志（可被网关或前端消费）。本后台
@@ -123,7 +140,7 @@ steve-serve --port 8892 --token <你的-token>
 - 生产建议：目标流固定、模式用 `background`；需要审批的工具在后台 run 中会挂起为
   `approval.pending`（10 分钟超时），可在流里通过 `POST /streams/:id/approvals` 放行。
 
-### 5. 系统
+### 6. 系统
 
 - 版本 / Node / PID / 工作目录 / streams 目录。
 - **日志**：级别 `debug|info|warn|error` 与**日志目录**（只接受文件夹路径，留空用默认的
@@ -158,6 +175,9 @@ steve-serve --port 8892 --token <你的-token>
 | POST | `/admin/api/providers/activate` | 激活 `{id}` |
 | GET | `/admin/api/gateways` | 网关状态 |
 | POST | `/admin/api/gateways/save` | 保存 `{feishu:{appId?,appSecret?,verificationToken?,encryptKey?,apiBase?}}` 或 `{clear:true}` |
+| GET | `/admin/api/search` | 联网搜索：`{providers:[{id,label,keyless,envKey?,hasKey,signup?,blurb}],keyless,active,requested,pinned}` |
+| POST | `/admin/api/search/save` | 保存 `{tavily?,exa?,brave?,provider?}`（留空保持不变）或 `{clear:"<provider>"}` |
+| POST | `/admin/api/search/test` | 用某 provider 发一次真实查询 `{provider,query?,key?}` → `{ok,count,elapsedMs,sample}` |
 | GET | `/admin/api/schedules` | 定时任务列表 |
 | POST | `/admin/api/schedules/save` | 保存 `{name,cron,timezone?,prompt,targetStream,mode?}` |
 | POST | `/admin/api/schedules/delete` | 删除 `{name}` |

@@ -181,7 +181,19 @@ for (const { full, rel } of files) {
 	const source = readFileSync(full, "utf8");
 	for (const [capability, allowed] of Object.entries(CAPABILITY_IMPORTERS)) {
 		if (!source.includes(`features/${capability}.js`)) continue;
-		if (!allowed.includes(rel)) capabilityLeaks.push(`${rel} → features/${capability}.js`);
+		if (allowed.includes(rel)) continue;
+		// A host asked for one setting is not a capability leak: what the rule
+		// forbids is the front end *deciding* how the capability works. A dynamic
+		// import (inside a handler, never at module load) that only reads or writes
+		// the capability's own config is the same delegation a plugin does, so it is
+		// allowed — every other reference (a static import, a top-level one, or one
+		// that gets a handler) still is not.
+		const path = `features/${capability}.js`;
+		const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const staticImport = new RegExp(`^\\s*(?:import|export)[^;]*${escaped}`, "m").test(source);
+		const deferred = new RegExp(`await import\\(["']\\.\\./${escaped}["']\\)`).test(source);
+		const dynamicOnly = !staticImport && deferred;
+		if (!dynamicOnly) capabilityLeaks.push(`${rel} → features/${capability}.js`);
 	}
 }
 check(

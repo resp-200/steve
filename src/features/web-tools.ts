@@ -27,7 +27,8 @@
  */
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { Type, type AgentTool } from "./contract.js";
+import { envFilePath, updateEnvFile } from "./admin-config.js";
+import { Type, type AgentTool, type SearchConfigView, type SearchProbe, type SearchProviderState, type SearchSettingsApi } from "./contract.js";
 import type { AnnotatedTool } from "./tool-annotations.js";
 
 /* ------------------------------------------------------------------ */
@@ -71,6 +72,10 @@ export interface SearchProvider {
 	id: string;
 	/** Env var that must hold an API key. `undefined` for keyless providers. */
 	apiKeyEnv?: string;
+	/** Alternate spellings accepted for `WEB_SEARCH_PROVIDER`. */
+	aliases?: string[];
+	/** One line for `web_search`'s description: what this source is good at. */
+	blurb: string;
 	search(query: string, maxResults: number, signal: AbortSignal): Promise<SearchOutcome>;
 }
 
@@ -281,7 +286,7 @@ export async function fetchUrl(
 			signal,
 			headers: {
 				// An honest identity: some hosts serve different content to unknown UAs.
-				"user-agent": "steve/0.1 (+https://github.com/resp-200/steve)",
+				"user-agent": USER_AGENT,
 				accept: "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8,*/*;q=0.5",
 			},
 		}).catch((error: unknown) => {
@@ -837,6 +842,7 @@ function apiKey(id: string, env: string): string {
 export const tavilyProvider: SearchProvider = {
 	id: "tavily",
 	apiKeyEnv: "TAVILY_API_KEY",
+	blurb: "Tavily (web search API)",
 	async search(query, maxResults, signal) {
 		const data = await postJson(
 			"https://api.tavily.com/search",
@@ -863,6 +869,7 @@ export const tavilyProvider: SearchProvider = {
 export const exaProvider: SearchProvider = {
 	id: "exa",
 	apiKeyEnv: "EXA_API_KEY",
+	blurb: "Exa (semantic web search, returns page text)",
 	async search(query, maxResults, signal) {
 		const data = await postJson(
 			"https://api.exa.ai/search",
@@ -888,6 +895,7 @@ export const exaProvider: SearchProvider = {
 export const braveProvider: SearchProvider = {
 	id: "brave",
 	apiKeyEnv: "BRAVE_API_KEY",
+	blurb: "Brave (web search API)",
 	async search(query, maxResults, signal) {
 		const url = new URL("https://api.search.brave.com/res/v1/web/search");
 		url.searchParams.set("q", query);
@@ -911,32 +919,347 @@ export const braveProvider: SearchProvider = {
 	},
 };
 
+/* ------------------------------------------------------------------ */
+/* Keyless providers                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Both keyless providers read an endpoint that their own frontend reads. They
+ * are the ones a user has without asking anyone for a credit card, and they are
+ * also the ones that can break without notice, so each failure message says
+ * what the model should do instead of just reporting a status code.
+ */
+
+/**
+ * Shared by every provider that reads a public page or endpoint on the user's
+ * behalf: an honest identity rather than a browser disguise, since these hosts
+ * publish bot policies and pretending otherwise is how a machine gets banned.
+ */
+export const USER_AGENT = "steve/0.1 (+https://github.com/resp-200/steve)";
+
+/**
+ * One entry of DuckDuckGo's `d.duckduckgo.com` result payload. The `first` flag
+ * marks the advertisement block, which would otherwise come back as a source.
+ */
+export interface DdgEntry {
+	title?: string;
+	u?: string;
+	snippet?: string;
+	first?: number;
+}
+
+export interface DdgPayload {
+	/** Rows shaped `[{ first: 1 }, { result: {...} }, { result: {...} }]`. */
+	results?: Array<{ result?: DdgEntry } | DdgEntry>;
+}
+
+/**
+ * Titles and snippets in that payload arrive with the query's words wrapped in
+ * highlight tags; stripping them leaves the sentence alone.
+ */
+function ddgText(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const text = decodeEntities(value.replace(/<\/?[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+	return text || undefined;
+}
+
+/** `//duckduckgo.com/l/?uddg=<target>` carries the real URL; unwrap it. */
+export function unwrapDdgUrl(href: string): string {
+	try {
+		const url = new URL(href, "https://duckduckgo.com/");
+		const target = url.searchParams.get("uddg");
+		return target ? decodeURIComponent(target) : url.href;
+	} catch {
+		return href;
+	}
+}
+
+/** Sources from a DuckDuckGo payload, in order, ads dropped. */
+export function ddgSources(payload: DdgPayload, maxResults: number): SearchOutcome {
+	const entries: DdgEntry[] = [];
+	for (const row of payload?.results ?? []) {
+		if (row && typeof row === "object" && "result" in row) {
+			if (row.result) entries.push(row.result);
+		} else if (row && typeof row === "object" && "u" in row) {
+			entries.push(row as DdgEntry);
+		}
+	}
+	const usable = entries.filter((entry) => !entry.first && entry.u);
+	return {
+		sources: usable.slice(0, maxResults).map((entry) => ({
+			url: unwrapDdgUrl(String(entry.u)),
+			...(ddgText(entry.title) ? { title: ddgText(entry.title) } : {}),
+			...(ddgText(entry.snippet) ? { snippet: ddgText(entry.snippet) } : {}),
+		})),
+		truncated: usable.length > maxResults,
+	};
+}
+
+/**
+ * DuckDuckGo, no key. Two steps: `/html/` hands the real result data to a
+ * same-origin script instead of rendering it, so the page is a shell and the
+ * answers come from the JSON endpoint it asks for.
+ */
+export const duckduckgoProvider: SearchProvider = {
+	id: "duckduckgo",
+	aliases: ["ddg"],
+	blurb: "DuckDuckGo (keyless)",
+	async search(query, maxResults, signal) {
+		const headers = {
+			"user-agent": USER_AGENT,
+			accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+			"accept-language": "en-US,en;q=0.9",
+		};
+		const page = await fetch("https://html.duckduckgo.com/html/", {
+			method: "POST",
+			signal,
+			headers: { ...headers, "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ q: query }).toString(),
+		});
+		if (!page.ok) throw new WebError(`DuckDuckGo returned HTTP ${page.status}.`);
+		const html = await page.text();
+		// 202 is the bot-challenge page: a 200-adjacent status with no results in it.
+		if (/anomaly-modal/.test(html) || !/result__a|result-link/.test(html)) {
+			throw new WebError(
+				"DuckDuckGo is rate-limiting this machine (it served a bot-challenge page). " +
+					"Retry later, set WEB_SEARCH_PROVIDER=wikipedia for a keyless fallback, or configure a search API key.",
+			);
+		}
+		const match = /"(?:d\.)?duckduckgo\.com\/([a-z]\.js)"/i.exec(html) ?? /vqd="([^"]+)"/.exec(html);
+		if (!match) throw new WebError("DuckDuckGo's result endpoint could not be located; the page layout may have changed.");
+		const data = await postJson(
+			`https://links.duckduckgo.com/${match[1]}`,
+			{ query, vqd: match[1] },
+			{ ...headers, referer: "https://html.duckduckgo.com/" },
+			signal,
+			"DuckDuckGo",
+		);
+		return ddgSources((data ?? {}) as DdgPayload, maxResults);
+	},
+};
+
+/** Wikipedia's search API, no key. Reference material only: good for concepts, useless for "the latest version of X". */
+export const wikipediaProvider: SearchProvider = {
+	id: "wikipedia",
+	blurb: "Wikipedia (keyless; reference pages only, no general web)",
+	async search(query, maxResults, signal) {
+		// Two wikis, queried at once and merged: an internal question is usually
+		// phrased in one language, and nothing tells us up front which one it is.
+		const [en, zh] = await Promise.all([
+			wikiSearch("en.wikipedia.org", query, maxResults, signal),
+			wikiSearch("zh.wikipedia.org", query, maxResults, signal),
+		]);
+		const seen = new Set<string>();
+		const merged = [...zh, ...en].filter((source) => {
+			if (seen.has(source.url)) return false;
+			seen.add(source.url);
+			return true;
+		});
+		return { sources: merged.slice(0, maxResults), truncated: merged.length > maxResults };
+	},
+};
+
+async function wikiSearch(host: string, query: string, limit: number, signal: AbortSignal): Promise<WebSource[]> {
+	const url = new URL(`https://${host}/w/api.php`);
+	url.searchParams.set("action", "query");
+	url.searchParams.set("list", "search");
+	url.searchParams.set("srsearch", query);
+	url.searchParams.set("srlimit", String(Math.min(limit, 10)));
+	url.searchParams.set("format", "json");
+	url.searchParams.set("origin", "*");
+	const response = await fetch(url, { signal, headers: { "user-agent": USER_AGENT, accept: "application/json" } });
+	if (!response.ok) return [];
+	const data = (await response.json().catch(() => null)) as { query?: { search?: Array<{ title?: string; snippet?: string; timestamp?: string }> } } | null;
+	return (data?.query?.search ?? [])
+		.filter((hit) => hit.title)
+		.map((hit) => ({
+			url: `https://${host}/wiki/${encodeURIComponent(String(hit.title).replace(/ /g, "_"))}`,
+			title: String(hit.title),
+			...(hit.snippet ? { snippet: decodeEntities(String(hit.snippet).replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim() } : {}),
+			...(hit.timestamp ? { publishedAt: String(hit.timestamp).slice(0, 10) } : {}),
+		}));
+}
+
 /** Provider table, keyed by the `WEB_SEARCH_PROVIDER` value. */
 export const SEARCH_PROVIDERS: Record<string, SearchProvider> = {
 	tavily: tavilyProvider,
 	exa: exaProvider,
 	brave: braveProvider,
+	duckduckgo: duckduckgoProvider,
+	wikipedia: wikipediaProvider,
 };
 
+/** Providers that need a key, in preference order. */
+export const KEYED_PROVIDERS: SearchProvider[] = [tavilyProvider, exaProvider, braveProvider];
+
+/** Providers that work with nothing configured — the default tier. */
+export const KEYLESS_PROVIDERS: SearchProvider[] = [duckduckgoProvider, wikipediaProvider];
+
 /**
- * The provider named by the environment, or `undefined` when none is usable —
- * `web_search` is then not registered at all, so `/tools` never lists a tool that
- * cannot work. A named provider without its key logs why instead of failing the
- * session.
+ * Which provider `web_search` uses.
+ *
+ * Naming one is binding: `WEB_SEARCH_PROVIDER=brave` without a key registers no
+ * search tool at all, rather than quietly searching somewhere else. Naming none
+ * means the first keyed provider that has its key, and failing that a keyless
+ * one — so a fresh install has a working `web_search` with nothing configured,
+ * and adding a key silently upgrades it.
  */
-export function resolveSearchProvider(env: NodeJS.ProcessEnv = process.env, log?: (message: string) => void): SearchProvider | undefined {
+/**
+ * Which environment variable holds each provider's key. The console writes these
+ * and the tool reads them, so the mapping lives here rather than in the console.
+ */
+export const SEARCH_KEY_ENV: Record<string, string> = {
+	tavily: "TAVILY_API_KEY",
+	exa: "EXA_API_KEY",
+	brave: "BRAVE_API_KEY",
+};
+
+/** Where each keyed provider hands out keys — the console links here. */
+export const SEARCH_SIGNUP: Record<string, string> = {
+	tavily: "https://app.tavily.com",
+	exa: "https://dashboard.exa.ai",
+	brave: "https://brave.com/search/api",
+};
+
+/** A provider's console-facing state. Keys themselves never leave the process. */
+export function searchProviderState(provider: SearchProvider, env: NodeJS.ProcessEnv = process.env): SearchProviderState {
+	const envKey = provider.apiKeyEnv;
+	const hasKey = envKey ? (env[envKey]?.trim() ?? "") !== "" : false;
+	return {
+		id: provider.id,
+		label: provider.blurb.replace(/\s*\(.*\)$/, ""),
+		keyless: envKey === undefined,
+		...(envKey ? { envKey } : {}),
+		signup: SEARCH_SIGNUP[provider.id] ?? "",
+		hasKey,
+		blurb: provider.blurb,
+		usable: envKey === undefined || hasKey,
+	};
+}
+
+/** Every provider, keyed first, in the order the console lists them. */
+export function searchProviders(): SearchProvider[] {
+	return [...KEYED_PROVIDERS, ...KEYLESS_PROVIDERS];
+}
+
+export function searchConfigView(env: NodeJS.ProcessEnv = process.env): SearchConfigView {
 	const requested = env.WEB_SEARCH_PROVIDER?.trim().toLowerCase();
-	const candidates = requested ? [requested] : Object.keys(SEARCH_PROVIDERS);
-	for (const id of candidates) {
-		const provider = SEARCH_PROVIDERS[id];
-		if (!provider) {
-			log?.(`unknown WEB_SEARCH_PROVIDER "${id}" (known: ${Object.keys(SEARCH_PROVIDERS).join(", ")})`);
-			continue;
+	const active = resolveSearchProvider(env, () => undefined);
+	return {
+		providers: searchProviders().map((provider) => searchProviderState(provider, env)),
+		keyless: KEYLESS_PROVIDERS.map((provider) => provider.id),
+		active: active ? active.id : null,
+		requested: requested ?? null,
+		pinned: requested !== undefined && requested !== "none" && requested !== "off",
+	};
+}
+
+/**
+ * Write search settings to `~/.steve/.env`. Returns the keys it touched so the
+ * caller can report what changed without re-reading the file.
+ */
+export async function saveSearchConfig(input: { keys?: Record<string, string>; provider?: string }, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+	const updates: Record<string, string | undefined> = {};
+	for (const [id, raw] of Object.entries(input.keys ?? {})) {
+		const envKey = SEARCH_KEY_ENV[id];
+		if (!envKey) throw new Error(`unknown search provider "${id}"`);
+		const value = raw.trim();
+		if (value === "") continue;
+		if (/\s/.test(value)) throw new Error(`${id} key must not contain whitespace`);
+		updates[envKey] = value;
+	}
+	if (input.provider !== undefined) {
+		const provider = input.provider.trim().toLowerCase();
+		if (provider !== "" && provider !== "none" && SEARCH_PROVIDERS[provider] === undefined) {
+			throw new Error(`unknown search provider "${provider}"`);
 		}
-		if (provider.apiKeyEnv && !env[provider.apiKeyEnv]?.trim()) continue;
+		updates.WEB_SEARCH_PROVIDER = provider === "" ? undefined : provider;
+	}
+	if (Object.keys(updates).length === 0) throw new Error("nothing to update; leave a field blank to keep it");
+	await updateEnvFile(updates);
+	for (const [key, value] of Object.entries(updates)) {
+		if (value === undefined || value === "") delete env[key];
+		else env[key] = value;
+	}
+	return Object.keys(updates);
+}
+
+/** Remove one provider's key. Refuses when none is stored, so a typo cannot look like success. */
+export async function clearSearchKey(id: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+	const envKey = SEARCH_KEY_ENV[id.trim().toLowerCase()];
+	if (!envKey || (env[envKey]?.trim() ?? "") === "") throw new Error(`no stored key for search provider "${id}"`);
+	await updateEnvFile({ [envKey]: "" });
+	delete env[envKey];
+	return envKey;
+}
+
+/**
+ * Send one real query through a provider. A key passed in (typed but not saved
+ * yet) wins over the stored one and is restored afterwards, so testing never
+ * changes what the next session uses.
+ */
+export async function probeSearchProvider(id: string, options: { query?: string; key?: string; env?: NodeJS.ProcessEnv } = {}): Promise<SearchProbe> {
+	const env = options.env ?? process.env;
+	const provider = SEARCH_PROVIDERS[id.trim().toLowerCase()];
+	if (!provider) throw new Error(`unknown search provider "${id}"`);
+	const envKey = provider.apiKeyEnv;
+	const stored = envKey ? (env[envKey]?.trim() ?? "") : "";
+	const key = options.key?.trim() || stored;
+	if (envKey && key === "") throw new Error(`enter a ${envKey} first`);
+	const before = envKey ? env[envKey] : undefined;
+	if (envKey && key !== stored) env[envKey] = key;
+	const started = Date.now();
+	try {
+		const outcome = await provider.search(options.query?.trim() || "web search", 3, AbortSignal.timeout(20_000));
+		return {
+			ok: true,
+			provider: provider.id,
+			elapsedMs: Date.now() - started,
+			count: outcome.sources.length,
+			sample: outcome.sources.slice(0, 3).map((source) => ({ title: source.title ?? source.url, url: source.url })),
+		};
+	} catch (error) {
+		return { ok: false, provider: provider.id, elapsedMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) };
+	} finally {
+		if (envKey) {
+			if (before === undefined) delete env[envKey];
+			else env[envKey] = before;
+		}
+	}
+}
+
+/**
+ * The settings surface the admin entry uses. One object, so the entry depends on
+ * the contract rather than on how the capability is assembled.
+ */
+export const searchSettings: SearchSettingsApi = {
+	keyEnv: SEARCH_KEY_ENV,
+	view: () => searchConfigView(),
+	save: (input) => saveSearchConfig(input),
+	clear: (id) => clearSearchKey(id),
+	probe: (id, options) => probeSearchProvider(id, options),
+};
+
+export function resolveSearchProvider(env: NodeJS.ProcessEnv = process.env, log?: (message: string) => void): SearchProvider | undefined {
+	const known = Object.keys(SEARCH_PROVIDERS).join(", ");
+	const requested = env.WEB_SEARCH_PROVIDER?.trim().toLowerCase();
+	if (requested === "none" || requested === "off") return undefined;
+
+	if (requested) {
+		const provider = SEARCH_PROVIDERS[requested] ?? Object.values(SEARCH_PROVIDERS).find((entry) => entry.aliases?.includes(requested));
+		if (!provider) {
+			log?.(`unknown WEB_SEARCH_PROVIDER "${requested}" (known: ${known}, none)`);
+			return undefined;
+		}
+		if (provider.apiKeyEnv && !env[provider.apiKeyEnv]?.trim()) {
+			log?.(`WEB_SEARCH_PROVIDER=${requested} needs ${provider.apiKeyEnv} in ~/.steve/.env; web_search is disabled.`);
+			return undefined;
+		}
 		return provider;
 	}
-	return undefined;
+
+	const keyed = Object.values(SEARCH_PROVIDERS).find((provider) => provider.apiKeyEnv && env[provider.apiKeyEnv]?.trim());
+	return keyed ?? KEYLESS_PROVIDERS[0];
 }
 
 /* ------------------------------------------------------------------ */
@@ -976,8 +1299,11 @@ export function createWebTools(options: WebToolOptions = {}): AnnotatedTool[] {
 			name: "web_search",
 			label: "Web search",
 			description:
-				`Search the web and return up to ${defaultResults} sources (title, URL, snippet, date). ` +
+				`Search the web via ${provider.blurb} and return up to ${defaultResults} sources (title, URL, snippet, date). ` +
 				"Use it for facts you do not know or that change over time — versions, prices, news, API signatures, library usage. " +
+				(provider.id === "wikipedia"
+					? "This source is an encyclopedia: it is good for definitions and background and will not have current releases or prices, so fetch the project's own site for those. "
+					: "") +
 				"Follow up with web_fetch on a promising URL when a snippet is not enough.",
 			permission: "auto",
 			metadata: { kind: "search", title: (args) => `Search ${(args as { query?: string })?.query ?? "the web"}` },

@@ -35,7 +35,7 @@ function resolve(cwd, home, extraEnv = {}) {
 	const script = `
 		const { loadConfig, envFileCandidates } = await import(${JSON.stringify(join(INSTALL, "dist/model/config.js"))});
 		const config = loadConfig();
-		console.log(JSON.stringify({ key: config.apiKey, model: config.model.id, files: envFileCandidates() }));
+		console.log(JSON.stringify({ key: config.apiKey, model: config.model.id, window: config.model.contextWindow, files: envFileCandidates() }));
 	`;
 	const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
 		cwd,
@@ -139,6 +139,83 @@ try {
 	// 9. quoted values are unwrapped, comments and blanks ignored
 	writeEnv(join(home, ".steve"), '# comment\n\nLLM_API_KEY=\'single-quoted\'\nNOT_A_PAIR\n');
 	check("引号/注释/空行处理正确", resolve(bare, home).key === "single-quoted", resolve(bare, home).key);
+
+	process.stderr.write("config · 上下文窗口（~/.steve/admin.json）\n");
+	{
+		// The window the agent plans against lives in the admin file, not in .env,
+		// so the console can edit it; .env keeps a per-machine override.
+		const script = (prepare) => `
+			import { writeFileSync, mkdirSync } from "node:fs";
+			import { join } from "node:path";
+			const home = process.env.HOME;
+			mkdirSync(join(home, ".steve"), { recursive: true });
+			const write = (name, body) => writeFileSync(join(home, ".steve", name), body);
+			${prepare}
+			const { loadConfig } = await import(${JSON.stringify(join(INSTALL, "dist/model/config.js"))});
+			const { readAdminConfig, resolveRuntimeConfig } = await import(${JSON.stringify(join(INSTALL, "dist/features/admin-config.js"))});
+			const admin = await readAdminConfig();
+			const config = resolveRuntimeConfig(loadConfig, admin);
+			console.log(JSON.stringify({ window: config.model.contextWindow, reply: config.model.maxTokens, raw: admin.contextWindow ?? null }));
+		`;
+		const run = (prepare, extraEnv = {}) => {
+			const child = spawnSync(process.execPath, ["--input-type=module", "-e", script(prepare)], {
+				cwd: bare,
+				encoding: "utf8",
+				env: {
+					PATH: process.env.PATH,
+					HOME: home,
+					LLM_MODEL_ID: "test-model",
+					LLM_BASE_URL: "https://example.test/anthropic",
+					LLM_API_KEY: "k",
+					...extraEnv,
+				},
+			});
+			if (child.status !== 0) throw new Error(child.stderr || "child failed");
+			return JSON.parse(child.stdout.trim().split("\n").pop());
+		};
+		// Written with String.fromCharCode so no literal newline ends up inside the
+		// generated single-line script.
+		const ENV_OK = `write(".env", "LLM_API_KEY=k" + String.fromCharCode(10));`;
+
+		const unset = run(ENV_OK);
+		check("没有 admin.json 时窗口默认 350000", unset.window === 350_000, String(unset.window));
+		check("没有 admin.json 时回复上限默认 8192", unset.reply === 8_192, String(unset.reply));
+		check("默认值不写进文件（用户没选过就是没选过）", unset.raw === null, String(unset.raw));
+
+		const saved = run(`${ENV_OK} write("admin.json", JSON.stringify({ providers: [], logLevel: "info", contextWindow: 420000 }));`);
+		check("admin.json 里的窗口生效", saved.window === 420_000, String(saved.window));
+
+		const envWins = run(`${ENV_OK} write("admin.json", JSON.stringify({ providers: [], logLevel: "info", contextWindow: 420000 }));`, {
+			LLM_CONTEXT_WINDOW: "777000",
+		});
+		check("LLM_CONTEXT_WINDOW 优先于 admin.json", envWins.window === 777_000, String(envWins.window));
+
+		const replySaved = run(`${ENV_OK} write("admin.json", JSON.stringify({ providers: [], logLevel: "info", maxTokens: 32000 }));`);
+		check("admin.json 里的回复上限生效", replySaved.reply === 32_000, String(replySaved.reply));
+
+		const replyEnv = run(`${ENV_OK} write("admin.json", JSON.stringify({ providers: [], logLevel: "info", maxTokens: 32000 }));`, {
+			LLM_MAX_TOKENS: "4096",
+		});
+		check("LLM_MAX_TOKENS 优先于 admin.json", replyEnv.reply === 4_096, String(replyEnv.reply));
+
+		const typo = run(`${ENV_OK} write("admin.json", JSON.stringify({ providers: [], logLevel: "info", contextWindow: "abc" }));`);
+		check("手改坏了就回落到默认值，不拦启动", typo.window === 350_000, String(typo.window));
+
+		const tooSmall = run(`${ENV_OK} write("admin.json", JSON.stringify({ providers: [], logLevel: "info", contextWindow: 10 }));`);
+		check("小到不像话的窗口被忽略", tooSmall.window === 350_000, String(tooSmall.window));
+
+		// The first-run path: a provider in the console, no usable .env.
+		const providerFirst = run(`
+			write(".env", "");
+			write("admin.json", JSON.stringify({
+				providers: [{ id: "p", name: "P", baseUrl: "https://example.test/v1", apiKey: "k", defaultModel: "m", models: ["m"], reasoning: true }],
+				activeProviderId: "p",
+				logLevel: "info",
+				contextWindow: 260000,
+			}));
+		`);
+		check("只有供应商、没有 .env 时也用这份窗口", providerFirst.window === 260_000, String(providerFirst.window));
+	}
 
 	const failed = checks.filter((entry) => !entry.passed);
 	process.stderr.write(`\n${checks.length - failed.length}/${checks.length} checks passed\n`);

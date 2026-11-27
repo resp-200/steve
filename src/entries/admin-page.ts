@@ -888,6 +888,33 @@ pre.code {
           <div class="card card-pad">
             <div class="card-head">
               <div>
+                <div class="card-title">上下文窗口</div>
+                <div class="card-sub">模型一次能装下多少 token，以及单次回复最多写多少。史蒂夫按窗口决定何时压缩历史：值太小会早早丢上下文，值大过模型真实能力则请求会被服务商拒绝。保存后需要重启服务才生效。</div>
+              </div>
+              <span id="contextWindowBadge" class="badge muted">加载中</span>
+            </div>
+            <form id="contextForm" novalidate>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="contextWindow">窗口大小（tokens）</label>
+                  <input id="contextWindow" type="number" class="mono" min="1000" max="10000000" step="1000" placeholder="350000" inputmode="numeric">
+                  <div class="card-sub" id="contextWindowHint"></div>
+                </div>
+                <div class="field">
+                  <label for="maxTokens">单次回复上限（tokens）</label>
+                  <input id="maxTokens" type="number" class="mono" min="1000" max="10000000" step="1000" placeholder="8192" inputmode="numeric">
+                  <div class="card-sub" id="maxTokensHint"></div>
+                </div>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn primary" id="contextSaveBtn">保存窗口设置</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card card-pad">
+            <div class="card-head">
+              <div>
                 <div class="card-title">角色设定</div>
                 <div class="card-sub">史蒂夫自带身份与工作方式；这里写你的额外要求，会叠加在内置提示词之上。留空表示不加。</div>
               </div>
@@ -2137,6 +2164,7 @@ pre.code {
       state.system = data || {};
       state.sysFiles = Array.isArray(data && data.files) ? data.files : [];
       renderSystem();
+      renderContextWindow();
       return loadSelectedFile();
     }).catch(fail);
   }
@@ -2199,6 +2227,80 @@ pre.code {
     }).catch(function (error) {
       pre.textContent = "无法读取文件：" + (error && error.message ? error.message : "未知错误");
       if (badgeElement) badgeElement.innerHTML = badge("读取失败", "danger");
+      fail(error);
+    });
+  }
+
+  function formatWindow(value) {
+    var number = Number(value);
+    if (!isFinite(number) || number <= 0) return "-";
+    if (number >= 1000000 && number % 100000 === 0) return (number / 1000000) + "M";
+    if (number >= 1000 && number % 1000 === 0) return (number / 1000) + "k";
+    return String(number);
+  }
+
+  function renderContextWindow() {
+    var system = state.system || {};
+    var windowInput = byId("contextWindow");
+    if (windowInput) windowInput.value = system.contextWindow ? String(system.contextWindow) : "";
+    var replyInput = byId("maxTokens");
+    if (replyInput) replyInput.value = system.maxTokens ? String(system.maxTokens) : "";
+    var source = system.contextWindowSource ? String(system.contextWindowSource) : "default";
+    var window = system.contextWindow ? Number(system.contextWindow) : 0;
+    var badgeElement = byId("contextWindowBadge");
+    if (badgeElement) {
+      if (source === "env") badgeElement.innerHTML = badge("来自环境变量", "warn");
+      else if (source === "admin") badgeElement.innerHTML = badge("来自 admin.json", "muted");
+      else badgeElement.innerHTML = badge("默认值", "muted");
+    }
+    var hint = byId("contextWindowHint");
+    if (hint) {
+      if (source === "env") {
+        hint.textContent = "当前生效 " + formatWindow(window) + "：进程读到了 LLM_CONTEXT_WINDOW=" + Number(system.contextWindowEnv || 0) +
+          "，它的优先级高于这里。要在这里改，先从 ~/.steve/.env 里删掉 LLM_CONTEXT_WINDOW 再重启。";
+      } else {
+        hint.textContent = "当前生效 " + formatWindow(window) + "（约 " + formatWindow(Math.floor(window * 0.75)) + " 时开始压缩历史）。上限 " +
+          formatWindow(system.contextWindowMax || 10000000) + "。";
+      }
+    }
+    var replyHint = byId("maxTokensHint");
+    if (replyHint) {
+      if (system.maxTokensSource === "env") {
+        replyHint.textContent = "当前生效 " + formatWindow(system.maxTokens) + "：进程读到了 LLM_MAX_TOKENS=" + Number(system.maxTokensEnv || 0) +
+          "，它的优先级高于这里。要在这里改，先从 ~/.steve/.env 里删掉 LLM_MAX_TOKENS 再重启。";
+      } else {
+        replyHint.textContent = "当前生效 " + formatWindow(system.maxTokens || 8192) + "。太大会拖长每次请求，太小会截断长回答。";
+      }
+    }
+  }
+
+  function saveContextWindow() {
+    var raw = valueOf("contextWindow").trim().replace(/[,\uFF0C_\s]/g, "");
+    var rawReply = valueOf("maxTokens").trim().replace(/[,\uFF0C_\s]/g, "");
+    var button = byId("contextSaveBtn");
+    if (raw === "" || !/^[0-9]+$/.test(raw)) {
+      toast("请填写窗口大小（正整数 tokens）", "warn");
+      return;
+    }
+    if (rawReply === "" || !/^[0-9]+$/.test(rawReply)) {
+      toast("请填写单次回复上限（正整数 tokens）", "warn");
+      return;
+    }
+    setBusy(button, true, "保存中…");
+    api("/admin/api/system/save", { method: "POST", body: { contextWindow: Number(raw), maxTokens: Number(rawReply) } }).then(function (data) {
+      setBusy(button, false);
+      if (data && data.restartRequired) {
+        toast("窗口设置已保存，重启服务后生效", "success");
+        showRestartBanner();
+      } else {
+        toast("窗口设置未变化", "success");
+      }
+      if (data && (data.contextWindowSource === "env" || data.maxTokensSource === "env")) {
+        toast("注意：LLM_CONTEXT_WINDOW / LLM_MAX_TOKENS 仍然优先生效，需从 .env 删除后重启", "warn");
+      }
+      return loadSystem();
+    }).catch(function (error) {
+      setBusy(button, false);
       fail(error);
     });
   }
@@ -2410,6 +2512,12 @@ pre.code {
     if (logForm) logForm.addEventListener("submit", function (event) {
       event.preventDefault();
       saveSystem();
+    });
+
+    var contextForm = byId("contextForm");
+    if (contextForm) contextForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      saveContextWindow();
     });
 
     var personaForm = byId("personaForm");

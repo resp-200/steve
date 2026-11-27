@@ -17,6 +17,9 @@ import process from "node:process";
 import {
 	activeProvider,
 	adminConfigPath,
+	configContextWindow,
+	configMaxTokens,
+	coerceContextWindow,
 	describe,
 	coerceHeaderFields,
 	envFilePath,
@@ -25,6 +28,10 @@ import {
 	readAdminConfig,
 	updateEnvFile,
 	writeAdminConfig,
+	envContextWindow,
+	envMaxTokens,
+	MAX_CONTEXT_WINDOW,
+	MIN_CONTEXT_WINDOW,
 	type AdminConfig,
 	type ProviderEntry,
 } from "../features/admin-config.js";
@@ -33,6 +40,7 @@ import { isSessionId } from "../features/session-store.js";
 import type { StreamLog } from "../features/stream-log.js";
 import { isValidTimezone, parseCron } from "../features/trigger-schedule.js";
 import type { RunWorker } from "../features/worker.js";
+import type { SearchSettingsApi } from "../features/contract.js";
 import { resolveApi, steveHomeDir } from "../model/config.js";
 import { applyHeaders, hostOf, providerHeaders } from "../model/request-headers.js";
 import { VERSION } from "../model/version.js";
@@ -49,6 +57,11 @@ export interface AdminDeps {
 	logger: LeveledLogger;
 	/** Called after the response for POST /admin/api/system/restart has flushed. */
 	restart: () => void;
+	/**
+	 * Web search settings, injected by the server entry — the capability owns the
+	 * values, so the console only renders and forwards them.
+	 */
+	search: SearchSettingsApi;
 	/** Live Feishu transport state supplied by the server entry. */
 	feishuStatus?: () => {
 		mode?: "ws" | "http" | "off";
@@ -353,6 +366,17 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					logLevel: config.logLevel,
 					logDir: config.logDir ?? deps.logger.dir ?? "",
 					persona: config.persona ?? "",
+					// What the running process plans against, and where each number came
+					// from — a value in the file that the environment overrides would
+					// otherwise look like it is in effect when it is not.
+					contextWindow: configContextWindow(config),
+					contextWindowSource: envContextWindow() !== undefined ? "env" : config.contextWindow !== undefined ? "admin" : "default",
+					contextWindowEnv: envContextWindow() ?? null,
+					contextWindowMin: MIN_CONTEXT_WINDOW,
+					contextWindowMax: MAX_CONTEXT_WINDOW,
+					maxTokens: configMaxTokens(config),
+					maxTokensSource: envMaxTokens() !== undefined ? "env" : config.maxTokens !== undefined ? "admin" : "default",
+					maxTokensEnv: envMaxTokens() ?? null,
 					streams: streams.length,
 				});
 			},
@@ -514,6 +538,8 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					logLevel: config.logLevel,
 					...(config.logDir !== undefined ? { logDir: config.logDir } : {}),
 					...(config.persona !== undefined ? { persona: config.persona } : {}),
+					...(config.contextWindow !== undefined ? { contextWindow: config.contextWindow } : {}),
+					...(config.maxTokens !== undefined ? { maxTokens: config.maxTokens } : {}),
 					...(config.activeProviderId !== undefined && config.activeProviderId !== id ? { activeProviderId: config.activeProviderId } : {}),
 				};
 				await writeAdminConfig(next);
@@ -829,6 +855,27 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					}
 					logDir = asString(body.logDir) === "" ? undefined : asString(body.logDir);
 				}
+				// The window and the reply cap are read once, when the agent is assembled,
+				// so accepting them here only schedules the change. Refusing an
+				// out-of-range value now beats silently using the default after a restart.
+				let contextWindow: number | undefined = config.contextWindow;
+				if (body.contextWindow !== undefined) {
+					const coerced = coerceContextWindow(body.contextWindow);
+					if (coerced === undefined) {
+						fail(exchange, 400, `contextWindow must be a number of tokens between ${MIN_CONTEXT_WINDOW} and ${MAX_CONTEXT_WINDOW}`);
+						return;
+					}
+					contextWindow = coerced;
+				}
+				let maxTokens: number | undefined = config.maxTokens;
+				if (body.maxTokens !== undefined) {
+					const coerced = coerceContextWindow(body.maxTokens, undefined, "maxTokens");
+					if (coerced === undefined) {
+						fail(exchange, 400, `maxTokens must be a number of tokens between ${MIN_CONTEXT_WINDOW} and ${MAX_CONTEXT_WINDOW}`);
+						return;
+					}
+					maxTokens = coerced;
+				}
 				let persona: string | undefined = config.persona;
 				if (body.persona !== undefined) {
 					if (typeof body.persona !== "string") {
@@ -843,6 +890,8 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 					...(isLogLevel(rawLevel) ? { logLevel: rawLevel } : {}),
 					...(logDir !== undefined ? { logDir } : {}),
 					...(persona !== undefined ? { persona } : {}),
+					...(contextWindow !== undefined ? { contextWindow } : {}),
+					...(maxTokens !== undefined ? { maxTokens } : {}),
 				};
 				if (logDir === undefined) delete next.logDir;
 				if (persona === undefined) delete next.persona;
@@ -853,7 +902,26 @@ export function createAdminRoutes(deps: AdminDeps): HttpRoute[] {
 				// The persona is read when a session starts, so a live session keeps the
 				// prompt it was created with; the next one picks this up.
 				if ((next.persona ?? "") !== (config.persona ?? "")) logger.info("[admin] persona updated; new sessions will use it");
-				exchange.json(200, { ok: true, logLevel: next.logLevel, logDir: next.logDir ?? "", persona: next.persona ?? "" });
+				const restartRequired =
+					configContextWindow(next) !== configContextWindow(config) || configMaxTokens(next) !== configMaxTokens(config);
+				if (restartRequired) {
+					logger.info(
+						`[admin] context window ${configContextWindow(config)} -> ${configContextWindow(next)}, max tokens ${configMaxTokens(config)} -> ${configMaxTokens(next)}; restart required to apply`,
+					);
+				}
+				exchange.json(200, {
+					ok: true,
+					logLevel: next.logLevel,
+					logDir: next.logDir ?? "",
+					persona: next.persona ?? "",
+					contextWindow: configContextWindow(next),
+					contextWindowSource: envContextWindow() !== undefined ? "env" : next.contextWindow !== undefined ? "admin" : "default",
+					contextWindowEnv: envContextWindow() ?? null,
+					maxTokens: configMaxTokens(next),
+					maxTokensSource: envMaxTokens() !== undefined ? "env" : next.maxTokens !== undefined ? "admin" : "default",
+					maxTokensEnv: envMaxTokens() ?? null,
+					restartRequired,
+				});
 			},
 		},
 		{

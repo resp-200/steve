@@ -4,6 +4,7 @@
 
 - 终端里流式输出文本与思考过程（thinking）
 - 自带 7 个工具：6 个本地工具（读/写/改/搜/跑命令，写与执行要批准）+ 1 个演示工具（当前时间），支持并行工具调用
+- 开箱即用的联网能力：`web_search`（无 key 走 DuckDuckGo，配 key 换成 Tavily / Exa / Brave）与 `web_fetch`；内网地址一律拒绝
 - 支持三种线上协议，切换只改 `.env`：
   `anthropic-messages`、`openai-completions`、`openai-responses`
 - 失败自动重试，并把失败轮次从上下文里剔除后再重试
@@ -63,15 +64,17 @@ src/features/session-policy.ts L3 会话策略装配：modelInfo() + workspacePo
 src/features/tool-annotations.ts L3 工具声明（permission / metadata / describe）的注册表
 src/features/local-tools.ts L3 本地工具的实现（read_file / glob / grep / write_file / edit_file / run_command）
                           —— 由内置插件 local-tools 按会话策略注册，入口不再直接使用
+src/features/web-tools.ts L3 联网能力的实现（web_search 的 provider 表 + web_fetch 的 URL 策略/SSRF/HTML→MD）
+                          —— 由内置插件 web-tools 注册，入口不再直接使用
 src/extensions/api.ts     L3′ 插件契约：on / registerTool / registerCommand / registerMcpServer / registerTrigger / ctx
 src/extensions/discovery.ts L3′ 插件发现与 STEVE_EXTENSIONS / STEVE_DISCOVERY 的解析（两个前端共用）
 src/extensions/host.ts    L3′ 插件宿主：发现、加载、钩子链、错误隔离
-src/extensions/builtin/*  L3′ 内置插件（Tier 1）：会话命令（含 /mcp）、本地工具、演示工具、~/.steve/mcp.json、~/.steve/watch.json 触发器
+src/extensions/builtin/*  L3′ 内置插件（Tier 1）：会话命令（含 /mcp）、本地工具、演示工具、联网工具、~/.steve/mcp.json、~/.steve/watch.json 触发器
 examples/extensions/*     三个示例插件（guard / git-status / turn-logger）
 src/kernel/agent.ts      L4 createKernelAgent()：唯一组装 pi Agent 的位置
 src/model/config.ts      L5 .env 读取 + 构造 pi 的 Model（api / baseUrl / compat / 鉴权方式）
 src/model/prompt.ts      L5 系统提示词组装：身份 / 角色设定 / 场景 / 环境四层
-src/model/feishu-card.ts L5 飞书卡片构建：模型只传 title/body/theme，这里产出飞书能接受的卡片
+src/model/feishu-card.ts L5 飞书卡片构建：模型只传 title/body/theme，这里产出飞书能接受的卡片（围栏代码块拆成 code_block 元素）
 src/model/feishu-markdown.ts L5 飞书消息格式：markdown 检测、post 正文、纯文本降级、8000 字分块
 src/model/image.ts       L5 图片规则：格式白名单、10 MB 上限、能力声明（飞书/命令行/ACP 共用）
 src/model/stream.ts      L5 StreamFn：按 model.api 路由到 pi-ai 适配器，错误编码进流
@@ -169,8 +172,43 @@ LLM_API=openai-responses LLM_API_KEY=mock LLM_MODEL_ID=mock LLM_BASE_URL=http://
 | `LLM_PROVIDER` | | 传给 pi 的 provider id，默认 `custom` |
 | `LLM_REASONING` | | `true` 时显式请求 reasoning/thinking（网关自带思考的模型不设也会输出） |
 | `LLM_IMAGES` | | 默认开启：声明模型能看图，图片才会真的发出去。只有接的是纯文本模型时才设 `0` |
-| `LLM_CONTEXT_WINDOW` / `LLM_MAX_TOKENS` | | 默认 128000 / 8192；Anthropic 协议必须带 `max_tokens` |
+| `LLM_CONTEXT_WINDOW` | | 上下文窗口。不设时用 `~/.steve/admin.json` 的 `contextWindow`（默认 **350000**，后台可改）；设了就优先于它，适合单机临时覆盖 |
+| `LLM_MAX_TOKENS` | | 单次回复上限。不设时用 `~/.steve/admin.json` 的 `maxTokens`（默认 8192，后台可改）；设了就优先于它。Anthropic 协议必须带 `max_tokens`，它和窗口一起决定压缩触发点 |
 | `LLM_SYSTEM_PROMPT` | | 替换提示词的身份正文（身份+工作方式）；场景层与环境信息仍会附加，见下文「系统提示词」 |
+
+## 上下文窗口
+
+模型一次能装下多少 token，是**史蒂夫自己的配置**，不是从服务商那里查来的：它在规划压缩时机时要用这个数。默认 **350000**，存在 `~/.steve/admin.json`：
+
+```json
+{ "providers": [], "logLevel": "info", "contextWindow": 350000, "maxTokens": 8192 }
+```
+
+`contextWindow` 是窗口，`maxTokens` 是**单次回复的上限**——两者各管一件事，但同属一个「一次请求能放多少」的决策，所以放在同一张卡片里改：
+
+- **后台可改**：`/admin` →「系统」→「上下文窗口」。卡片上会写清当前生效值、触发压缩的大致位置，以及这个数从哪来（默认值 / `admin.json` / 环境变量）。
+- **保存后要重启**才生效——窗口在进程启动、组装 agent 的时候读一次，运行中的对话不会中途换尺子。后台保存后会直接弹出「需重启」横幅，提供「立即重启」。
+- 取值范围都是 1000 ～ 10000000；后台填错会当场报 400，手改 `admin.json` 填错则回落到默认值，不会拦启动。
+- **环境变量优先**：`LLM_CONTEXT_WINDOW` / `LLM_MAX_TOKENS` 设了哪个，后台对应的那一项就显示「来自环境变量」、改 `admin.json` 不生效——要改就先把那行从 `~/.steve/.env` 删掉再重启。
+
+不用后台也可以直接改文件，或嵌入调用时自己算：`resolveRuntimeConfig()` 已经把窗口合并进最终配置，任何入口（CLI / ACP / serve）读到的都是同一个数。
+
+## 上下文压缩
+
+Steve 每一轮都把整条历史发给模型，所以历史只增不减，迟早会撞上 `LLM_CONTEXT_WINDOW`。撞上之前，`transformContext` 会先把它压掉：
+
+1. **超长工具结果就地截断**（不调模型）。单条 `toolResult` 超过 16k 字符时只保留前 1200 字符，并写明被省略了多少——省得最便宜，也常常足以让下一步不必再压。
+2. **前段摘要**（调一次模型）。估算占用超过触发阈值（默认 `contextWindow` 的 75%；窗口太小则退化为 `contextWindow - LLM_MAX_TOKENS - 2048`）时，把较早的对话交给同一个模型、用同一份 key 生成一段摘要，替换成一条以 `The conversation so far was compacted to save context. Summary:` 开头的 user 消息，最近约 20k token 原样保留。
+3. **切点按轮对齐**。只在 user 消息处下刀，保住 `toolCall` ↔ `toolResult` 的配对；尾部若以孤立的工具结果开头会被修掉（拆开这一对，Anthropic 协议会直接 400）。
+
+几条边界：
+
+- 摘要失败**不阻塞本轮**：只记一行日志，按压缩前的样子发出去（和没有压缩时一样报上下文超限）。
+- 每次 `prompt()` 最多压一次；同一轮里后续的工具调用复用已经压好的前缀，不会反复摘要。
+- 压缩结果以 `compaction` 事件写进事件日志（ACP / `steve-serve`），`session/load` 折叠出的就是模型当时看到的上下文；CLI 没有事件日志，压缩只在运行期生效。
+- `/stats` 里的 `context ~140k/350k` 就是当前估算占用与窗口，靠近阈值时就会发生下一次压缩。
+
+想看细节就找日志里的 `compaction:` 行。目前没有开关——压缩默认生效；嵌入调用可以传 `createAgentRuntime({compaction: false})` 关掉，或在 `assembleAgent()` 里换成自己的摘要函数。
 
 ## REPL 命令
 
@@ -332,6 +370,41 @@ runtime.subscribe((event) => {
 - **路径收敛**：所有路径解析后必须落在 workspace roots 内（CLI 是 `cwd`，ACP 是 `cwd` + `additionalDirectories`），并解析软链——macOS 的 `/var` → `/private/var` 不会被误判为越界。越界直接拒绝，模型收到可读的错误。
 - **不扫隐藏项**：`glob`/`grep` 跳过 `.` 开头的文件与目录，`.env` 不会意外进上下文（显式 `read_file .env` 仍可读，这是有意的）。
 - **截断**：读文件与命令输出都有字节上限，命令默认 30s 超时。
+
+## 联网：web_search 与 web_fetch
+
+实现同样在功能层（`src/features/web-tools.ts`），由内置插件 `builtin:web-tools` 注册。两个工具都**不需要审批**：查询不改动本机任何东西，而每次都弹窗只会让模型放弃查证——真正要守的边界在工具内部。
+
+| 工具 | 说明 | 需要 key |
+| --- | --- | --- |
+| `web_search` | 返回最多 8 条来源（标题 / URL / 摘要 / 日期），并附上「引用来源」的指令 | 否，但配了 key 更好 |
+| `web_fetch` | 抓一个 URL，HTML 转成 markdown、文本原样返回；带出处头（状态码 + 类型） | 否 |
+
+**开箱即用**：什么都不配也有 `web_search`，走无 key 的 DuckDuckGo；配了 `TAVILY_API_KEY` / `EXA_API_KEY` / `BRAVE_API_KEY` 任一，就自动换成那一家（有 key 的优先于无 key 的，不需要改别的）。
+
+| `WEB_SEARCH_PROVIDER` | 需要的 key | 说明 |
+| --- | --- | --- |
+| 不设 | 无 | 有 key 用那家，没有就用 `duckduckgo` |
+| `duckduckgo`（`ddg`） | 无 | 通用网页结果。抓的是它自己的页面接口，被限流时会明说并建议改走 wikipedia |
+| `wikipedia` | 无 | 中英维基并发查询后合并。只有百科内容，查不到版本号、价格、新发布 |
+| `tavily` | `TAVILY_API_KEY` | 带一段总结 + 来源，最适合「直接给答案」 |
+| `exa` | `EXA_API_KEY` | 语义检索，返回页面正文片段 |
+| `brave` | `BRAVE_API_KEY` | 单次最便宜的独立索引 |
+| `none` | — | 关掉 `web_search`，只留 `web_fetch` |
+
+**点名是绑定的**：写了 `WEB_SEARCH_PROVIDER=brave` 却没配 `BRAVE_API_KEY`，就不注册搜索工具，不会偷偷去用别家——静默降级会让人以为在用 Brave 的结果。不点名时的降级只发生在「无 key → 有 key」这一层。
+
+provider 是表驱动：`SEARCH_PROVIDERS` 里加一个 `search()` 就是接入一家，核心不认识任何厂商的字段。`web_search` 的工具描述会写明当前数据源（`via DuckDuckGo` 等），模型据此知道自己拿到的是什么来源。
+
+**抓取的边界**（都有断言覆盖，见 `npm run web:test`）：
+
+- **只抓 http(s)**，URL 内嵌凭据直接拒绝。
+- **拒绝内网地址**。steve 常常跑在内网机器上，`169.254.169.254` 就能读到云主机凭据，所以回环、私网、链路本地、CGNAT、组播、IPv6 私有段与 IPv4-mapped IPv6 全部拒绝；域名先解析再判定，解析出多个地址时**任一**是私有就整体拒绝。
+- **重定向只跟同源**，且每一跳重新校验，最多 3 跳。公网页面 302 到 `169.254.169.254` 是读元数据最经典的一招。
+- **只读 HTML / 文本**，二进制类型直接拒绝；正文最多读 5 MB，交给模型的最多 200 000 字符（截断会明说）。
+- HTML→markdown 是手写的小转换器（标题 / 段落 / 列表 / 代码块 / 表格 / 链接 / 加粗），不引第三方库以保住零依赖；畸形页面降级成纯文本而不是报错，超深嵌套（>512 层）直接放弃结构，避免未闭合标签把事件循环卡死。
+
+系统提示词里另有一段「什么时候该上网查」：会过时的东西先查再答、手边能查到的不搜、一次查一层（先 search 再 fetch 最相关的一两个页面）、用了就给 markdown 链接、搜不到就说搜不到。
 
 CLI 的三种审批模式：
 
@@ -713,10 +786,10 @@ open test-acp-jsonrpc.html                       # 端点默认 http://127.0.0.1
 | `npm run folds:test` | 状态折叠 35 项断言：每类事件产不产消息逐条、`run.failed` 不产生消息（等价旧回滚）、截断事件跳过、图片/详情/错误透传、`foldStatus` 的 activeRun/queued/usage/turnCount/toolCallCount、`forkEvents` 截断与重排、真实 mock 对话折叠结果与旧 `runtime.snapshot()` 逐条相等（toolCallId 链接一致）、重放流续跑与连续两轮结果相同 |
 | `npm run serve:test` | 常驻服务 40 项断言：health/version、token 鉴权（缺失/错误/非回环无 token 拒绝启动）、流创建与列表、SSE 头（`text/event-stream` 与 `X-Accel-Buffering: no`）、用户投影（无工具参数/无 details/无 `run.turn.settled`）、历史回放与实时一致、消息投递 `202 {runId}`、非法/未知流报错、取消活动 run 与未知 run 404、审批端点、webhook 签名接受与拒绝、触发后台 run 落盘（`trigger.fired`/`[watch:name]` 前缀/background 模式）、`--no-watch` 关闭 hooks |
 | `npm run feishu-markdown:test` | 飞书消息格式 38 项断言：markdown 检测（表格/标题/列表/代码块/行内代码/粗体/链接/引用各一，散文与 `2 * 3` 不误判）、`post` 正文（单行、围栏单独成行、首尾空白、空文本、元素都是 md）、纯文本降级（标题/粗体/行内代码/代码块/表格/链接/引用/删除线/空行压缩）、分块（短消息不切、超长切分、每块不超限、`(1/N)` 标号、优先换行处切、跨块代码块重新围栏且闭合、跨块表格重复表头、结尾不被截断） |
-| `npm run feishu-card:test` | 飞书卡片 37 项断言：构建器（无标题不产生 header、Markdown 原样透传、颜色白名单与回落、标题超长截断、空正文/超长正文拒绝、上限边界可用）与工具（走注入的 reply、模型收到的是构建出的卡片而非原始 JSON、失败以工具结果返回而不抛出、失败不计入"已发送"、发卡成功后宿主不再补纯文本） |
+| `npm run feishu-card:test` | 飞书卡片 41 项断言：构建器（无标题不产生 header、Markdown 原样透传、颜色白名单与回落、标题超长截断、空正文/超长正文拒绝、上限边界可用；含代码时升到卡片 JSON 2.0 且元素在 `body` 里、围栏拆成 `code_block` 元素、语言归一化与未知语言回落、多代码块各自成元素、未闭合围栏不吞正文、无代码时保持 1.0、`toCardV1` 降级后代码以围栏 markdown 保留且幂等）与工具（走注入的 reply、模型收到的是构建出的卡片而非原始 JSON、失败以工具结果返回而不抛出、失败不计入"已发送"、发卡成功后宿主不再补纯文本） |
 | `npm run image:test` | 图片规则 31 项断言：格式白名单（PNG/JPEG/GIF/WebP 通过，HEIC/SVG/空内容/无类型拒绝）、mime 大小写与参数归一、10 MB 上限边界（正好通过、超一字节拒绝、拒绝信息带具体大小）、批量里一张坏就整批拒收并指出第几张、能力声明识别、扩展名映射与 base64 字节计算 |
 | `npm run wechat:test` | 微信 ClawBot 69 项断言：发送体（`msg` 包裹、上下文令牌、消息类型、幂等键、空发送者）；解析（机器人自己的消息与 `@im.bot` 镜像被丢弃、多条 text 拼接、媒体归为不支持并报类型、没有 `context_token` 只忽略不回复、游标只在服务端给新 buf 时推进）；权限（扫码号放行、陌生人拒绝、白名单放行、无主人的旧会话一律拒绝、白名单解析）；假 iLink 服务端（扫码登录、过期码自动换一张、`bot_type=3`、每次调用都带 `base_info` 与 `X-WECHAT-UIN`、轮询带 Bearer 与新游标、`-14` 抛 `WechatSessionExpired` 且提示重新登录、网络失败重试而非退出、回复真的走到 `sendmessage` 且每条 `client_id` 不同、typing 票据只取一次）；终端二维码（登录 URL 用低版本符号、三个定位角、时序图案交替、同文本同矩阵、超长增长版本、放不下时拒绝而不是截断、半块渲染行数与字符）；登录文件（缺文件/坏 JSON/无 token 都算未登录、权限 600、snake_case 落盘、登出删文件、序列化往返） |
-| `npm run feishu:test` | 飞书机器人 89 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；卡片回复（`msg_type: interactive`、标题栏颜色、Markdown 原样下发、发卡后不再补纯文本）；图片消息（关掉图片支持时回「这张图没有发给模型」、`LLM_IMAGES=1` 时图片真的进 provider payload 且 mime/字节数与原图一致、`user.message` 事件带 images、纯图片消息补提示文本、HEIC 回具体原因、下载失败有回复、富文本 post 的文字与图片分别抽出并一起送到 provider、取图走 `messages/{id}/resources/{key}` 且只带一个 `type=image`、超过 2 MiB 按 Range 分块取回、服务端忽略 Range 也能取到、key 不可用时只请求一次、大图的 `user.message` 不被截断且日志里存的是 `blob:<sha256>` 引用、后续消息仍能正常处理）；消息格式（结构化回答走 `msg_type: post` 且正文是 `zh_cn/content` 的 md 元素、标题表格粗体原样交给 Feishu、纯文本回答仍走 `text`、超长回答拆成多条且带 `(1/N)`、结尾不被截断））；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
+| `npm run feishu:test` | 飞书机器人 96 项断言：HTTP 模式下 URL 校验 challenge（正确/错误/缺失 token）、消息回调 3 秒内 ACK、chat 映射到确定性 stream、worker 执行后经 `messages/:id/reply` 回复（tenant token 缓存只换一次）、事件落盘、重复 `event_id` 去重、非文本与 app 消息忽略、回调免 Bearer token、加密回调（AES + `X-Lark-Signature`）；卡片回复（`msg_type: interactive`、标题栏颜色、Markdown 原样下发、发卡后不再补纯文本）；图片消息（关掉图片支持时回「这张图没有发给模型」、`LLM_IMAGES=1` 时图片真的进 provider payload 且 mime/字节数与原图一致、`user.message` 事件带 images、纯图片消息补提示文本、HEIC 回具体原因、下载失败有回复、富文本 post 的文字与图片分别抽出并一起送到 provider、取图走 `messages/{id}/resources/{key}` 且只带一个 `type=image`、超过 2 MiB 按 Range 分块取回、服务端忽略 Range 也能取到、key 不可用时只请求一次、大图的 `user.message` 不被截断且日志里存的是 `blob:<sha256>` 引用、后续消息仍能正常处理）；消息格式（结构化回答走 `msg_type: post` 且正文是 `zh_cn/content` 的 md 元素、标题表格粗体原样交给 Feishu、纯文本回答仍走 `text`、超长回答拆成多条且带 `(1/N)`、结尾不被截断、含代码的卡片按 2.0 结构发送且代码是 `code_block` 元素、老租户拒绝 2.0（200621）时自动降级 1.0 重试））；长连接模式下用本地 WebSocket 假服务验证发现端点凭据、ping/pong、service_id、分片事件重组、`{"code":200}` ack 与 `biz_rt`、消息落流与回复、长连接模式下 HTTP 回调 404、断线后重新发现并重连、重连后继续收事件、错误凭证只尝试一次即停止（fatal）且不影响 HTTP 服务、停止后连接关闭；`--no-feishu` 关闭 |
 | `npm run admin:test` | 管理后台 91 项断言：`/admin` 页面免 token 而 `/admin/api/*` 需 Bearer token、概览（版本/运行时长/激活供应商）、供应商增删改与一键激活（apiKey 掩码、编辑留空保留原值、`admin.json` 持久化、模型选择弹窗调用 `/v1/models`）、网关读取与写回 `~/.steve/.env`（保留未修改字段、保存后立即回显、清空后回显未配置）、模型选择弹窗与规格展示（`/v1/models` 的 `items` 规格解析、页面结构）、定时任务写 `~/.steve/watch.json` 的 cron 触发器与「立即运行」落到后台 run、日志级别热更新与持久化、配置文件的默认掩码/`reveal=1`/白名单外 400、重启接口返回 202 后以退出码 75 退出、系统信息报出实际读取的 `admin.json` 路径（配置搬家用）、没有 `.env` 时仅凭控制台里激活的供应商也能启动 |
 | `npm run triggers:test` | 触发器与后台审批 46 项断言：predicate 匹配与不匹配、`trigger.fired` + `[watch:name]` 前缀消息与 causeId、watch.armed、去重窗口/每分钟上限/因果深度三道防线（含 `watch.dedupe` 原因）、cron 假时钟到点触发与 stop() 清 timer、睡过槽位不补跑、`~/.steve/watch.json` 合法条目登记与坏条目跳过；fs 真实文件变化与 debounce 合并、stop() 关闭 watcher；webhook 签名校验/拒绝/开放路径/未注册路径；后台审批挂起、allow_once 放行、deny 拒绝、超时按拒绝 |
 | `npm run projections:test` | 事件投影 42 项断言：full/internal/audit 恒等透传（ACP 行为不变）、user 档隐藏 thinking/工具参数/工具输出并保留标题与摘要、`turn_end`/`run.failed` 去掉 provider 原文、`run.turn.settled` 不外发、审批事件收窄、`oneLine`/`truncateText` 边界 |

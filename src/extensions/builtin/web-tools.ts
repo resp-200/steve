@@ -30,8 +30,8 @@ export function webTools(pi: ExtensionAPI): void {
 	const provider = resolveSearchProvider(process.env, (message) => pi.ctx.log(message));
 	if (!provider) {
 		pi.ctx.log(
-			"web_search not registered: set TAVILY_API_KEY, EXA_API_KEY or BRAVE_API_KEY in ~/.steve/.env " +
-				"(WEB_SEARCH_PROVIDER picks one explicitly). web_fetch stays available.",
+			"web_search not registered: set TAVILY_API_KEY, EXA_API_KEY or BRAVE_API_KEY in ~/.steve/.env, " +
+				"or unset WEB_SEARCH_PROVIDER to use the keyless DuckDuckGo fallback. web_fetch stays available.",
 		);
 	}
 

@@ -13,7 +13,6 @@
 // Nothing here touches the public internet: the local server stands in for a
 // website, and `resolveHost` is pinned so the SSRF checks are deterministic.
 import { createServer } from "node:http";
-import { spam } from "node:console"; // eslint-disable-line -- unused, kept out below
 import process from "node:process";
 
 const checks = [];
@@ -102,16 +101,90 @@ async function policyChecks() {
 	check("抓取输出上限 200 000 字符", web.WEB_FETCH_MAX_OUTPUT_CHARS === 200_000);
 
 	// Provider selection is pure env inspection, so no network is involved.
-	check("没有 key 时不给搜索工具", web.resolveSearchProvider({}) === undefined);
-	check("有 key 时选中对应 provider", web.resolveSearchProvider({ TAVILY_API_KEY: "k" })?.id === "tavily");
-	check("WEB_SEARCH_PROVIDER 可显式指定", web.resolveSearchProvider({ EXA_API_KEY: "k", WEB_SEARCH_PROVIDER: "exa" })?.id === "exa");
+	// Two tiers: nothing configured still searches (keyless), a key upgrades it.
+	check("什么都不配也能搜（无 key 档）", web.resolveSearchProvider({})?.id === "duckduckgo");
+	check("配了 key 就换成对应的 provider", web.resolveSearchProvider({ TAVILY_API_KEY: "k" })?.id === "tavily");
+	check("key 优先于无 key 档", web.resolveSearchProvider({ EXA_API_KEY: "k" })?.id === "exa");
+	check("WEB_SEARCH_PROVIDER 可显式指定", web.resolveSearchProvider({ EXA_API_KEY: "k", WEB_SEARCH_PROVIDER: "wikipedia" })?.id === "wikipedia");
+	check("别名 ddg 可用", web.resolveSearchProvider({ WEB_SEARCH_PROVIDER: "ddg" })?.id === "duckduckgo");
+	check("WEB_SEARCH_PROVIDER=none 关掉搜索", web.resolveSearchProvider({ TAVILY_API_KEY: "k", WEB_SEARCH_PROVIDER: "none" }) === undefined);
 	const warnings = [];
 	const unknown = web.resolveSearchProvider({ BRAVE_API_KEY: "k", WEB_SEARCH_PROVIDER: "bing" }, (m) => warnings.push(m));
 	check("未知 provider 说明并继续", unknown === undefined && warnings.some((m) => m.includes("unknown")), warnings.join(";"));
+	const noKey = [];
+	const namedWithoutKey = web.resolveSearchProvider({ WEB_SEARCH_PROVIDER: "brave" }, (m) => noKey.push(m));
+	check("点名但要 key 而没 key：不偷偷换别的", namedWithoutKey === undefined && noKey.some((m) => m.includes("BRAVE_API_KEY")), noKey.join(";"));
+	const keyless = web.createWebTools({ provider: web.duckduckgoProvider });
+	check("无 key provider 也注册 web_search", keyless.map((t) => t.name).join(",") === "web_search,web_fetch");
+	check("搜索描述会说明当前数据源", keyless[0].description.includes("DuckDuckGo"), keyless[0].description.slice(0, 80));
+	const wikiTool = web.createWebTools({ provider: web.wikipediaProvider })[0];
+	check("百科源额外提醒它没有时效信息", wikiTool.description.includes("encyclopedia"));
 	check("没有 provider 时只注册 web_fetch", web.createWebTools({}).map((t) => t.name).join(",") === "web_fetch");
 	const both = web.createWebTools({ provider: web.tavilyProvider });
 	check("有 provider 时两个工具都在", both.map((t) => t.name).join(",") === "web_search,web_fetch");
 	check("两个工具都不需要审批", both.every((tool) => tool.permission === "auto"));
+}
+
+/* ------------------ A2. search sources, parsed offline ------------------ */
+
+// The shapes below are copied from what each endpoint actually returns, so a
+// silent change in their format shows up here rather than as empty results.
+async function searchSourceChecks() {
+	const web = await import("../dist/features/web-tools.js");
+
+	// Wikipedia: snippets arrive as highlighted HTML, titles URL-encoded.
+	const zh = {
+		query: {
+			search: [
+				{ title: "曹操", snippet: '<span class="searchmatch">曹操</span>，字孟德，沛國譙縣人。', timestamp: "2024-05-01T12:00:00Z" },
+				{ title: "赤壁之戰", snippet: "<b>曹操</b>&amp;孫劉聯軍" },
+			],
+		},
+	};
+	const originalFetch = globalThis.fetch;
+	const answerJson = (data) => async (url) => {
+		const host = new URL(String(url)).hostname;
+		const hits = host.startsWith("zh") ? zh.query.search : [];
+		return { ok: true, status: 200, json: async () => ({ query: { search: hits } }) };
+	};
+	globalThis.fetch = answerJson();
+	const wiki = await web.wikipediaProvider.search("曹操", 5, AbortSignal.timeout(1000));
+	check("维基中文结果排在前", wiki.sources[0]?.url === "https://zh.wikipedia.org/wiki/%E6%9B%B9%E6%93%8D", wiki.sources[0]?.url);
+	check("维基摘要去掉高亮标签、还原实体", wiki.sources[1]?.snippet?.replace(/\s/g, "") === "曹操&孫劉聯軍", wiki.sources[1]?.snippet);
+	check("维基摘要无残留标签", !wiki.sources.some((s) => /<[^>]+>/.test(s.snippet ?? "")));
+	check("维基保留时间戳（只到日）", wiki.sources[0]?.publishedAt === "2024-05-01", wiki.sources[0]?.publishedAt);
+	globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ query: { search: [] } }) });
+	check("维基没结果时返回空表", (await web.wikipediaProvider.search("no-such-thing", 5, AbortSignal.timeout(1000))).sources.length === 0);
+
+	// DDG's real payload: rows are `[{ first: 1 }, { result: ... }]` with ads flagged.
+	const payload = {
+		results: [
+			{ first: 1 },
+			{ result: { title: "Sponsored", u: "https://ad.example.com/", snippet: "buy", first: 1, is_ad: true } },
+			{ result: { title: "<b>Node</b> fetch timeout", u: "//duckduckgo.com/l/?uddg=https%3A%2F%2Fstackoverflow.com%2Fq%2F1&rut=x", snippet: "Use AbortSignal.<b>timeout</b>()" } },
+		],
+	};
+
+	const ddg = web.ddgSources(payload, 5);
+	check("DDG 广告被丢掉", ddg.sources.every((s) => !s.url.includes("ad.example.com")), JSON.stringify(ddg.sources.map((s) => s.url)));
+	check("DDG 跳转壳被拆成真实地址", ddg.sources[0]?.url === "https://stackoverflow.com/q/1", ddg.sources[0]?.url);
+	check("DDG 去高亮标签", ddg.sources[0]?.title === "Node fetch timeout" && ddg.sources[0]?.snippet === "Use AbortSignal.timeout()", ddg.sources[0]?.title);
+	// Two entries exist, one of them an ad: the cap is applied after the ad is gone.
+	const more = { results: [{ result: { title: "a", u: "https://a.example.com/" } }, { result: { title: "b", u: "https://b.example.com/" } }] };
+	check("DDG 按上限截断并标注", web.ddgSources(more, 1).truncated === true && web.ddgSources(more, 2).truncated === false);
+	check("DDG 截断只在过滤后计数", web.ddgSources(payload, 1).truncated === false);
+	check("DDG 空载荷不炸", web.ddgSources({}, 5).sources.length === 0 && web.ddgSources(null, 5).sources.length === 0);
+
+	// The bot-challenge page: a 2xx with no results in it must not read as "no matches".
+	globalThis.fetch = async () => ({ ok: true, status: 202, text: async () => '<div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>' });
+	const blocked = await failure(() => web.duckduckgoProvider.search("x", 5, AbortSignal.timeout(1000)));
+	check("DDG 被限流时说清是限流并给出退路", blocked.includes("rate-limiting") && blocked.includes("WEB_SEARCH_PROVIDER=wikipedia"), blocked);
+
+	// A page shell without the endpoint token is a layout change, not a failure to report as empty.
+	globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '<html><body><a class="result__a" href="/x">a</a></body></html>' });
+	const moved = await failure(() => web.duckduckgoProvider.search("x", 5, AbortSignal.timeout(1000)));
+	check("DDG 页面改版时不静默返回空", moved.includes("layout may have changed"), moved);
+	globalThis.fetch = originalFetch;
 }
 
 /* -------------------- B. fetch against a local server ------------------- */
@@ -231,8 +304,9 @@ async function pluginChecks() {
 		}
 		return tools.map((tool) => tool.name).sort().join(",");
 	};
-	check("无 key：插件只注册 web_fetch", (await load({})) === "web_fetch");
+	check("无 key：插件也注册两个工具（无 key 档）", (await load({})) === "web_fetch,web_search");
 	check("有 key：插件注册两个工具", (await load({ TAVILY_API_KEY: "k" })) === "web_fetch,web_search");
+	check("显式关闭时只注册 web_fetch", (await load({ WEB_SEARCH_PROVIDER: "none" })) === "web_fetch");
 }
 
 /* -------------------------------- run ---------------------------------- */
@@ -240,6 +314,7 @@ async function pluginChecks() {
 const { server, origin } = await serve();
 try {
 	await policyChecks();
+	await searchSourceChecks();
 	await fetchChecks(origin);
 	await pluginChecks();
 } finally {

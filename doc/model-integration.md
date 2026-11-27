@@ -89,8 +89,8 @@ Anthropic 协议的 baseUrl 不能填成 `.../v1`），否则会 404。
 | `LLM_PROVIDER` | string | 传给 pi 的 provider id，出现在错误信息与会话元信息里 | `custom` |
 | `LLM_REASONING` | bool | 是否声明该模型支持扩展思考，见 §6 | `false` |
 | `LLM_IMAGES` | bool | 是否声明该模型支持图片输入（`Model.input` 含 `image`）；默认开启，纯文本模型才设 `false` | `true` |
-| `LLM_CONTEXT_WINDOW` | int > 0 | `Model.contextWindow`，pi 用它估算上下文占用、决定何时压缩 | `128000` |
-| `LLM_MAX_TOKENS` | int > 0 | `Model.maxTokens`，即请求的 `max_tokens`；Anthropic 协议必须带 | `8192` |
+| `LLM_CONTEXT_WINDOW` | int > 0 | 覆盖 `~/.steve/admin.json` 的 `contextWindow`（该值决定 pi 估算占用与压缩时机）；不设时用 admin 文件的值，默认 350000 | `~/.steve/admin.json` 的 `contextWindow` |
+| `LLM_MAX_TOKENS` | int > 0 | 覆盖 `~/.steve/admin.json` 的 `maxTokens`，即请求的 `max_tokens`；Anthropic 协议必须带 | `8192`（admin 文件，后台可改） |
 | `LLM_SYSTEM_PROMPT` | string | 替换提示词的身份正文；场景层与工作目录等环境信息仍会附加 | `DEFAULT_IDENTITY`（见 `src/model/prompt.ts`） |
 
 解析细节：
