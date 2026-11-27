@@ -306,6 +306,45 @@ createServer((req, res) => {
 			return;
 		}
 
+		// "回显 markdown" answers with the constructs Feishu only renders in a
+		// `post` message: a heading, a pipe table, bold, and an inline code span.
+		// If the adapter sends this as `text`, the user reads the source.
+		if (/\u56de\u663e\s*markdown|echo-markdown/i.test(asked)) {
+			const markdown = [
+				"## 标题在这里",
+				"",
+				"| 列一 | 列二 |",
+				"| --- | --- |",
+				"| a | 1 |",
+				"| b | 2 |",
+				"",
+				"**加粗** 和 `行内代码`",
+			].join("\n");
+			const events = pathname.endsWith("/messages")
+				? anthropicText(markdown)
+				: responsesApi
+					? responseEvents(markdown)
+					: completionEvents(markdown);
+			streamEvents(res, events);
+			return;
+		}
+
+		// "回显长文" answers with more than one Feishu message holds, so the split
+		// path (and its `(1/N)` markers) can be seen end to end.
+		if (/\u56de\u663e\u957f\u6587|echo-long/i.test(asked) && !sawToolResult) {
+			// Just over two messages' worth: enough to exercise the split without
+			// the mock's per-event delay turning the reply into a minute of stream.
+			const filler = Array.from({ length: 420 }, () => "这是一段很长的回答，用来撑过单条消息的上限。");
+			const longText = ["## 长文开始", "", ...filler, "", "## 长文结束"].join("\n");
+			const events = pathname.endsWith("/messages")
+				? anthropicText(longText)
+				: responsesApi
+					? responseEvents(longText)
+					: completionEvents(longText);
+			streamEvents(res, events);
+			return;
+		}
+
 		const planned = sawToolResult ? undefined : planToolCall(asked);
 		const toolResult = sawToolResult ? toolResultText(list) : undefined;
 		const answer = toolResult ? `工具返回：${toolResult.slice(0, 400)}` : FINAL;

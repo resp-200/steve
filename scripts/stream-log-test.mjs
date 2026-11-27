@@ -8,7 +8,11 @@
 //      glue onto it
 //   C. rotation: reads continue across files and seq never resets
 //   D. fork: a forked stream is independent and starts at seq 1
-//   E. size strategy: over-limit events are truncated and the fold skips them
+//   E. size strategy: over-limit events are truncated, and the fold keeps the
+//      message while dropping the clipped payload
+//   G. blobs: image payloads leave the log line for `blobs/<sha256>`, dedupe by
+//      content, and fold back into the transcript (a missing blob drops the
+//      picture, not the message)
 //   F. session store: the JSONL stream is the truth — save/load/list/remove keep
 //      working through the compatibility layer, legacy `.json` sessions still
 //      load, and both read paths fold to the same transcript
@@ -228,7 +232,74 @@ async function sizeChecks() {
 	check("截断后按 UTF-8 字节数受限", Buffer.byteLength(JSON.stringify(events[2])) <= 512 + 64);
 	check("超限 tool_end 保留身份与错误标记", events[3]?.truncated === true && events[3]?.id === "call-1" && events[3]?.name === "read_file" && events[3]?.isError === false);
 	check("截断的 tool_end 丢弃 details", events[3]?.details === undefined);
-	check("折叠跳过被截断的事件", foldTranscript(events).length === 1);
+	// Truncation clips detail; it must not delete a turn from the conversation.
+	// Dropping a user message left an assistant turn at the end of the transcript,
+	// and the next run could not continue from it ("Cannot continue from message
+	// role: assistant").
+	const foldedTruncated = foldTranscript(events);
+	check(
+		"被截断的 user.message 仍留在 transcript 里",
+		foldedTruncated.length === 3 && foldedTruncated[1]?.role === "user",
+		JSON.stringify(foldedTruncated.map((message) => message.role)),
+	);
+	check(
+		"被截断的 tool_end 仍留在 transcript 里",
+		foldedTruncated[2]?.role === "toolResult",
+		JSON.stringify(foldedTruncated.map((message) => message.role)),
+	);
+	log.close();
+}
+
+/* ------------------------- G. blob storage ------------------------------ */
+
+async function blobChecks() {
+	const { createStreamLog } = await import("../dist/features/stream-log.js");
+	const { foldTranscript } = await import("../dist/features/state-fold.js");
+	const { createBlobStore, blobHash } = await import("../dist/features/blob-store.js");
+	const base = scratch("steve-blobs-");
+	const blobDir = join(base, "blobs");
+	const blobs = createBlobStore(blobDir);
+	const log = createStreamLog({ dir: join(base, "streams"), blobs, logger: () => {} });
+	const streamId = "stream-blob";
+
+	// A real screenshot is far above the single-event cap once base64 encoded; the
+	// payload has to leave the log line or the message gets amputated.
+	const picture = Buffer.alloc(400_000, 7).toString("base64");
+	await log.append(streamId, [
+		{ type: "stream.created", streamId, cwd: "/tmp/project" },
+		{ type: "user.message", text: "看看这个报错", images: [{ mimeType: "image/png", data: picture }] },
+	]);
+
+	const written = (await log.read(streamId)).find((event) => event.type === "user.message");
+	const stored = Array.isArray(written?.images) ? written.images[0] : undefined;
+	check("图片事件没有超过单事件上限", written?.truncated === undefined);
+	check("事件里存的是 blob 引用", typeof stored?.ref === "string" && stored?.ref.startsWith("blob:") && stored?.data === undefined, JSON.stringify(stored).slice(0, 120));
+	check("blob 引用带 sha256", blobHash(stored?.ref) !== undefined);
+	check("blob 文件按内容寻址写出", existsSync(join(blobDir, blobHash(stored?.ref) ?? "")));
+	check("日志里不含图片正文", !readFileSync(join(base, "streams", streamId, eventFiles(join(base, "streams"), streamId)[0]), "utf8").includes(picture.slice(0, 200)));
+	check("mime 类型随引用保存", stored?.mimeType === "image/png");
+
+	const ref = String(stored?.ref ?? "");
+	const folded = foldTranscript(await log.read(streamId), (reference) => log.readBlob(reference));
+	const foldedContent = Array.isArray(folded[0]?.content) ? folded[0].content : [];
+	const foldedImage = foldedContent.find((block) => block?.type === "image");
+	check("折叠时图片从 blob 还原", foldedImage?.data === picture && foldedImage?.mimeType === "image/png");
+	check("折叠保留用户文字", foldedContent.some((block) => block?.type === "text" && block.text === "看看这个报错"));
+
+	// Same bytes twice: one file, because the name is the hash.
+	const before = readdirSync(blobDir).filter((name) => !name.endsWith(".json")).length;
+	blobs.put(picture, "image/png");
+	check("相同图片只存一份", readdirSync(blobDir).filter((name) => !name.endsWith(".json")).length === before);
+
+	// A blob that is gone (cleaned up, copied elsewhere) must not become a block
+	// with no data — the message stays, only the picture drops out.
+	rmSync(join(blobDir, blobHash(ref) ?? ""), { force: true });
+	const withoutBlob = foldTranscript(await log.read(streamId), (reference) => log.readBlob(reference));
+	check("blob 丢失时消息仍在，图片被跳过", withoutBlob.length === 1 && withoutBlob[0]?.content === "看看这个报错", JSON.stringify(withoutBlob[0]?.content).slice(0, 120));
+
+	// A reader that knows nothing about blobs still gets a usable transcript.
+	const unresolved = foldTranscript(await log.read(streamId));
+	check("不传读取器时也不崩", unresolved.length === 1);
 	log.close();
 }
 
@@ -319,6 +390,7 @@ async function main() {
 		await rotationChecks();
 		await forkChecks();
 		await sizeChecks();
+		await blobChecks();
 		await storeChecks();
 	} finally {
 		for (const dir of roots) rmSync(dir, { recursive: true, force: true });

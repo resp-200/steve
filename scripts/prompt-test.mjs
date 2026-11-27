@@ -85,7 +85,10 @@ check("no details block without details", !base.includes("工作目录："), bas
 	// Rendering advice was deliberately left out: a wrong claim about a client is
 	// worse than saying nothing, and the console asked for it to stay out.
 	const all = ["cli", "acp", "worker", "feishu"].map((scene) => composeSystemPrompt({ scene })).join("\n");
-	check("no rendering claims anywhere", !/markdown/i.test(all) && !all.includes("纯文本"), all);
+	// "markdown 链接" is about writing a citation, not about how a client renders
+	// it — the rule under test is that no scene claims anything renders.
+	const withoutCitations = all.replace(/markdown 链接/g, "链接");
+	check("no rendering claims anywhere", !/markdown/i.test(withoutCitations) && !all.includes("纯文本"), all);
 }
 
 /* ---------- summary ---------- */

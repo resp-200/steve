@@ -219,7 +219,7 @@ export class AcpSession {
 				config: options.config,
 				extensions: options.extensions,
 				log,
-				readState: async (streamId) => foldTranscript(await log.read(streamId)),
+				readState: async (streamId) => foldTranscript(await log.read(streamId), (reference) => log.readBlob(reference)),
 				resolveEnvironment: async () => this.environment,
 				tools: () => this.assembly.tools,
 				// No fixed string here: the worker composes from the live config each
@@ -278,14 +278,14 @@ export class AcpSession {
 				if (projected.audience !== "user") this.publisher.publishEvent(projected.event);
 			}
 		});
-		this.runtime.restore(foldTranscript(events));
+		this.runtime.restore(foldTranscript(events, (reference) => log.readBlob(reference)));
 	}
 
 	/** Keeps the runtime's transcript (persistence, replay, `/stats`) in sync with the log. */
 	private async syncRuntime(): Promise<void> {
 		const log = this.log;
 		if (!log) return;
-		this.runtime.restore(foldTranscript(await log.read(this.streamId)));
+		this.runtime.restore(foldTranscript(await log.read(this.streamId), (reference) => log.readBlob(reference)));
 	}
 
 	/* ------------------------------- prompting ------------------------------ */

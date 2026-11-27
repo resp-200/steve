@@ -40,6 +40,7 @@ import {
 } from "./api.js";
 import { demoTools } from "./builtin/demo-tools.js";
 import { localTools } from "./builtin/local-tools.js";
+import { webTools } from "./builtin/web-tools.js";
 import { mcpConfig } from "./builtin/mcp-config.js";
 import { watchConfig } from "./builtin/watch-config.js";
 import { sessionCommands } from "./builtin/session-commands.js";
@@ -143,6 +144,7 @@ export async function loadExtensions(options: ExtensionHostOptions): Promise<Ext
 					{ label: "builtin:session-commands", factory: sessionCommands as PluginFactory },
 					{ label: "builtin:local-tools", factory: localTools as PluginFactory },
 					{ label: "builtin:demo-tools", factory: demoTools as PluginFactory },
+					{ label: "builtin:web-tools", factory: webTools as PluginFactory },
 					{ label: "builtin:mcp-config", factory: mcpConfig as PluginFactory },
 					{ label: "builtin:watch-config", factory: watchConfig as PluginFactory },
 				]),

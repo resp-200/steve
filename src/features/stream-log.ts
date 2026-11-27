@@ -32,6 +32,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { steveHomeDir } from "../model/config.js";
+import { createBlobStore, type BlobStore } from "./blob-store.js";
 import type { Logger } from "../types.js";
 import type { PromptImage, StreamEvent, StreamEventBody } from "./events.js";
 
@@ -52,6 +53,8 @@ export interface StreamLogOptions {
 	/** Default: `~/.steve/streams`. */
 	dir?: string;
 	logger?: Logger;
+	/** Where image payloads go instead of the log line. Default `~/.steve/blobs`. */
+	blobs?: BlobStore;
 	/** Soft cap per file; rotation never resets `seq`. Default 8 MiB. */
 	rotateBytes?: number;
 	/** Events larger than this are truncated and flagged `truncated`. Default 64 KiB. */
@@ -83,6 +86,8 @@ export interface StreamSummary {
 
 export interface StreamLog {
 	readonly dir: string;
+	/** Resolves a `blob:<sha>` reference written by this log, for folding back. */
+	readBlob(reference: string): { data: string; mimeType: string } | undefined;
 	append(streamId: string, events: readonly StreamEventInput[]): Promise<AppendedEvents>;
 	read(streamId: string, fromSeq?: number, limit?: number): Promise<StreamEvent[]>;
 	/** Replays history from `fromSeq`, then keeps delivering new events. */
@@ -139,6 +144,7 @@ export function createStreamLog(options: StreamLogOptions = {}): StreamLog {
 	const logger = options.logger ?? ((): void => {});
 	const rotateBytes = options.rotateBytes ?? DEFAULT_ROTATE_BYTES;
 	const maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
+	const blobs = options.blobs ?? createBlobStore(join(steveHomeDir(), "blobs"));
 	const states = new Map<string, StreamState>();
 	const listeners = new Map<string, Set<(event: StreamEvent) => void>>();
 
@@ -270,6 +276,26 @@ export function createStreamLog(options: StreamLogOptions = {}): StreamLog {
 		}
 	};
 
+	/**
+	 * Replaces image payloads with blob references before the size check runs.
+	 *
+	 * A screenshot is megabytes of base64, so an inline payload always trips the
+	 * single-event cap and the message survives with its picture amputated. Moving
+	 * the bytes out first means the event stays small and the fold can put the
+	 * picture back.
+	 */
+	const storeBlobs = (event: StreamEvent): StreamEvent => {
+		const source = event as unknown as { images?: { data?: unknown; mimeType?: unknown }[] };
+		if (!Array.isArray(source.images) || source.images.length === 0) return event;
+		const images = source.images.map((image) => {
+			const data = typeof image.data === "string" ? image.data : undefined;
+			if (data === undefined) return image;
+			const stored = blobs.put(data, typeof image.mimeType === "string" ? image.mimeType : "image/png");
+			return { ref: stored.ref, mimeType: stored.mimeType };
+		});
+		return { ...event, images } as unknown as StreamEvent;
+	};
+
 	/** Truncates an over-limit event while keeping what `foldTranscript` can still use. */
 	const boundEvent = (event: StreamEvent, maxBytes: number, streamId: string): StreamEvent => {
 		const serialized = JSON.stringify(event);
@@ -344,7 +370,7 @@ export function createStreamLog(options: StreamLogOptions = {}): StreamLog {
 				...(causeId !== undefined ? { causeId } : {}),
 				...draft,
 			} as unknown as StreamEvent;
-			events.push(boundEvent(event, maxEventBytes, streamId));
+			events.push(boundEvent(storeBlobs(event), maxEventBytes, streamId));
 		}
 
 		const lines = events.map((event) => `${JSON.stringify(event)}\n`).join("");
@@ -491,6 +517,7 @@ export function createStreamLog(options: StreamLogOptions = {}): StreamLog {
 
 	return {
 		dir,
+		readBlob: (reference) => blobs.get(reference),
 		append,
 		read,
 		subscribe,

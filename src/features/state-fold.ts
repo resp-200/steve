@@ -59,12 +59,40 @@ const addUsage = (total: TurnUsage, usage: TurnUsage): TurnUsage => ({
 	reasoning: total.reasoning + usage.reasoning,
 });
 
+/**
+ * Images arrive either inline (a small picture written before blob storage
+ * existed) or as a `blob:<sha>` reference. Resolving is the caller's job — the
+ * fold is pure — so an unresolved reference simply drops out of the transcript
+ * rather than becoming a block with no data.
+ */
+type StoredImage = PromptImage | { ref: string; mimeType: string };
+
+function resolveImages(images: readonly StoredImage[] | undefined, read: BlobReader | undefined): PromptImage[] {
+	if (images === undefined || images.length === 0) return [];
+	const resolved: PromptImage[] = [];
+	for (const image of images) {
+		const inline = (image as { data?: unknown }).data;
+		if (typeof inline === "string") {
+			resolved.push({ mimeType: image.mimeType, data: inline });
+			continue;
+		}
+		const reference = (image as { ref?: unknown }).ref;
+		const found = typeof reference === "string" ? read?.(reference) : undefined;
+		if (found !== undefined) resolved.push(found);
+	}
+	return resolved;
+}
+
+/** Resolves a `blob:<sha>` reference to its payload. */
+export type BlobReader = (reference: string) => { data: string; mimeType: string } | undefined;
+
 /** Rebuilds user content: plain text when there are no images, blocks otherwise. */
-function userContent(text: string, images: readonly PromptImage[] | undefined): string | unknown[] {
-	if (images === undefined || images.length === 0) return text;
+function userContent(text: string, images: readonly StoredImage[] | undefined, read: BlobReader | undefined): string | unknown[] {
+	const pictures = resolveImages(images, read);
+	if (pictures.length === 0) return text;
 	const blocks: unknown[] = [];
 	if (text !== "") blocks.push({ type: "text", text });
-	for (const image of images) blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
+	for (const image of pictures) blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
 	return blocks;
 }
 
@@ -86,16 +114,21 @@ function isAgentMessage(value: unknown): value is AgentMessage {
  * Events → model context. Only messages that the model actually saw produce a
  * message: streaming deltas are rendering detail, and a failed turn that never
  * ran a tool leaves no trace (the old `messages.slice(0, before)` rollback).
+ *
+ * `truncated` means the event was too big to store and lost detail — it does
+ * not mean the message is up for debate. A user message is the backbone of the
+ * conversation: dropping it leaves an assistant turn ending the transcript, and
+ * the next run cannot continue from there. So truncation clips payloads, and
+ * the message itself always survives.
  */
-export function foldTranscript(events: readonly StreamEvent[]): AgentMessage[] {
+export function foldTranscript(events: readonly StreamEvent[], read?: BlobReader): AgentMessage[] {
 	const messages: AgentMessage[] = [];
 	for (const event of events) {
-		if (event.truncated === true) continue;
 		switch (event.type) {
 			case "user.message": {
 				messages.push({
 					role: "user",
-					content: userContent(event.text, event.images),
+					content: userContent(event.text ?? "", event.images as readonly StoredImage[] | undefined, read),
 					timestamp: event.ts,
 				} as AgentMessage);
 				break;
@@ -109,7 +142,7 @@ export function foldTranscript(events: readonly StreamEvent[]): AgentMessage[] {
 					role: "toolResult",
 					toolCallId: event.id,
 					toolName: event.name,
-					content: toolContent(event.text, event.images),
+					content: toolContent(event.text ?? "", resolveImages(event.images as readonly StoredImage[] | undefined, read)),
 					...(event.details !== undefined ? { details: event.details } : {}),
 					isError: event.isError,
 					timestamp: event.ts,

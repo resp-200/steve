@@ -337,6 +337,8 @@ async function main(): Promise<void> {
 		config,
 		extensions,
 		log: log2,
+		// Pictures live in blobs; folding a transcript has to put them back.
+		readBlob: (reference) => log2.readBlob(reference),
 		resolveEnvironment: async (_streamId, mode) => environmentFor(mode),
 		tools: () => assembly.tools,
 		// The console edits the persona while the service is running; every run
@@ -396,7 +398,7 @@ async function main(): Promise<void> {
 		const downloaded: { mimeType: string; data: string; label: string }[] = [];
 		for (const key of keys) {
 			try {
-				const fetched = await feishuClient.downloadImage(key, { ...(message.messageType !== undefined ? { messageType: message.messageType } : {}) });
+				const fetched = await feishuClient.downloadImage(key, { messageId: message.messageId });
 				downloaded.push({ ...fetched, label: keys.length > 1 ? `第 ${downloaded.length + 1} 张图片` : "这张图片" });
 			} catch (error) {
 				const detail = error instanceof Error ? error.message : String(error);

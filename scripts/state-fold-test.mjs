@@ -159,11 +159,14 @@ try {
 		check("run.turn.settled → 原样保留完整 AssistantMessage", messages[1]?.content?.[0]?.text === "hi there" && messages[1]?.stopReason === "stop");
 		check("tool_end → ToolResultMessage（toolCallId/toolName/content/details/isError）", messages[2]?.role === "toolResult" && messages[2]?.toolCallId === "call-1" && messages[2]?.toolName === "get_current_time" && messages[2]?.content?.[0]?.text === "2024-01-01" && messages[2]?.details?.zone === "UTC" && messages[2]?.isError === false);
 		check("失败的 tool_end 也产生 toolResult（isError 为 true）", messages[3]?.role === "toolResult" && messages[3]?.isError === true);
-		check("run.failed 不产生消息（等价旧回滚）", messages.filter((message) => message.role === "toolResult").length === 2 && messages.length === 6);
-		check("truncated 事件被跳过", messages.every((message) => message.content !== "too big"));
+		check("run.failed 不产生消息（等价旧回滚）", messages.filter((message) => message.role === "toolResult").length === 2 && messages.length === 7);
+		// A truncated event lost detail, not the turn. Dropping the message left an
+		// assistant at the end of the transcript and the next run could not continue
+		// from it, so the message stays and only its payload is clipped.
+		check("truncated 事件仍产生消息", messages.some((message) => message.content === "too big"));
 		check("无文字只有图片的 user.message → 仅 image 块", Array.isArray(messages.at(-1)?.content) && messages.at(-1)?.content?.every((block) => block.type === "image") === true);
-		check("turn_start/text_delta/thinking_delta/tool_start/tool_update/turn_end 不产生消息", messages.length === 6);
-		check("消息顺序 = 事件里可重建的对话顺序", messages.map((message) => message.role).join(",") === "user,assistant,toolResult,toolResult,assistant,user");
+		check("turn_start/text_delta/thinking_delta/tool_start/tool_update/turn_end 不产生消息", messages.length === 7);
+		check("消息顺序 = 事件里可重建的对话顺序", messages.map((message) => message.role).join(",") === "user,assistant,toolResult,toolResult,assistant,user,user");
 		check("AssistantMessage 在 fold 中是同一引用（不复制模型消息）", messages[1] === assistant);
 	}
 

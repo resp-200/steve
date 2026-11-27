@@ -98,7 +98,22 @@ FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 - 按 `event_id` 去重（飞书超时会重投）。
 - 同一 chat 的 stream 串行执行：新消息若顶掉正在跑的 run，旧 run 的回复会带「执行被取消」。
 - 权限仍走 `steve-serve` 的 `--access` 与审批策略：需要审批（permission: ask）的工具在常驻进程里不会弹窗，会被拒绝并写进事件流；只读/只写类工具按 `--access` 放行。
-- 默认回复是纯文本（agent 的最终文本；工具调用过程不推给飞书），超过 4000 字截断。
+- 回复的是 agent 的最终文本（工具调用过程不推给飞书）。超过 8000 字拆成多条发送，不是截断。
+
+**消息格式**：飞书对同一个 `msg_type` 的渲染规则不一样，选错了用户就会读到源码。
+
+| `msg_type` | 渲染什么 | 我们用在哪 |
+| --- | --- | --- |
+| `text` | 什么都不渲染：`## 标题`、`\| 列 \| 列 \|` 原样显示 | 纯散文回复 |
+| `post` | `md` 元素里渲染标题、表格、代码块、列表、加粗、链接 | 含任何 Markdown 结构的回复 |
+
+判断规则在 `src/model/feishu-markdown.ts` 的 `looksLikeMarkdown()`：表格、标题、列表、围栏代码块、行内代码、加粗、删除线、链接、引用任一出现就发 `post`。单个 `*`、行内提到 `#1` 这类不算，散文仍然是 `text`。
+
+三个细节值得知道：
+
+- **代码块单独成行**：`post` 的内容是二维数组，围栏代码块独占一行。飞书的 `md` 渲染器在同一个元素里遇到围栏会把后面的内容吞掉，合在一起写会丢字。
+- **`post` 被拒时降级**：老租户或某些构造会被回 `content format of the post type is incorrect`，此时自动改成 `text` 重发，内容是剥掉 Markdown 符号的纯文本（`stripMarkdown()`）——符号去掉但内容和链接地址都在，比一条发不出去的消息好。
+- **按块判断而不是按整条**：分块后的每一块各自决定 `text`/`post`，所以一条长回复里「一半表格一半散文」时，两半都能以正确的形态到达。
 
 **飞书卡片**：agent 可以自己决定用卡片回复。只有由飞书消息启动的那次 run 才会拿到 `send_feishu_card` 工具（普通后台 run、CLI、ACP 都没有——卡片必须回给某个具体消息），模型按需调用：
 
@@ -120,15 +135,19 @@ FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 | 只发图 / 相册转发 | `image` | 按 `image_key` 取原图 |
 | 图片 + 文字、粘贴、拖拽、转发对话 | `post`（富文本） | 二维数组逐段解析，文字拼成一行、图片按阅读顺序取出，两者一起进 run |
 
-收图时按 `image_key` 调 `GET /open-apis/im/v1/images/:key?type=<type>` 取回原图，转成 base64 交给模型。
+收图走**消息资源接口**：`GET /open-apis/im/v1/messages/:message_id/resources/:image_key?type=image`。
+必须带 `message_id` —— 只拿 `image_key` 去调 `im/v1/images/:key` 会被飞书回 `234001 Invalid request param.`，
+因为那个接口要的是另一类资源。
 
-`type` 从 key 上看不出来：同一个 `img_v3_…` 格式，聊天里直接发的图（`image` 消息）要用
-`type=message`，富文本里带的图（`post`）按 `type=default` 更接近，猜错就是 `HTTP 400 Invalid request param.`。
-所以按消息类型先试最可能的那个，再试另一个，第一次成功即返回；两条都失败才报错，错误里带上
-飞书返回的 `code`/`msg`。
+**大于 2 MiB 的图会分块取**：先发 `Range: bytes=0-0` 探测，回 206 就按 `Content-Range` 拿总长，
+再按 8 MiB 一块续取拼回；回 200 说明服务端忽略了 Range、整包已经在手，直接用。直接整包取的话
+飞书会在 2 MiB 处截断（`code 234037`），拼出来的图是坏的。
 
-若第一个 type 就返回 `234001 Invalid request param.`，说明这个 key 本应用压根取不了（别家应用
-的图、或已过期），另一个 type 会以同样的错失败，所以**不再重试**，省掉一次注定失败的往返。
+**MIME 按魔数判定**，不信 `content-type`：PNG/JPEG/GIF/WEBP/BMP 认不出才回落。
+
+**图片不进日志正文**：base64 动辄几 MB，留在日志里会把单事件上限撞爆、连带把整条消息截断。
+写入时换成 `{ ref: "blob:<sha256>", mimeType }`，字节落到 `~/.steve/blobs/<sha256>` 并按内容去重；
+折叠 transcript 时再读回来。blob 丢了只会少那张图，消息和文字都还在。
 
 失败时写两条日志：`feishu: image fetch <完整 URL> -> <状态码> <飞书原话（code N）>` 和
 `feishu: image download failed for <message_id>: …`。回复只说失败，但排查时真正需要的是那个

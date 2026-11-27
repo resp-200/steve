@@ -8,7 +8,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash, createCipheriv, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -154,13 +154,14 @@ function startFakeFeishu() {
 				reply(200, { code: 0, msg: "success", data: { message_id: "om_reply" } });
 				return;
 			}
-			const imageMatch = request.url === undefined ? null : /^\/open-apis\/im\/v1\/images\/([^/?]+)/.exec(request.url);
+			const imageMatch = request.url === undefined ? null : /^\/open-apis\/im\/v1\/messages\/([^/?]+)\/resources\/([^/?]+)/.exec(request.url);
 			if (imageMatch !== null) {
-				const key = decodeURIComponent(imageMatch[1]);
-				// Record first: a request that fails still tells us which type was tried.
+				const messageId = decodeURIComponent(imageMatch[1]);
+				const key = decodeURIComponent(imageMatch[2]);
 				const parsedUrl = new URL(request.url, "http://127.0.0.1");
-				const kind = parsedUrl.searchParams.get("type") ?? "message";
-				imageRequests.push({ key, kind });
+				const kind = parsedUrl.searchParams.get("type") ?? "";
+				const range = request.headers.range;
+				imageRequests.push({ key, messageId, kind, range });
 				imageQueries.push({ key, url: request.url });
 				const entry = images.get(key);
 				if (entry === undefined) {
@@ -169,16 +170,26 @@ function startFakeFeishu() {
 					reply(400, { code: 234_001, msg: "Invalid request param." });
 					return;
 				}
-				// Mirror the real endpoint: the `type` has to match how the key was
-				// created, otherwise it answers 400 with a JSON envelope. Keys without
-				// an explicit `kind` accept the message type, which is the common case.
-				if (entry.kind !== undefined && entry.kind !== kind) {
-					reply(400, { code: 23_400, msg: "invalid param" });
+				if (entry.failMessageId !== undefined && entry.failMessageId !== messageId) {
+					// Resources are scoped to the message that carries them.
+					reply(403, { code: 23_002, msg: "no permission" });
+					return;
+				}
+				const bytes = entry.bytes;
+				const rangeMatch = range === undefined ? null : /^bytes=(\d+)-(\d+)$/.exec(range);
+				if (rangeMatch !== null && entry.supportsRange !== false) {
+					const start = Number(rangeMatch[1]);
+					const end = Math.min(Number(rangeMatch[2]), bytes.length - 1);
+					response.writeHead(206, {
+						"content-type": entry.mimeType,
+						"content-range": `bytes ${start}-${end}/${bytes.length}`,
+					});
+					response.end(bytes.subarray(start, end + 1));
 					return;
 				}
 				response.writeHead(200, { "content-type": entry.mimeType });
 				// The real endpoint answers with the raw file, not the JSON envelope.
-				response.end(entry.bytes);
+				response.end(bytes);
 				return;
 			}
 			reply(404, { code: 404, msg: "not found" });
@@ -357,6 +368,63 @@ try {
 	check("stream 含 run.settled", events.some((event) => event.type === "run.settled"));
 	check("stream 含 assistant 输出", events.some((event) => event.type === "text_delta" || event.type === "run.turn.settled"));
 
+	// B1. Markdown: Feishu only renders it in a `post` message.
+	// Sent as `text`, headings and tables arrive as source: the bug this fixes.
+	const repliesBeforeMarkdown = fakeFeishu.replies.length;
+	await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_md", text: "回显 markdown" }));
+	await waitFor(() => (fakeFeishu.replies.length > repliesBeforeMarkdown ? fakeFeishu.replies : false), { label: "markdown reply" });
+	const markdownReply = fakeFeishu.replies.at(-1);
+	check("结构化回答走 post 消息类型", markdownReply?.body.msg_type === "post", String(markdownReply?.body.msg_type));
+	let markdownBody = {};
+	try {
+		markdownBody = JSON.parse(markdownReply?.body.content ?? "{}");
+	} catch {
+		// reported below
+	}
+	const markdownRows = markdownBody.zh_cn?.content ?? [];
+	const markdownText = Array.isArray(markdownRows) ? markdownRows.map((row) => row.map((element) => element.text).join("")).join("\n") : "";
+	check("post 正文是 zh_cn/content 的 md 元素", Array.isArray(markdownRows) && markdownRows.every((row) => row.every((element) => element.tag === "md")), JSON.stringify(markdownBody).slice(0, 160));
+	check("标题表格粗体原样交给 Feishu 渲染", markdownText.includes("## 标题在这里") && markdownText.includes("| 列一 | 列二 |") && markdownText.includes("**加粗**"), markdownText.slice(0, 200));
+
+	// A plain answer stays `text`: sending prose as post would cost a rendering
+	// pass for nothing, and changes how links and line breaks behave.
+	const plainReply = fakeFeishu.replies[0];
+	check("纯文本回答仍然走 text 消息类型", plainReply?.body.msg_type === "text", String(plainReply?.body.msg_type));
+
+	// B1b. Over-long answers are split, not truncated: the tail of a long answer
+	// is usually the conclusion.
+	const repliesBeforeLong = fakeFeishu.replies.length;
+	await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_long", text: "回显长文" }));
+	const longStreamId = streamIdForChat(CHAT_ID);
+	const settledBeforeLong = readStreamEvents(streamsDir, longStreamId).filter((event) => event.type === "run.settled").length;
+	try {
+		await waitFor(
+			() => readStreamEvents(streamsDir, longStreamId).filter((event) => event.type === "run.settled").length > settledBeforeLong,
+			{ label: "long run settled", timeout: 30_000 },
+		);
+	} catch (error) {
+		const all = readStreamEvents(streamsDir, longStreamId);
+		process.stderr.write(`[dbg] settledBefore=${settledBeforeLong} total=${all.length} types=${[...new Set(all.map((e) => e.type))].join(",")}\n`);
+		process.stderr.write(`[dbg] replies=${fakeFeishu.replies.length} beforeLong=${repliesBeforeLong}\n`);
+		throw error;
+	}
+	// Several replies share one chat stream; wait until the split half is over.
+	await sleepAsync(600);
+
+	const longReplies = fakeFeishu.replies.slice(repliesBeforeLong);
+	check("超长回答拆成多条消息", longReplies.length >= 2, `${longReplies.length} replies`);
+	const longTexts = longReplies.map((entry) => {
+		try {
+			const content = JSON.parse(entry.body.content);
+			return entry.body.msg_type === "post" ? (content.zh_cn?.content ?? []).map((row) => row.map((element) => element.text).join("")).join("\n") : String(content.text ?? "");
+		} catch {
+			return "";
+		}
+	});
+	check("每条都不超过单条上限", longTexts.every((text) => text.length <= 8_000), longTexts.map((text) => text.length).join(","));
+	check("分段带 (1/N) 标号", longTexts[0]?.endsWith(`(1/${longTexts.length})`) === true, String(longTexts[0]?.slice(-20)));
+	check("长文结尾没有被截掉", longTexts.at(-1)?.includes("## 长文结束") === true, String(longTexts.at(-1)?.slice(-80)));
+
 	// B2. Cards: the model decides, and the tool only exists on a Feishu run
 	const repliesBeforeCard = fakeFeishu.replies.length;
 	const cardAck = await postCallback(
@@ -383,10 +451,11 @@ try {
 	// measured any earlier, its tail would look like the duplicate's events.
 	await sleepAsync(1200);
 	const beforeDuplicate = readStreamEvents(streamsDir, streamId).length;
+	const repliesBeforeDuplicate = fakeFeishu.replies.length;
 	const duplicate = await postCallback(SERVE_PORT, messageEvent({ eventId: "evt_feishu_1" }));
 	check("重复 event_id 仍然 200", duplicate.status === 200, `status ${duplicate.status}`);
 	await sleepAsync(1500);
-	check("重复 event_id 不再产生回复", fakeFeishu.replies.length === 2, `${fakeFeishu.replies.length} replies`);
+	check("重复 event_id 不再产生回复", fakeFeishu.replies.length === repliesBeforeDuplicate, `${fakeFeishu.replies.length - repliesBeforeDuplicate} extra replies`);
 	check("重复 event_id 不再写入事件", readStreamEvents(streamsDir, streamId).length === beforeDuplicate);
 
 	// D. Images: a text-only model is told why, rather than answering blind.
@@ -682,12 +751,9 @@ try {
 	await waitFor(async () => fakeFeishu.replies.length > beforePost, { label: "post reply", timeout: 8_000 });
 	const postAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
 	check("富文本：图片真的送到了 provider", postAnswer.includes("图片数量：1"), postAnswer.slice(0, 160));
-	// A `post` image key is not an `image` message key; asking with type=message
-	// first would waste a round trip and, on tenants that only serve one type,
-	// never succeed at all.
-	const postKinds = JSON.stringify(fakeFeishu.imageRequests.filter((request) => request.key === "img_post").map((request) => request.kind));
-	check("富文本：先按 default 取图", postKinds.startsWith('["default"'), postKinds);
 	check("富文本：图片大小按原图算", postAnswer.includes("大小：512"), postAnswer.slice(0, 160));
+	const postRequest = fakeFeishu.imageRequests.filter((request) => request.key === "img_post").at(-1);
+	check("富文本：走消息资源接口而不是 im/v1/images", String(postRequest?.messageId ?? "") !== "" && postRequest?.kind === "image", JSON.stringify(postRequest));
 	const postUserMessage = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID))
 		.filter((event) => event?.type === "user.message")
 		.filter((event) => Array.isArray(event.images) && event.images.length > 0)
@@ -696,30 +762,21 @@ try {
 	check("富文本：同段落的文字被拼起来", postText.includes("这是截图，帮我看看这个报错。"), postText);
 	check("富文本：纯图片消息才补默认提示", !postText.includes("请看这张图片"), postText);
 
-	// Some image keys reject `type=message` and only answer to `type=default`
-	// (the user's real-world 400). The client must try both before giving up.
-	fakeFeishu.images.set("img_default", { kind: "default", mimeType: "image/png", bytes: Buffer.alloc(640, 4) });
-	const beforeDefault = fakeFeishu.replies.length;
-	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_default", messageType: "image", content: { image_key: "img_default" } }));
-	await waitFor(async () => fakeFeishu.replies.length > beforeDefault, { label: "default-type reply", timeout: 8_000 });
-	const defaultAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
-	check("type=message 被拒时回退到 type=default", defaultAnswer.includes("图片数量：1") && defaultAnswer.includes("大小：640"), defaultAnswer.slice(0, 160));
-	check(
-		"回退时先试 message 再试 default",
-		JSON.stringify(fakeFeishu.imageRequests.filter((request) => request.key === "img_default").map((request) => request.kind)) === JSON.stringify(["message", "default"]),
-		JSON.stringify(fakeFeishu.imageRequests.filter((request) => request.key === "img_default")),
-	);
-
-	// The query string must survive the request: sending `type=message&type=default`
-	// or dropping it entirely would make Feishu read the wrong resource.
+	// The download URL is what made the user's real-world 400. Feishu scopes a
+	// resource read to the message carrying it, so `im/v1/images/{key}` (no
+	// message id) answers 234001 for keys that this endpoint serves fine.
 	fakeFeishu.images.set("img_query", { mimeType: "image/png", bytes: Buffer.alloc(300, 2) });
 	const beforeQuery = fakeFeishu.replies.length;
-	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_query", messageType: "image", content: { image_key: "img_query" } }));
+	const queryEvent = messageEvent({ eventId: "evt_feishu_vision_query", messageType: "image", content: { image_key: "img_query" } });
+	await postCallback(VISION_SERVE_PORT, queryEvent);
 	await waitFor(async () => fakeFeishu.replies.length > beforeQuery, { label: "query-string reply", timeout: 8_000 });
+	const queryRequest = fakeFeishu.imageRequests.filter((entry) => entry.key === "img_query").at(-1);
 	const queryUrl = String(fakeFeishu.imageQueries.filter((entry) => entry.key === "img_query").at(-1)?.url ?? "");
+	const queryMessageId = String(queryEvent.event.message.message_id);
+	check("取图走 messages/{message_id}/resources/{key}", queryUrl.includes(`/open-apis/im/v1/messages/${queryMessageId}/resources/img_query`), queryUrl);
 	check("取图 URL 只带一个 type", (queryUrl.match(/type=/g) ?? []).length === 1, queryUrl);
-	check("取图 URL 的 type 是 message 或 default", /[?&]type=(message|default)$/.test(queryUrl), queryUrl);
-	check("取图 URL 带上了图片 key", queryUrl.includes("/images/img_query"), queryUrl);
+	check("取图的 type 是 image", /[?&]type=image$/.test(queryUrl), queryUrl);
+	check("取图请求的 message_id 就是收到的那条消息", queryRequest?.messageId === queryMessageId, JSON.stringify(queryRequest));
 
 	// A picture the model cannot use is refused with a reason rather than a 500.
 	fakeFeishu.images.set("img_heic", { mimeType: "image/heic", bytes: Buffer.alloc(1024, 1) });
@@ -729,13 +786,77 @@ try {
 	const heicAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
 	check("不支持的格式回具体原因", heicAnswer.includes("image/heic"), heicAnswer.slice(0, 160));
 
-	// A key this app cannot use at all answers 234001 for every type; retrying the
-	// second type only adds latency to a guaranteed failure, so stop after the first.
+	// Screenshots routinely exceed Feishu's ~2 MiB single-GET cap, where a plain
+	// download comes back truncated (code 234037). With Range honoured, the bytes
+	// must be reassembled exactly. Sized just over the cap: a real 9 MiB picture
+	// would also blow the mock model's context window and fail for an unrelated
+	// reason.
+	const bigBytes = Buffer.alloc(2 * 1024 * 1024 + 123, 7);
+	fakeFeishu.images.set("img_big", { mimeType: "image/png", bytes: bigBytes });
+	const beforeBig = fakeFeishu.replies.length;
+	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_big", messageType: "image", content: { image_key: "img_big" } }));
+	await waitFor(async () => fakeFeishu.replies.length > beforeBig, { label: "big image reply", timeout: 20_000 });
+	const bigAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
+	check("超过 2 MiB 的图片按 Range 分块取回", bigAnswer.includes(`大小：${bigBytes.length}`), bigAnswer.slice(0, 200));
+
+	// The picture must not travel through the stream log inline: a 2 MiB image is
+	// ~2.7 MB of base64, which the 64 KiB single-event cap would truncate — and a
+	// truncated user message used to be dropped from the transcript entirely,
+	// leaving an assistant turn at the end that the next run could not continue
+	// from. So the log holds a reference and the bytes live in `blobs/`.
+	const bigUserMessage = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID))
+		.filter((event) => event?.type === "user.message")
+		.at(-1);
+	const bigImages = Array.isArray(bigUserMessage?.images) ? bigUserMessage.images : [];
+	check(
+		"大图的 user.message 没有被截断",
+		bigUserMessage !== undefined && bigUserMessage.truncated !== true,
+		JSON.stringify({ truncated: bigUserMessage?.truncated, images: bigImages.length }),
+	);
+	check(
+		"日志里存的是 blob 引用而不是图片正文",
+		bigImages.length === 1 && typeof bigImages[0]?.ref === "string" && bigImages[0].ref.startsWith("blob:") && bigImages[0].data === undefined,
+		JSON.stringify(bigImages).slice(0, 200),
+	);
+	const blobDir = join(home, ".steve", "blobs");
+	const bigRef = String(bigImages[0]?.ref ?? "").replace(/^blob:/, "");
+	const bigBlobPath = join(blobDir, bigRef);
+	check(
+		"图片正文落到了 blobs/<sha256>",
+		bigRef.length === 64 && existsSync(bigBlobPath) && statSync(bigBlobPath).size === bigBytes.length,
+		`${bigBlobPath} exists=${existsSync(bigBlobPath)}`,
+	);
+	// The next run reads the transcript back through the fold, so the picture has
+	// to come back out of the blob — that is what makes the conversation usable
+	// after a restart, not just live.
+	const afterBig = fakeFeishu.replies.length;
+	await postCallback(
+		VISION_SERVE_PORT,
+		messageEvent({ eventId: "evt_feishu_vision_after_big", text: "刚才那张图多大？", messageType: "text" }),
+	);
+	await waitFor(async () => fakeFeishu.replies.length > afterBig, { label: "after-big reply", timeout: 20_000 });
+	const afterBigUser = readStreamEvents(streamsDir, streamIdForChat(CHAT_ID))
+		.filter((event) => event?.type === "user.message")
+		.at(-1);
+	check("后续消息能正常处理（不会再撞上 assistant 结尾）", afterBigUser?.text === "刚才那张图多大？", JSON.stringify(afterBigUser).slice(0, 200));
+
+	// A server that ignores Range still has to work: it answers 200 with the whole
+	// body and there is nothing to assemble.
+	fakeFeishu.images.set("img_norange", { mimeType: "image/png", bytes: Buffer.alloc(777, 5), supportsRange: false });
+	const beforeNoRange = fakeFeishu.replies.length;
+	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_norange", messageType: "image", content: { image_key: "img_norange" } }));
+	await waitFor(async () => fakeFeishu.replies.length > beforeNoRange, { label: "no-range reply", timeout: 8_000 });
+	const noRangeAnswer = String(fakeFeishu.replies.at(-1)?.body.content ?? "");
+	check("服务端不支持 Range 时也能取到图", noRangeAnswer.includes("大小：777"), noRangeAnswer.slice(0, 160));
+
+	// A key this app cannot use at all answers 234001 on the resource endpoint
+	// too. One attempt, then a clear failure — retrying a different URL shape
+	// only adds latency to a guaranteed failure (it did, for a whole release).
 	const beforeBadKey = fakeFeishu.replies.length;
 	await postCallback(VISION_SERVE_PORT, messageEvent({ eventId: "evt_feishu_vision_badkey", messageType: "image", content: { image_key: "img_from_another_app" } }));
 	await waitFor(async () => fakeFeishu.replies.length > beforeBadKey, { label: "bad key reply", timeout: 8_000 });
 	const badKeyRequests = fakeFeishu.imageRequests.filter((entry) => entry.key === "img_from_another_app");
-	check("key 不可用（234001）时不再换 type 重试", badKeyRequests.length === 1, JSON.stringify(badKeyRequests.map((entry) => entry.kind)));
+	check("key 不可用（234001）时只请求一次", badKeyRequests.length === 1, JSON.stringify(badKeyRequests));
 
 	// An image_key Feishu itself cannot serve must not take the whole bot down.
 	const beforeMissing = fakeFeishu.replies.length;
@@ -745,7 +866,11 @@ try {
 	check("图片下载失败也有回复", missingAnswer.includes("图片下载失败"), missingAnswer.slice(0, 160));
 	// The reply is for the user; the log is for whoever has to fix it. Without the
 	// URL and Feishu's own code the log line is just "it failed".
-	check("下载失败的日志带 URL 与飞书错误码", /image fetch .*img_missing.*type=(message|default).*-> 400.*code 234001/.test(visionServe.stderr + visionServe.stdout), (visionServe.stderr + visionServe.stdout).slice(-600));
+	check(
+		"下载失败的日志带 URL 与飞书错误码",
+		/image fetch .*img_missing.*type=image.*-> 400.*code 234001/.test(visionServe.stderr + visionServe.stdout),
+		(visionServe.stderr + visionServe.stdout).slice(-600),
+	);
 
 	// G. Disabled without credentials
 	const disabledServe = start(

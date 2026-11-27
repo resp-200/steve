@@ -172,7 +172,10 @@ check(
 // A capability implementation may only be reached through its plugin: if an entry
 // or the protocol layer imported it directly, "everything is a plugin" would be a
 // lie for that capability (and the front end would know its options again).
-const CAPABILITY_IMPORTERS = { "local-tools": ["extensions/builtin/local-tools.ts"] };
+const CAPABILITY_IMPORTERS = {
+	"local-tools": ["extensions/builtin/local-tools.ts"],
+	"web-tools": ["extensions/builtin/web-tools.ts"],
+};
 const capabilityLeaks = [];
 for (const { full, rel } of files) {
 	const source = readFileSync(full, "utf8");
@@ -182,7 +185,7 @@ for (const { full, rel } of files) {
 	}
 }
 check(
-	"能力实现只能被它的插件引用（本地工具不能被入口/协议层直接用）",
+	"能力实现只能被它的插件引用（本地工具/网络工具不能被入口/协议层直接用）",
 	capabilityLeaks.length === 0,
 	capabilityLeaks.slice(0, 5).join("; "),
 );

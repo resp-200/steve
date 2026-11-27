@@ -103,6 +103,8 @@ export interface RunWorkerOptions {
 	 * second read of data it already has.
 	 */
 	readState?(streamId: string): Promise<AgentMessage[]>;
+	/** Resolves `blob:` references when the transcript is folded from the log. */
+	readBlob?: (reference: string) => { data: string; mimeType: string } | undefined;
 	resolveEnvironment(streamId: string, mode: RunMode): Promise<EnvironmentSnapshot>;
 	/**
 	 * Tool catalog of this process; runs only get the ones their snapshot allows.
@@ -348,7 +350,9 @@ export function createRunWorker(options: RunWorkerOptions): RunWorker {
 			const environment = await options.resolveEnvironment(streamId, mode);
 			await options.log.append(streamId, [{ type: "run.started", runId, inputCause, environment, mode }]);
 			const messages =
-				options.readState !== undefined ? await options.readState(streamId) : foldTranscript(await options.log.read(streamId));
+				options.readState !== undefined
+					? await options.readState(streamId)
+					: foldTranscript(await options.log.read(streamId), options.readBlob);
 			const tools = selectTools(environment, input.extraTools);
 			const context: RunAgentContext = {
 				streamId,

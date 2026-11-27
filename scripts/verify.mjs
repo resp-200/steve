@@ -80,6 +80,7 @@ run("提示词热更新（prompt-hot）", "node", ["scripts/prompt-hot-test.mjs"
 run("图片规则（image）", "node", ["scripts/image-test.mjs"]);
 run("飞书卡片构建（feishu-card）", "node", ["scripts/feishu-card-test.mjs"]);
 run("飞书卡片工具（feishu-card-tool）", "node", ["scripts/feishu-card-tool-test.mjs"]);
+run("飞书消息格式（feishu-markdown）", "node", ["scripts/feishu-markdown-test.mjs"]);
 run("管理后台（admin）", "node", ["scripts/admin-test.mjs"]);
 run("事件投影（projection）", "node", ["scripts/projection-test.mjs"]);
 run("环境快照（environment）", "node", ["scripts/environment-test.mjs"]);
